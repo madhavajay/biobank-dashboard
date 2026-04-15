@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stream V8 — SVG Gaussian Blur</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #fff; }
+  svg { display: block; width: 100vw; height: 100vh; }
+
+  /* Gentle undulation animations for each path group */
+  @keyframes undulate1 {
+    0%   { transform: translateY(0px); }
+    25%  { transform: translateY(-6px) translateX(3px); }
+    50%  { transform: translateY(2px) translateX(-2px); }
+    75%  { transform: translateY(-4px) translateX(1px); }
+    100% { transform: translateY(0px); }
+  }
+  @keyframes undulate2 {
+    0%   { transform: translateY(0px); }
+    25%  { transform: translateY(5px) translateX(-3px); }
+    50%  { transform: translateY(-3px) translateX(2px); }
+    75%  { transform: translateY(4px) translateX(-1px); }
+    100% { transform: translateY(0px); }
+  }
+  @keyframes undulate3 {
+    0%   { transform: translateY(0px); }
+    25%  { transform: translateY(-8px) translateX(2px); }
+    50%  { transform: translateY(4px) translateX(-3px); }
+    75%  { transform: translateY(-2px) translateX(1px); }
+    100% { transform: translateY(0px); }
+  }
+  @keyframes undulate4 {
+    0%   { transform: translateY(0px); }
+    25%  { transform: translateY(7px) translateX(-2px); }
+    50%  { transform: translateY(-5px) translateX(3px); }
+    75%  { transform: translateY(3px) translateX(-2px); }
+    100% { transform: translateY(0px); }
+  }
+  @keyframes undulate5 {
+    0%   { transform: translateY(0px); }
+    25%  { transform: translateY(-4px) translateX(4px); }
+    50%  { transform: translateY(6px) translateX(-2px); }
+    75%  { transform: translateY(-5px) translateX(2px); }
+    100% { transform: translateY(0px); }
+  }
+
+  .group-orange   { animation: undulate1 18s ease-in-out infinite; }
+  .group-gold     { animation: undulate2 22s ease-in-out infinite; }
+  .group-magenta  { animation: undulate3 20s ease-in-out infinite; }
+  .group-violet   { animation: undulate4 25s ease-in-out infinite; }
+  .group-teal     { animation: undulate5 19s ease-in-out infinite; }
+  .group-green    { animation: undulate1 24s ease-in-out infinite reverse; }
+  .group-lime     { animation: undulate3 21s ease-in-out infinite reverse; }
+</style>
+</head>
+<body>
+<svg id="svg" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none"></svg>
+<script>
+const svg = document.getElementById('svg');
+const W = window.innerWidth;
+const H = window.innerHeight;
+svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+// S-curve function: starts upper area, dips through center, rises to upper-right
+function sCurveY(x) {
+  const t = x / W;
+  const phase = t * Math.PI;
+  return H * (0.5 + 0.22 * Math.cos(phase) - 0.05 * Math.sin(phase * 2));
+}
+
+// Stream width: thick left, narrower center, thin right
+function streamWidth(x) {
+  const t = x / W;
+  const center = 0.5;
+  const narrowing = 1.0 - 0.5 * Math.exp(-8 * (t - center) * (t - center));
+  const leftThick = 0.22 * (1 - t) + 0.10 * t;
+  return (leftThick * narrowing + 0.06) * H;
+}
+
+// Build an S-curve path with a vertical offset
+function buildPath(yOffset) {
+  const points = [];
+  const steps = 40;
+  for (let i = 0; i <= steps; i++) {
+    const x = (i / steps) * W;
+    const sw = streamWidth(x);
+    const y = sCurveY(x) + yOffset * sw;
+    points.push([x, y]);
+  }
+  // Build smooth cubic bezier through points
+  let d = `M ${points[0][0].toFixed(1)} ${points[0][1].toFixed(1)}`;
+  for (let i = 1; i < points.length - 1; i++) {
+    const prev = points[i - 1];
+    const cur = points[i];
+    const next = points[i + 1];
+    const cp1x = prev[0] + (cur[0] - prev[0]) * 0.6;
+    const cp1y = prev[1] + (cur[1] - prev[1]) * 0.6;
+    const cp2x = cur[0] - (next[0] - prev[0]) * 0.15;
+    const cp2y = cur[1] - (next[1] - prev[1]) * 0.15;
+    d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${cur[0].toFixed(1)} ${cur[1].toFixed(1)}`;
+  }
+  const last = points[points.length - 1];
+  const penult = points[points.length - 2];
+  d += ` C ${penult[0] + (last[0] - penult[0]) * 0.5} ${penult[1] + (last[1] - penult[1]) * 0.5}, ${last[0] - 10} ${last[1]}, ${last[0].toFixed(1)} ${last[1].toFixed(1)}`;
+  return d;
+}
+
+// Define color zones with their paths
+// Each zone: { colors: [start, end], offsets: [vertical offsets], widths: [stroke widths], opacities, blur, className }
+const zones = [
+  {
+    name: 'orange',
+    gradColors: ['rgb(237,97,46)', 'rgb(245,166,53)'],
+    offsets: [-0.35, -0.25, -0.15, -0.05, 0.0],
+    widths: [60, 80, 70, 50, 40],
+    opacities: [0.3, 0.5, 0.6, 0.4, 0.3],
+    blur: 35,
+    className: 'group-orange'
+  },
+  {
+    name: 'gold',
+    gradColors: ['rgb(245,166,53)', 'rgb(248,205,70)'],
+    offsets: [-0.1, 0.0, 0.1, 0.15],
+    widths: [55, 70, 65, 45],
+    opacities: [0.35, 0.55, 0.5, 0.3],
+    blur: 30,
+    className: 'group-gold'
+  },
+  {
+    name: 'magenta',
+    gradColors: ['rgb(200,55,115)', 'rgb(130,88,160)'],
+    offsets: [0.15, 0.25, 0.35, 0.42],
+    widths: [50, 70, 60, 40],
+    opacities: [0.3, 0.5, 0.45, 0.25],
+    blur: 32,
+    className: 'group-magenta'
+  },
+  {
+    name: 'violet',
+    gradColors: ['rgb(130,88,160)', 'rgb(50,185,175)'],
+    offsets: [-0.05, 0.05, 0.12],
+    widths: [40, 55, 35],
+    opacities: [0.2, 0.35, 0.2],
+    blur: 28,
+    className: 'group-violet'
+  },
+  {
+    name: 'teal',
+    gradColors: ['rgb(50,185,175)', 'rgb(65,172,130)'],
+    offsets: [-0.3, -0.2, -0.1, 0.0],
+    widths: [45, 60, 55, 35],
+    opacities: [0.25, 0.45, 0.5, 0.3],
+    blur: 30,
+    className: 'group-teal'
+  },
+  {
+    name: 'green',
+    gradColors: ['rgb(65,172,130)', 'rgb(175,210,80)'],
+    offsets: [0.0, 0.1, 0.2, 0.28],
+    widths: [40, 55, 45, 30],
+    opacities: [0.3, 0.4, 0.35, 0.2],
+    blur: 28,
+    className: 'group-green'
+  },
+  {
+    name: 'lime',
+    gradColors: ['rgb(175,210,80)', 'rgb(195,225,110)'],
+    offsets: [0.15, 0.25, 0.35],
+    widths: [30, 45, 25],
+    opacities: [0.2, 0.35, 0.15],
+    blur: 25,
+    className: 'group-lime'
+  }
+];
+
+// Create SVG defs
+const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+svg.appendChild(defs);
+
+// Create filters and gradients for each zone
+zones.forEach((zone, zi) => {
+  // Filter with Gaussian blur
+  const filter = document.createElementNS('http://www.w3.org/2000/svg', 'filter');
+  filter.setAttribute('id', `blur-${zone.name}`);
+  filter.setAttribute('x', '-50%');
+  filter.setAttribute('y', '-50%');
+  filter.setAttribute('width', '200%');
+  filter.setAttribute('height', '200%');
+  const feBlur = document.createElementNS('http://www.w3.org/2000/svg', 'feGaussianBlur');
+  feBlur.setAttribute('stdDeviation', zone.blur);
+  filter.appendChild(feBlur);
+  defs.appendChild(filter);
+
+  // Linear gradient (left to right)
+  const grad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
+  grad.setAttribute('id', `grad-${zone.name}`);
+  grad.setAttribute('x1', '0%');
+  grad.setAttribute('y1', '0%');
+  grad.setAttribute('x2', '100%');
+  grad.setAttribute('y2', '0%');
+  const stop1 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+  stop1.setAttribute('offset', '0%');
+  stop1.setAttribute('stop-color', zone.gradColors[0]);
+  const stop2 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+  stop2.setAttribute('offset', '100%');
+  stop2.setAttribute('stop-color', zone.gradColors[1]);
+  grad.appendChild(stop1);
+  grad.appendChild(stop2);
+  defs.appendChild(grad);
+
+  // Create group
+  const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  g.setAttribute('class', zone.className);
+  g.setAttribute('filter', `url(#blur-${zone.name})`);
+
+  // Create paths
+  zone.offsets.forEach((off, pi) => {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    const d = buildPath(off);
+    path.setAttribute('d', d);
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', `url(#grad-${zone.name})`);
+    path.setAttribute('stroke-width', zone.widths[pi]);
+    path.setAttribute('stroke-linecap', 'round');
+    path.setAttribute('opacity', zone.opacities[pi]);
+
+    // Add SMIL animation for subtle path undulation
+    const animDur = (15 + zi * 2 + pi * 3) + 's';
+    const animOffset2 = off + (pi % 2 === 0 ? 0.08 : -0.08);
+    const d2 = buildPath(animOffset2);
+    const animOffset3 = off + (pi % 2 === 0 ? -0.05 : 0.06);
+    const d3 = buildPath(animOffset3);
+
+    const animate = document.createElementNS('http://www.w3.org/2000/svg', 'animate');
+    animate.setAttribute('attributeName', 'd');
+    animate.setAttribute('values', `${d};${d2};${d3};${d}`);
+    animate.setAttribute('dur', animDur);
+    animate.setAttribute('repeatCount', 'indefinite');
+    animate.setAttribute('calcMode', 'spline');
+    animate.setAttribute('keySplines', '0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1');
+    path.appendChild(animate);
+
+    g.appendChild(path);
+  });
+
+  svg.appendChild(g);
+});
+
+// Handle resize
+window.addEventListener('resize', () => {
+  location.reload();
+});
+</script>
+</body>
+</html>

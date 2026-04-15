@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenMined — The Missing Layer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Sometype+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --grayscale-50: #fcfcfd;
+      --grayscale-850: #272532;
+      --grayscale-750: #353243;
+    }
+
+    html {
+      background: var(--grayscale-50);
+      color: var(--grayscale-850);
+      overflow: hidden;
+    }
+
+    body {
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    .diamond-stage {
+      position: relative;
+      width: 760px;
+      height: 620px;
+    }
+
+    .diamond-group {
+      position: absolute;
+      inset: 0;
+    }
+
+    /* --- Wireframe outlines --- */
+    .diamond-outline {
+      position: absolute;
+      border: 1.2px solid var(--grayscale-850);
+      transform: rotate(45deg);
+    }
+
+    .diamond-outline--left {
+      width: 340px;
+      height: 340px;
+      top: 50%;
+      left: 50%;
+      margin-top: -140px;
+      margin-left: -290px;
+      z-index: 0;
+    }
+
+    .diamond-outline--right {
+      width: 340px;
+      height: 340px;
+      top: 50%;
+      left: 50%;
+      margin-top: -140px;
+      margin-left: -50px;
+      z-index: 10;
+    }
+
+    /* --- Gradient mesh --- */
+    .diamond-mesh {
+      position: absolute;
+      overflow: visible;
+      z-index: 5;
+    }
+
+    .diamond-mesh--large {
+      width: 390px;
+      height: 390px;
+      top: 50%;
+      left: 50%;
+      margin-top: -165px;
+      margin-left: -195px;
+      transform: rotate(45deg);
+      filter: blur(3px);
+    }
+
+    .diamond-mesh--small {
+      width: 140px;
+      height: 140px;
+      top: 50%;
+      left: 50%;
+      margin-top: -217px;
+      margin-left: -70px;
+      transform: rotate(-135deg);
+      filter: blur(4px);
+      opacity: 0.7;
+    }
+
+    .diamond-mesh canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* --- Labels --- */
+    .label {
+      position: absolute;
+      font-family: "Sometype Mono", monospace;
+      font-weight: 500;
+      font-size: 14px;
+      line-height: 18px;
+      color: var(--grayscale-750);
+      white-space: nowrap;
+      top: 50%;
+      z-index: 11;
+      opacity: 0;
+      transition: opacity 1s ease, transform 1s ease;
+    }
+
+    .label--left {
+      right: calc(50% + 255px);
+      transform: translateY(-50%) translateX(-12px);
+    }
+
+    .label--right {
+      left: calc(50% + 255px);
+      transform: translateY(-50%) translateX(12px);
+    }
+
+    .label.visible { opacity: 1; }
+    .label--left.visible { transform: translateY(-50%) translateX(0); }
+    .label--right.visible { transform: translateY(-50%) translateX(0); }
+
+    /* --- Responsive --- */
+    @media (max-width: 900px) {
+      .diamond-stage {
+        width: 90vw;
+        height: 70vh;
+      }
+
+      .diamond-outline--left,
+      .diamond-outline--right {
+        width: 240px;
+        height: 240px;
+      }
+
+      .diamond-outline--left {
+        margin-top: -100px;
+        margin-left: -200px;
+      }
+
+      .diamond-outline--right {
+        margin-top: -100px;
+        margin-left: -40px;
+      }
+
+      .diamond-mesh--large {
+        width: 280px;
+        height: 280px;
+        margin-top: -110px;
+        margin-left: -125px;
+      }
+
+      .diamond-mesh--small {
+        width: 100px;
+        height: 100px;
+        margin-top: -155px;
+        margin-left: -50px;
+      }
+
+      .label { font-size: 12px; }
+      .label--left { right: calc(50% + 175px); }
+      .label--right { left: calc(50% + 175px); }
+    }
+
+    @media (max-width: 600px) {
+      .label--left { right: auto; left: 4vw; top: calc(50% + 200px); }
+      .label--right { left: auto; right: 4vw; top: calc(50% + 200px); }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="diamond-stage" id="diamondStage">
+    <div class="diamond-group" id="diamondGroup">
+      <div class="diamond-outline diamond-outline--left"></div>
+      <div class="diamond-outline diamond-outline--right"></div>
+
+      <div class="diamond-mesh diamond-mesh--large" id="meshLarge">
+        <canvas id="gradientLarge" width="780" height="780"></canvas>
+      </div>
+
+      <div class="diamond-mesh diamond-mesh--small" id="meshSmall">
+        <canvas id="gradientSmall" width="280" height="280"></canvas>
+      </div>
+    </div>
+
+    <span class="label label--left" id="labelLeft">Non-Public Data</span>
+    <span class="label label--right" id="labelRight">Attributable Insights</span>
+  </div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      /* =========================================
+         STRUCTURED GRADIENT MESH
+         Color zones: warm left → red center → cool right
+         ========================================= */
+
+      // Each zone blob has a fixed anchor position (x%, y%) it orbits around
+      // Colors are placed deliberately: warm left, cool right
+      var MESH_BLOBS = [
+        // LEFT ZONE — warm golds & oranges
+        { r: 248, g: 192, b: 115, ax: 0.15, ay: 0.35 }, // gold
+        { r: 248, g: 192, b: 115, ax: 0.25, ay: 0.55 }, // gold
+        { r: 247, g: 151, b: 99,  ax: 0.20, ay: 0.45 }, // orange
+        { r: 247, g: 151, b: 99,  ax: 0.10, ay: 0.60 }, // orange
+
+        // CENTER-LEFT — reds & pinks
+        { r: 204, g: 103, b: 123, ax: 0.38, ay: 0.35 }, // red
+        { r: 204, g: 103, b: 123, ax: 0.32, ay: 0.60 }, // red
+        { r: 204, g: 103, b: 123, ax: 0.45, ay: 0.75 }, // red
+
+        // CENTER — violet & purple
+        { r: 147, g: 112, b: 152, ax: 0.45, ay: 0.20 }, // violet
+        { r: 147, g: 112, b: 152, ax: 0.50, ay: 0.85 }, // violet
+        { r: 105, g: 118, b: 174, ax: 0.48, ay: 0.30 }, // blue
+
+        // RIGHT ZONE — teals & greens
+        { r: 82,  g: 168, b: 197, ax: 0.65, ay: 0.30 }, // teal
+        { r: 82,  g: 168, b: 197, ax: 0.75, ay: 0.50 }, // teal
+        { r: 83,  g: 190, b: 169, ax: 0.70, ay: 0.65 }, // green
+        { r: 83,  g: 190, b: 169, ax: 0.85, ay: 0.45 }, // green
+        { r: 150, g: 209, b: 149, ax: 0.80, ay: 0.60 }, // lime
+
+        // FAR EDGES — yellow/gold accents
+        { r: 242, g: 217, b: 140, ax: 0.05, ay: 0.40 }, // yellow (left edge)
+        { r: 242, g: 217, b: 140, ax: 0.92, ay: 0.35 }, // yellow (right edge)
+      ];
+
+      function MeshBlob(size, cfg) {
+        this.size = size;
+        this.color = { r: cfg.r, g: cfg.g, b: cfg.b };
+        this.anchorX = cfg.ax * size;
+        this.anchorY = cfg.ay * size;
+        this.x = this.anchorX;
+        this.y = this.anchorY;
+        this.radius = size * (0.28 + Math.random() * 0.18);
+        this.phase = Math.random() * Math.PI * 2;
+        this.phaseY = Math.random() * Math.PI * 2;
+        this.speed = 0.0008 + Math.random() * 0.0012;
+        this.drift = size * (0.03 + Math.random() * 0.05); // how far it wanders from anchor
+      }
+
+      MeshBlob.prototype.update = function (t) {
+        this.x = this.anchorX + Math.sin(t * this.speed + this.phase) * this.drift;
+        this.y = this.anchorY + Math.cos(t * this.speed * 0.8 + this.phaseY) * this.drift;
+      };
+
+      MeshBlob.prototype.draw = function (ctx) {
+        var c = this.color;
+        var g = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.radius);
+        g.addColorStop(0,   "rgba(" + c.r + "," + c.g + "," + c.b + ",1)");
+        g.addColorStop(0.25, "rgba(" + c.r + "," + c.g + "," + c.b + ",0.8)");
+        g.addColorStop(0.5, "rgba(" + c.r + "," + c.g + "," + c.b + ",0.4)");
+        g.addColorStop(0.8, "rgba(" + c.r + "," + c.g + "," + c.b + ",0.1)");
+        g.addColorStop(1,   "rgba(" + c.r + "," + c.g + "," + c.b + ",0)");
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, this.size, this.size);
+      };
+
+      // Small diamond uses the same color map but at its own scale
+      var SMALL_BLOBS = [
+        { r: 147, g: 112, b: 152, ax: 0.35, ay: 0.30 },
+        { r: 204, g: 103, b: 123, ax: 0.55, ay: 0.50 },
+        { r: 247, g: 151, b: 99,  ax: 0.30, ay: 0.65 },
+        { r: 82,  g: 168, b: 197, ax: 0.70, ay: 0.35 },
+        { r: 248, g: 192, b: 115, ax: 0.45, ay: 0.70 },
+      ];
+
+      function initMesh(canvas, blobConfigs) {
+        var ctx = canvas.getContext("2d");
+        var s = canvas.width;
+        var blobs = [];
+        for (var i = 0; i < blobConfigs.length; i++) {
+          blobs.push(new MeshBlob(s, blobConfigs[i]));
+        }
+        return { ctx: ctx, size: s, blobs: blobs };
+      }
+
+      var largeMesh = initMesh(document.getElementById("gradientLarge"), MESH_BLOBS);
+      var smallMesh = initMesh(document.getElementById("gradientSmall"), SMALL_BLOBS);
+
+      function renderMesh(m, t) {
+        m.ctx.clearRect(0, 0, m.size, m.size);
+        for (var i = 0; i < m.blobs.length; i++) {
+          m.blobs[i].update(t);
+          m.blobs[i].draw(m.ctx);
+        }
+      }
+
+      /* =========================================
+         MOUSE PARALLAX
+         ========================================= */
+
+      var tRX = 0, tRY = 0, cRX = 0, cRY = 0;
+
+      document.addEventListener("mousemove", function (e) {
+        var cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+        tRX = ((e.clientY - cy) / cy) * 5;
+        tRY = ((e.clientX - cx) / cx) * 5;
+      });
+
+      var dGroup = document.getElementById("diamondGroup");
+      var mLg = document.getElementById("meshLarge");
+      var mSm = document.getElementById("meshSmall");
+
+      /* =========================================
+         LABELS
+         ========================================= */
+
+      setTimeout(function () { document.getElementById("labelLeft").classList.add("visible"); }, 500);
+      setTimeout(function () { document.getElementById("labelRight").classList.add("visible"); }, 800);
+
+      /* =========================================
+         LOOP
+         ========================================= */
+
+      var t0 = performance.now();
+
+      function loop(ts) {
+        var t = ts - t0;
+
+        renderMesh(largeMesh, t);
+        renderMesh(smallMesh, t);
+
+        cRX += (tRX - cRX) * 0.03;
+        cRY += (tRY - cRY) * 0.03;
+
+        var breathe = Math.sin(t * 0.0007) * 1;
+        var scale = 1 + Math.sin(t * 0.0005) * 0.008;
+
+        dGroup.style.transform =
+          "perspective(1000px) rotateX(" + (cRX + breathe * 0.15) + "deg) rotateY(" + cRY + "deg) scale(" + scale + ")";
+
+        var ox = cRY * 1;
+        var oy = cRX * 1;
+        mLg.style.transform = "rotate(45deg) translate(" + ox + "px," + oy + "px)";
+        mSm.style.transform = "rotate(-135deg) translate(" + (-ox * 0.3) + "px," + (-oy * 0.3) + "px)";
+
+        requestAnimationFrame(loop);
+      }
+
+      requestAnimationFrame(loop);
+    })();
+  </script>
+</body>
+</html>

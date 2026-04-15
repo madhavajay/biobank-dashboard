@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stream v2 Refined — v10 Best Match</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #ffffff; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const gl = canvas.getContext('webgl', { antialias: true, alpha: false });
+  if (!gl) { document.body.textContent = 'WebGL not supported'; return; }
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = window.innerWidth * dpr;
+    canvas.height = window.innerHeight * dpr;
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  const vsSource = `
+    attribute vec2 aPos;
+    varying vec2 vUV;
+    void main() {
+      vUV = aPos * 0.5 + 0.5;
+      gl_Position = vec4(aPos, 0.0, 1.0);
+    }
+  `;
+
+  const fsSource = `
+precision highp float;
+varying vec2 vUV;
+uniform float uTime;
+uniform vec2 uResolution;
+
+vec3 mod289v3(vec3 x){ return x - floor(x*(1.0/289.0))*289.0; }
+vec2 mod289v2(vec2 x){ return x - floor(x*(1.0/289.0))*289.0; }
+vec3 permute(vec3 x){ return mod289v3(((x*34.0)+10.0)*x); }
+float snoise(vec2 v){
+  const vec4 C = vec4(0.211324865405187, 0.366025403784439, -0.577350269189626, 0.024390243902439);
+  vec2 i = floor(v + dot(v, C.yy));
+  vec2 x0 = v - i + dot(i, C.xx);
+  vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+  vec4 x12 = x0.xyxy + C.xxzz; x12.xy -= i1;
+  i = mod289v2(i);
+  vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0)) + i.x + vec3(0.0, i1.x, 1.0));
+  vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
+  m = m*m; m = m*m;
+  vec3 x = 2.0*fract(p*C.www) - 1.0;
+  vec3 h = abs(x) - 0.5;
+  vec3 ox = floor(x + 0.5);
+  vec3 a0 = x - ox;
+  m *= 1.79284291400159 - 0.85373472095314*(a0*a0+h*h);
+  vec3 g; g.x = a0.x*x0.x + h.x*x0.y; g.yz = a0.yz*x12.xz + h.yz*x12.yw;
+  return 130.0 * dot(m, g);
+}
+
+float bezier1D(float t, float p0, float p1, float p2, float p3) {
+  float u = 1.0 - t;
+  return u*u*u*p0 + 3.0*u*u*t*p1 + 3.0*u*t*t*p2 + t*t*t*p3;
+}
+
+float getCenterY(float x) {
+  float xp0 = -0.05, xp1 = 0.30, xp2 = 0.70, xp3 = 1.05;
+  float yp0 = 0.37, yp1 = 0.73, yp2 = 0.58, yp3 = 0.51;
+  float t = x;
+  for (int i = 0; i < 6; i++) {
+    float ex = bezier1D(t, xp0, xp1, xp2, xp3);
+    float dex = 3.0*(1.0-t)*(1.0-t)*(xp1-xp0) + 6.0*(1.0-t)*t*(xp2-xp1) + 3.0*t*t*(xp3-xp2);
+    t = t - (ex - x) / max(dex, 0.001);
+    t = clamp(t, 0.0, 1.0);
+  }
+  return bezier1D(t, yp0, yp1, yp2, yp3);
+}
+
+float getHalfWidth(float x) {
+  return mix(0.23, 0.06, pow(x, 0.82));
+}
+
+vec3 warmColor(float v) {
+  vec3 top    = vec3(0.89, 0.33, 0.14);
+  vec3 mid    = vec3(0.94, 0.76, 0.20);
+  vec3 bottom = vec3(0.73, 0.14, 0.37);
+  if (v < 0.5) return mix(top, mid, v * 2.0);
+  return mix(mid, bottom, (v - 0.5) * 2.0);
+}
+
+vec3 coolColor(float v) {
+  vec3 top    = vec3(0.16, 0.65, 0.59);
+  vec3 mid    = vec3(0.20, 0.57, 0.37);
+  vec3 bottom = vec3(0.61, 0.76, 0.22);
+  if (v < 0.5) return mix(top, mid, v * 2.0);
+  return mix(mid, bottom, (v - 0.5) * 2.0);
+}
+
+void main() {
+  vec2 uv = vUV;
+  float aspect = uResolution.x / uResolution.y;
+  float x = uv.x;
+  float y = uv.y;
+
+  float noiseScale = 1.8;
+  float centerNoise = snoise(vec2(x * noiseScale + 0.3, uTime * 0.06)) * 0.02
+                    + snoise(vec2(x * noiseScale * 2.5 + 5.0, uTime * 0.09 + 3.0)) * 0.01;
+  float centerY = getCenterY(x) + centerNoise;
+
+  float hw = getHalfWidth(x);
+  // Slightly more width noise for organic feel
+  float widthNoise = snoise(vec2(x * 3.0 + 10.0, uTime * 0.07 + 7.0)) * 0.008;
+  hw += widthNoise;
+  hw = max(hw, 0.01);
+
+  float dist = (y - centerY) / hw;
+
+  float sigma = 0.78;
+  float gauss = exp(-(dist * dist) / (2.0 * sigma * sigma));
+  float outerSigma = 1.1;
+  float outerGauss = exp(-(dist * dist) / (2.0 * outerSigma * outerSigma));
+  float alpha = mix(outerGauss, gauss, 0.5);
+
+  float alphaNoise = snoise(vec2(x * 5.0 + uTime * 0.05, y * 5.0 * aspect + uTime * 0.03)) * 0.06;
+  alpha = clamp(alpha + alphaNoise * alpha, 0.0, 1.0);
+  alpha *= smoothstep(0.0, 0.05, alpha);
+
+  alpha *= mix(1.0, 0.42, smoothstep(0.28, 0.88, x));
+
+  float vPos = clamp(dist * 0.5 + 0.5, 0.0, 1.0);
+  float vNoise = snoise(vec2(x * 3.0 + uTime * 0.04 + 20.0, y * 4.0 * aspect)) * 0.10;
+  vPos = clamp(vPos + vNoise, 0.0, 1.0);
+
+  vec3 warm = warmColor(vPos);
+  vec3 cool = coolColor(vPos);
+
+  // Tighter transition zone matching reference
+  float warmCoolMix = smoothstep(0.32, 0.62, x);
+  float transNoise = snoise(vec2(x * 2.0 + 50.0, y * 3.0 * aspect + uTime * 0.05)) * 0.06;
+  warmCoolMix = clamp(warmCoolMix + transNoise, 0.0, 1.0);
+
+  vec3 color = mix(warm, cool, warmCoolMix);
+
+  // Dark transition: slightly wider and stronger
+  float transitionDark = exp(-((x - 0.47) * (x - 0.47)) / 0.010) * 0.22;
+  vec3 darkIndigo = vec3(0.14, 0.10, 0.22);
+  color = mix(color, darkIndigo, transitionDark * gauss);
+
+  // Slightly higher saturation boost
+  float lum = dot(color, vec3(0.299, 0.587, 0.114));
+  color = mix(vec3(lum), color, 1.15);
+
+  vec3 finalColor = mix(vec3(1.0), color, alpha * 0.92);
+  gl_FragColor = vec4(finalColor, 1.0);
+}
+  `;
+
+  function createShader(type, source) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, source);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.error(gl.getShaderInfoLog(s));
+      gl.deleteShader(s);
+      return null;
+    }
+    return s;
+  }
+
+  const vs = createShader(gl.VERTEX_SHADER, vsSource);
+  const fs = createShader(gl.FRAGMENT_SHADER, fsSource);
+  const prog = gl.createProgram();
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(prog));
+    return;
+  }
+  gl.useProgram(prog);
+
+  const aPos = gl.getAttribLocation(prog, 'aPos');
+  const uTime = gl.getUniformLocation(prog, 'uTime');
+  const uRes = gl.getUniformLocation(prog, 'uResolution');
+
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  let startTime = performance.now();
+
+  function draw() {
+    const t = (performance.now() - startTime) / 1000.0;
+    gl.uniform1f(uTime, t);
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    requestAnimationFrame(draw);
+  }
+
+  draw();
+})();
+</script>
+</body>
+</html>

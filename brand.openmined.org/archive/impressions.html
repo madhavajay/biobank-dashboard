@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenMined — Impressions</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #ffffff; }
+  .split {
+    display: flex;
+    width: 100vw;
+    height: 100vh;
+  }
+  .pane {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+  }
+  .pane canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  .divider {
+    width: 1px;
+    background: #e8e8ec;
+  }
+</style>
+</head>
+<body>
+<div class="split">
+  <div class="pane" id="paneStream">
+    <canvas id="cStream"></canvas>
+  </div>
+  <div class="divider"></div>
+  <div class="pane" id="paneDiamond">
+    <canvas id="cDiamond"></canvas>
+  </div>
+</div>
+<script>
+(() => {
+  // --- Shared noise source ---
+  const noiseGLSL = `
+    vec3 mod289(vec3 x){ return x - floor(x*(1.0/289.0))*289.0; }
+    vec2 mod289(vec2 x){ return x - floor(x*(1.0/289.0))*289.0; }
+    vec3 permute(vec3 x){ return mod289(((x*34.0)+10.0)*x); }
+    float snoise(vec2 v){
+      const vec4 C = vec4(0.211324865405187, 0.366025403784439, -0.577350269189626, 0.024390243902439);
+      vec2 i = floor(v + dot(v, C.yy));
+      vec2 x0 = v - i + dot(i, C.xx);
+      vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+      vec4 x12 = x0.xyxy + C.xxzz; x12.xy -= i1;
+      i = mod289(i);
+      vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0)) + i.x + vec3(0.0, i1.x, 1.0));
+      vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
+      m = m*m; m = m*m;
+      vec3 x = 2.0*fract(p*C.www) - 1.0;
+      vec3 h = abs(x) - 0.5;
+      vec3 ox = floor(x + 0.5);
+      vec3 a0 = x - ox;
+      m *= 1.79284291400159 - 0.85373472095314*(a0*a0+h*h);
+      vec3 g; g.x = a0.x*x0.x + h.x*x0.y; g.yz = a0.yz*x12.xz + h.yz*x12.yw;
+      return 130.0 * dot(m, g);
+    }
+  `;
+
+  const palettesGLSL = `
+    vec3 warmColor(float v) {
+      vec3 top    = vec3(0.80, 0.16, 0.48);
+      vec3 mid    = vec3(0.96, 0.67, 0.12);
+      vec3 bottom = vec3(0.92, 0.25, 0.10);
+      if (v < 0.5) return mix(top, mid, v * 2.0);
+      return mix(mid, bottom, (v - 0.5) * 2.0);
+    }
+    vec3 coolColor(float v) {
+      vec3 top    = vec3(0.55, 0.78, 0.16);
+      vec3 mid    = vec3(0.06, 0.60, 0.40);
+      vec3 bottom = vec3(0.0, 0.63, 0.63);
+      if (v < 0.5) return mix(top, mid, v * 2.0);
+      return mix(mid, bottom, (v - 0.5) * 2.0);
+    }
+  `;
+
+  const vsSource = `
+    attribute vec2 aPos;
+    varying vec2 vUV;
+    void main() {
+      vUV = aPos * 0.5 + 0.5;
+      gl_Position = vec4(aPos, 0.0, 1.0);
+    }
+  `;
+
+  // --- Stream fragment shader ---
+  const fsStream = `
+    precision highp float;
+    varying vec2 vUV;
+    uniform float uTime;
+    uniform vec2 uResolution;
+    uniform vec2 uMouse;
+    ${noiseGLSL}
+
+    float bezier1D(float t, float p0, float p1, float p2, float p3) {
+      float u = 1.0 - t;
+      return u*u*u*p0 + 3.0*u*u*t*p1 + 3.0*u*t*t*p2 + t*t*t*p3;
+    }
+    float getCenterY(float x) {
+      float t = x;
+      for (int i = 0; i < 6; i++) {
+        float ex = bezier1D(t, -0.05, 0.30, 0.70, 1.05);
+        float dex = 3.0*(1.0-t)*(1.0-t)*(0.30-(-0.05)) + 6.0*(1.0-t)*t*(0.70-0.30) + 3.0*t*t*(1.05-0.70);
+        t = t - (ex - x) / max(dex, 0.001);
+        t = clamp(t, 0.0, 1.0);
+      }
+      return bezier1D(t, 0.25, 0.72, 0.22, 0.32);
+    }
+    float getHalfWidth(float x) {
+      float center = 0.45;
+      float squeeze = 1.0 - 0.55 * exp(-((x - center)*(x - center)) / 0.035);
+      float taper = 1.0 - 0.25 * x;
+      return 0.10 * squeeze * taper;
+    }
+    ${palettesGLSL}
+
+    void main() {
+      vec2 uv = vUV;
+      float aspect = uResolution.x / uResolution.y;
+      float x = uv.x;
+      float y = uv.y;
+      float flow = uTime * 0.06;
+
+      float noiseScale = 1.8;
+      float centerNoise = snoise(vec2(x * noiseScale + 0.3 - flow, uTime * 0.10)) * 0.028
+                        + snoise(vec2(x * noiseScale * 2.5 + 5.0 - flow * 1.5, uTime * 0.14 + 3.0)) * 0.014
+                        + snoise(vec2(x * 5.0 - uTime * 0.18 - flow * 2.0, 12.0)) * 0.005;
+
+      float mdx = x - uMouse.x;
+      float attract = 0.04 * exp(-(mdx * mdx) / 0.03);
+      float bendY = (uMouse.y - getCenterY(x)) * attract;
+
+      float mDistSq = (x - uMouse.x) * (x - uMouse.x) + (y - uMouse.y) * (y - uMouse.y);
+      float ripple = 0.010 * exp(-mDistSq / 0.020) * snoise(vec2(x * 10.0 - uTime * 0.4, y * 10.0));
+
+      float ambientRipple = snoise(vec2(x * 8.0 - uTime * 0.3, y * 6.0 + uTime * 0.15)) * 0.005
+                          + snoise(vec2(x * 12.0 + uTime * 0.2, y * 10.0 - uTime * 0.1)) * 0.003;
+
+      float centerY = getCenterY(x) + centerNoise + bendY + ripple + ambientRipple;
+
+      float hw = getHalfWidth(x);
+      float widthNoise = snoise(vec2(x * 3.0 + 10.0 - flow, uTime * 0.12 + 7.0)) * 0.010
+                       + snoise(vec2(x * 6.0 - uTime * 0.08 - flow * 1.5, 20.0)) * 0.004;
+      hw += widthNoise;
+      hw = max(hw, 0.01);
+
+      float dist = (y - centerY) / hw;
+      float sigma = 0.7;
+      float gauss = exp(-(dist * dist) / (2.0 * sigma * sigma));
+      float outerSigma = 1.0;
+      float outerGauss = exp(-(dist * dist) / (2.0 * outerSigma * outerSigma));
+      float alpha = mix(outerGauss, gauss, 0.5);
+
+      float alphaNoise = snoise(vec2(x * 5.0 - flow * 1.5, y * 5.0 * aspect + uTime * 0.03)) * 0.08;
+      alpha = clamp(alpha + alphaNoise * alpha, 0.0, 1.0);
+      alpha = pow(alpha, 0.55);
+      alpha *= smoothstep(0.0, 0.03, alpha);
+
+      float vPos = clamp(dist * 0.5 + 0.5, 0.0, 1.0);
+      float vNoise = snoise(vec2(x * 3.0 - flow * 2.0 + 20.0, y * 4.0 * aspect - uTime * 0.04)) * 0.13;
+      vPos = clamp(vPos + vNoise, 0.0, 1.0);
+
+      vec3 warm = warmColor(vPos);
+      vec3 cool = coolColor(vPos);
+      float warmCoolMix = smoothstep(0.38, 0.55, x);
+      float transNoise = snoise(vec2(x * 2.0 + 50.0, y * 3.0 * aspect + uTime * 0.05)) * 0.08;
+      warmCoolMix = clamp(warmCoolMix + transNoise, 0.0, 1.0);
+      vec3 color = mix(warm, cool, warmCoolMix);
+
+      float lum = dot(color, vec3(0.299, 0.587, 0.114));
+      color = mix(vec3(lum), color, 1.0);
+
+      vec3 final = mix(vec3(1.0), color, alpha * 0.96);
+      gl_FragColor = vec4(final, 1.0);
+    }
+  `;
+
+  // --- Diamond fragment shader ---
+  const fsDiamond = `
+    precision highp float;
+    varying vec2 vUV;
+    uniform float uTime;
+    uniform vec2 uResolution;
+    uniform vec2 uMouse;
+    ${noiseGLSL}
+    ${palettesGLSL}
+
+    // Euclidean rhombus SDF (Inigo Quilez)
+    float ndot(vec2 a, vec2 b) { return a.x*b.x - a.y*b.y; }
+    float sdRhombus(vec2 p, vec2 b) {
+      vec2 q = abs(p);
+      float h = clamp((-2.0*ndot(q,b)+ndot(b,b))/dot(b,b), -1.0, 1.0);
+      float d = length(q - 0.5*b*vec2(1.0-h, 1.0+h));
+      return d * sign(q.x*b.y + q.y*b.x - b.x*b.y);
+    }
+
+    void main() {
+      vec2 uv = vUV;
+      float aspect = uResolution.x / uResolution.y;
+      float flow = uTime * 0.08;
+
+      // Diamond center
+      vec2 dCenter = vec2(0.5, 0.5);
+      float dSize = 0.22;
+      float cornerRound = 0.025;
+
+      // Mouse in aspect-corrected space
+      vec2 mouse = vec2((uMouse.x - dCenter.x) * aspect, uMouse.y - dCenter.y);
+
+      // Magnetic attraction — diamond center shifts toward mouse
+      vec2 attract = mouse * 0.04;
+
+      // Aspect-corrected position with attraction offset
+      vec2 p = vec2((uv.x - dCenter.x) * aspect, uv.y - dCenter.y) - attract;
+
+      // Ripple — turbulence near cursor
+      float mDistSq = (uv.x - uMouse.x) * (uv.x - uMouse.x) + (uv.y - uMouse.y) * (uv.y - uMouse.y);
+      float ripple = 0.010 * exp(-mDistSq / 0.020) * snoise(vec2(uv.x * 10.0 - uTime * 0.4, uv.y * 10.0));
+
+      // Ambient ripple — subtle turbulence everywhere
+      float ambientRipple = snoise(vec2(uv.x * 8.0 - uTime * 0.3, uv.y * 6.0 + uTime * 0.15)) * 0.005
+                          + snoise(vec2(uv.x * 12.0 + uTime * 0.2, uv.y * 10.0 - uTime * 0.1)) * 0.003;
+
+      // Proper Euclidean SDF — falloff is naturally rounded at tips
+      float baseDist = sdRhombus(p, vec2(dSize, dSize));
+      float shapeDist = baseDist - cornerRound;
+
+      // More active edge noise + ripple effects
+      float edgeNoise = snoise(vec2(uv.x * 3.0 - flow, uv.y * 3.0 + uTime * 0.06)) * 0.018
+                      + snoise(vec2(uv.x * 6.0 + flow * 0.8, uv.y * 6.0 - uTime * 0.05)) * 0.010
+                      + snoise(vec2(uv.x * 12.0 - uTime * 0.15 + 3.0, uv.y * 12.0 + uTime * 0.12)) * 0.005;
+
+      float dist = shapeDist + edgeNoise + ripple + ambientRipple;
+
+      // Gaussian soft falloff
+      float sigma = 0.04;
+      float outerSigma = 0.065;
+      float gauss = exp(-(max(dist, 0.0) * max(dist, 0.0)) / (2.0 * sigma * sigma));
+      float outerGauss = exp(-(max(dist, 0.0) * max(dist, 0.0)) / (2.0 * outerSigma * outerSigma));
+      float alpha = dist < 0.0 ? 1.0 : mix(outerGauss, gauss, 0.5);
+
+      // More active alpha noise
+      float alphaNoise = snoise(vec2(uv.x * 4.0 - flow * 2.0, uv.y * 4.0 + uTime * 0.05)) * 0.12
+                       + snoise(vec2(uv.x * 8.0 + uTime * 0.08, uv.y * 8.0 - flow)) * 0.06;
+      alpha = clamp(alpha + alphaNoise * alpha, 0.0, 1.0);
+      alpha = pow(alpha, 0.55);
+      alpha *= smoothstep(0.0, 0.03, alpha);
+
+      // Color: diagonal gradient + more active noise
+      float vPos = clamp((-p.x + p.y) / (dSize * 2.0) + 0.5, 0.0, 1.0);
+      // Larger, faster color noise
+      float vNoise = snoise(vec2(uv.x * 2.5 - flow * 2.5 + 20.0, uv.y * 3.0 - uTime * 0.06)) * 0.18
+                   + snoise(vec2(uv.x * 5.0 + uTime * 0.08 + 8.0, uv.y * 5.0 + flow)) * 0.08;
+      vPos = clamp(vPos + vNoise, 0.0, 1.0);
+
+      vec3 warm = warmColor(vPos);
+      vec3 cool = coolColor(vPos);
+
+      float warmCoolMix = smoothstep(0.35, 0.60, uv.x);
+      float transNoise = snoise(vec2(uv.x * 2.0 + 50.0, uv.y * 3.0 + uTime * 0.06)) * 0.10;
+      warmCoolMix = clamp(warmCoolMix + transNoise, 0.0, 1.0);
+
+      vec3 color = mix(warm, cool, warmCoolMix);
+      float lum = dot(color, vec3(0.299, 0.587, 0.114));
+      color = mix(vec3(lum), color, 1.0);
+
+      vec3 final = mix(vec3(1.0), color, alpha * 0.96);
+      gl_FragColor = vec4(final, 1.0);
+    }
+  `;
+
+  // --- WebGL setup helper ---
+  function initPane(canvasId, fragSource) {
+    const cvs = document.getElementById(canvasId);
+    const g = cvs.getContext('webgl', { antialias: true, alpha: false });
+    if (!g) return null;
+
+    function createShader(type, source) {
+      const s = g.createShader(type);
+      g.shaderSource(s, source);
+      g.compileShader(s);
+      if (!g.getShaderParameter(s, g.COMPILE_STATUS)) {
+        console.error(canvasId, g.getShaderInfoLog(s));
+        g.deleteShader(s);
+        return null;
+      }
+      return s;
+    }
+
+    const vs = createShader(g.VERTEX_SHADER, vsSource);
+    const fs = createShader(g.FRAGMENT_SHADER, fragSource);
+    const prog = g.createProgram();
+    g.attachShader(prog, vs);
+    g.attachShader(prog, fs);
+    g.linkProgram(prog);
+    if (!g.getProgramParameter(prog, g.LINK_STATUS)) {
+      console.error(canvasId, g.getProgramInfoLog(prog));
+      return null;
+    }
+    g.useProgram(prog);
+
+    const aPos = g.getAttribLocation(prog, 'aPos');
+    const buf = g.createBuffer();
+    g.bindBuffer(g.ARRAY_BUFFER, buf);
+    g.bufferData(g.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), g.STATIC_DRAW);
+    g.enableVertexAttribArray(aPos);
+    g.vertexAttribPointer(aPos, 2, g.FLOAT, false, 0, 0);
+
+    return {
+      gl: g,
+      canvas: cvs,
+      uTime: g.getUniformLocation(prog, 'uTime'),
+      uRes: g.getUniformLocation(prog, 'uResolution'),
+      uMouse: g.getUniformLocation(prog, 'uMouse'),
+    };
+  }
+
+  const stream = initPane('cStream', fsStream);
+  const diamond = initPane('cDiamond', fsDiamond);
+
+  function resizePane(pane) {
+    if (!pane) return;
+    const rect = pane.canvas.parentElement.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    pane.canvas.width = rect.width * dpr;
+    pane.canvas.height = rect.height * dpr;
+    pane.canvas.style.width = rect.width + 'px';
+    pane.canvas.style.height = rect.height + 'px';
+    pane.gl.viewport(0, 0, pane.canvas.width, pane.canvas.height);
+  }
+
+  function resizeAll() {
+    resizePane(stream);
+    resizePane(diamond);
+  }
+  window.addEventListener('resize', resizeAll);
+  // Defer initial resize to after layout
+  requestAnimationFrame(resizeAll);
+
+  // Mouse tracking per pane
+  let streamMouse = { mx: 0.5, my: 0.5, smx: 0.5, smy: 0.5 };
+  let diamondMouse = { mx: 0.5, my: 0.5, smx: 0.5, smy: 0.5 };
+
+  document.addEventListener('mousemove', function(e) {
+    // Stream pane
+    if (stream) {
+      const rect = stream.canvas.parentElement.getBoundingClientRect();
+      streamMouse.mx = (e.clientX - rect.left) / rect.width;
+      streamMouse.my = 1.0 - (e.clientY - rect.top) / rect.height;
+    }
+    // Diamond pane
+    if (diamond) {
+      const rect = diamond.canvas.parentElement.getBoundingClientRect();
+      diamondMouse.mx = (e.clientX - rect.left) / rect.width;
+      diamondMouse.my = 1.0 - (e.clientY - rect.top) / rect.height;
+    }
+  });
+
+  let startTime = performance.now();
+
+  function draw() {
+    const t = (performance.now() - startTime) / 1000.0;
+
+    // Stream
+    if (stream) {
+      streamMouse.smx += (streamMouse.mx - streamMouse.smx) * 0.08;
+      streamMouse.smy += (streamMouse.my - streamMouse.smy) * 0.08;
+      stream.gl.uniform1f(stream.uTime, t);
+      stream.gl.uniform2f(stream.uRes, stream.canvas.width, stream.canvas.height);
+      stream.gl.uniform2f(stream.uMouse, streamMouse.smx, streamMouse.smy);
+      stream.gl.drawArrays(stream.gl.TRIANGLE_STRIP, 0, 4);
+    }
+
+    // Diamond
+    if (diamond) {
+      diamondMouse.smx += (diamondMouse.mx - diamondMouse.smx) * 0.08;
+      diamondMouse.smy += (diamondMouse.my - diamondMouse.smy) * 0.08;
+      diamond.gl.uniform1f(diamond.uTime, t);
+      diamond.gl.uniform2f(diamond.uRes, diamond.canvas.width, diamond.canvas.height);
+      diamond.gl.uniform2f(diamond.uMouse, diamondMouse.smx, diamondMouse.smy);
+      diamond.gl.drawArrays(diamond.gl.TRIANGLE_STRIP, 0, 4);
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  draw();
+})();
+</script>
+</body>
+</html>

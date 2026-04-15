@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stream — Controls</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sometype+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --panel-bg: #0c0a14;
+    --panel-surface: #14121e;
+    --panel-border: #1c1a28;
+    --panel-border-hover: #2e2b3e;
+    --text-primary: #c4c2ce;
+    --text-secondary: #7a7888;
+    --text-muted: #4a485a;
+    --text-dim: #332f44;
+    --accent-warm: #d4a054;
+    --accent-warm-dim: rgba(212,160,84,0.15);
+    --thumb-rest: #58566a;
+    --thumb-hover: #b8b6c0;
+    --radius-sm: 4px;
+    --radius-md: 6px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #fff;
+    font-family: "Sometype Mono", monospace;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+  .wrap { position: absolute; top: 0; left: 0; right: 340px; bottom: 0; }
+
+  .panel {
+    position: absolute; top: 0; right: 0; bottom: 0; width: 340px;
+    background: var(--panel-bg); color: var(--text-primary);
+    overflow-y: auto; overflow-x: hidden;
+    font-size: 11px; line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+    border-left: 1px solid var(--panel-border);
+  }
+  .panel::-webkit-scrollbar { width: 3px; }
+  .panel::-webkit-scrollbar-track { background: transparent; }
+  .panel::-webkit-scrollbar-thumb { background: var(--panel-border); border-radius: 2px; }
+  .panel::-webkit-scrollbar-thumb:hover { background: var(--panel-border-hover); }
+
+  .panel-header {
+    padding: 20px 18px 16px;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  .panel-header h1 {
+    font-family: "DM Sans", sans-serif;
+    font-weight: 300; font-size: 15px; letter-spacing: 0.02em;
+    color: var(--text-primary);
+  }
+  .panel-header span {
+    font-size: 10px; color: var(--text-muted);
+    letter-spacing: 0.06em; text-transform: uppercase;
+  }
+
+  .sec {
+    border-bottom: 1px solid var(--panel-border);
+    padding: 14px 18px;
+  }
+  .sec-title {
+    font-family: "DM Sans", sans-serif;
+    font-weight: 500; font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.1em; color: var(--text-muted);
+    margin-bottom: 12px; cursor: pointer; user-select: none;
+    display: flex; align-items: center; gap: 6px;
+    transition: color 0.2s;
+  }
+  .sec-title::before {
+    content: ''; display: inline-block;
+    width: 3px; height: 10px; border-radius: 1px;
+    background: var(--panel-border-hover);
+    transition: background 0.2s;
+  }
+  .sec-title:hover { color: var(--text-secondary); }
+  .sec-title:hover::before { background: var(--accent-warm); }
+  .sec.collapsed .sec-body {
+    display: none;
+  }
+  .sec.collapsed .sec-title::after {
+    content: "+"; margin-left: auto; font-family: "Sometype Mono", monospace;
+    font-size: 11px; color: var(--text-dim);
+  }
+  .sec:not(.collapsed) .sec-title::after {
+    content: "\2212"; margin-left: auto; font-family: "Sometype Mono", monospace;
+    font-size: 11px; color: var(--text-dim);
+  }
+
+  .ctrl {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 7px;
+  }
+  .ctrl label {
+    flex: 0 0 84px; font-size: 10px; color: var(--text-secondary);
+  }
+  .ctrl input[type="range"] {
+    flex: 1; height: 2px; -webkit-appearance: none; appearance: none;
+    background: var(--panel-border); border-radius: 1px; outline: none;
+    transition: background 0.2s;
+  }
+  .ctrl input[type="range"]:hover { background: var(--panel-border-hover); }
+  .ctrl input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 11px; height: 11px;
+    border-radius: 50%; background: var(--thumb-rest); cursor: pointer;
+    transition: background 0.15s, transform 0.15s, box-shadow 0.15s;
+    box-shadow: 0 0 0 2px var(--panel-bg);
+  }
+  .ctrl input[type="range"]::-webkit-slider-thumb:hover {
+    background: var(--thumb-hover); transform: scale(1.2);
+    box-shadow: 0 0 0 2px var(--panel-bg), 0 0 8px rgba(212,160,84,0.2);
+  }
+  .ctrl input[type="range"]:active::-webkit-slider-thumb {
+    background: var(--accent-warm);
+  }
+  .ctrl .val {
+    flex: 0 0 36px; text-align: right; font-size: 10px;
+    color: var(--text-muted); font-variant-numeric: tabular-nums;
+  }
+
+  .grad-preview {
+    height: 24px; border-radius: var(--radius-md); margin-bottom: 14px;
+    border: 1px solid var(--panel-border);
+    box-shadow: 0 2px 12px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.03);
+    position: relative; overflow: hidden;
+  }
+  .grad-preview::after {
+    content: ''; position: absolute; inset: 0; border-radius: inherit;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.2);
+    pointer-events: none;
+  }
+
+  .color-item {
+    display: flex; align-items: center; gap: 6px; margin-bottom: 4px;
+    padding: 4px 6px; border-radius: var(--radius-sm);
+    transition: background 0.15s, opacity 0.15s, transform 0.15s;
+    cursor: default;
+  }
+  .color-item:hover { background: var(--panel-surface); }
+  .color-item.dragging { opacity: 0.3; }
+  .color-item.drag-over {
+    box-shadow: 0 -2px 0 0 var(--accent-warm);
+  }
+  .color-item .drag-handle {
+    flex: 0 0 14px; font-size: 11px; color: var(--text-dim); text-align: center;
+    cursor: grab; user-select: none; line-height: 1;
+    transition: color 0.15s;
+  }
+  .color-item .drag-handle:hover { color: var(--text-secondary); }
+  .color-item .drag-handle:active { cursor: grabbing; }
+  .color-item input[type="color"] {
+    width: 28px; height: 22px; border: 1px solid var(--panel-border);
+    border-radius: var(--radius-sm); background: none; cursor: pointer;
+    padding: 0; flex-shrink: 0; transition: border-color 0.15s;
+  }
+  .color-item input[type="color"]:hover { border-color: var(--panel-border-hover); }
+  .color-item input[type="color"]::-webkit-color-swatch-wrapper { padding: 1px; }
+  .color-item input[type="color"]::-webkit-color-swatch { border: none; border-radius: 3px; }
+  .color-item .hex {
+    width: 60px; font-family: "Sometype Mono", monospace; font-size: 10px;
+    color: var(--text-primary); background: var(--panel-bg);
+    border: 1px solid var(--panel-border); border-radius: var(--radius-sm);
+    padding: 3px 6px; outline: none; transition: border-color 0.15s;
+  }
+  .color-item .hex:focus { border-color: var(--accent-warm); }
+  .color-item input[type="range"] {
+    flex: 1; height: 2px; -webkit-appearance: none; appearance: none;
+    background: var(--panel-border); border-radius: 1px; outline: none;
+  }
+  .color-item input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 8px; height: 8px;
+    border-radius: 50%; background: var(--thumb-rest); cursor: pointer;
+    transition: background 0.15s, transform 0.15s;
+  }
+  .color-item input[type="range"]::-webkit-slider-thumb:hover {
+    background: var(--thumb-hover); transform: scale(1.2);
+  }
+  .color-item .wval {
+    flex: 0 0 24px; text-align: right; font-size: 9px; color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .color-item .x-btn {
+    width: 16px; height: 16px; background: none; border: none;
+    color: var(--text-dim); font-size: 13px; cursor: pointer; padding: 0;
+    line-height: 1; flex-shrink: 0; transition: color 0.15s;
+  }
+  .color-item .x-btn:hover { color: #d44; }
+
+  .btn {
+    padding: 6px 12px; font-family: "Sometype Mono", monospace; font-size: 10px;
+    background: var(--panel-surface); color: var(--text-secondary);
+    border: 1px solid var(--panel-border); border-radius: var(--radius-sm);
+    cursor: pointer; text-align: center;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .btn:hover {
+    background: var(--panel-border); color: var(--text-primary);
+    border-color: var(--panel-border-hover);
+  }
+  .btn-row { display: flex; gap: 6px; margin-top: 10px; }
+  .btn-row .btn { flex: 1; }
+
+  .pills { display: flex; gap: 3px; flex: 1; }
+  .pill {
+    flex: 1; padding: 4px 6px; font-family: "Sometype Mono", monospace; font-size: 9px;
+    background: var(--panel-surface); color: var(--text-muted);
+    border: 1px solid var(--panel-border); border-radius: var(--radius-sm);
+    cursor: pointer; text-align: center;
+    transition: all 0.15s;
+  }
+  .pill:hover { color: var(--text-secondary); border-color: var(--panel-border-hover); }
+  .pill.active {
+    background: var(--accent-warm-dim); color: var(--accent-warm);
+    border-color: rgba(212,160,84,0.3);
+  }
+</style>
+</head>
+<body>
+<div class="wrap"><canvas id="c"></canvas></div>
+<div class="panel" id="panel">
+  <div class="panel-header">
+    <span>OpenMined</span>
+    <h1>Stream Controls</h1>
+  </div>
+</div>
+<script>
+(() => {
+  const state = {
+    colors: [
+      { hex: '#cc2a7a', weight: 1 },
+      { hex: '#f5ab1f', weight: 1 },
+      { hex: '#eb401a', weight: 1 },
+      { hex: '#8cc729', weight: 1 },
+      { hex: '#0f9966', weight: 1 },
+      { hex: '#00a1a1', weight: 1 },
+    ],
+    clusters: 1, wrap: false,
+    alongMix: 1.0, acrossMix: 0.25,
+    rotSpeed: 0.0, rotAxis: 'along',
+    alphaPow: 0.55, opacity: 0.96,
+    softness: 0.7, outerSoft: 1.0,
+    saturation: 1.0, flow: 0.06,
+    colorNoise: 0.13,
+    width: 0.10, curveY1: 0.72, curveY2: 0.22,
+    turbulence: 0.5,
+    attract: 0.04, ripple: 0.01,
+  };
+
+  function hexToGL(hex) {
+    return [parseInt(hex.slice(1,3),16)/255, parseInt(hex.slice(3,5),16)/255, parseInt(hex.slice(5,7),16)/255];
+  }
+
+  function prepareGradient() {
+    const cols = state.colors;
+    const n = cols.length;
+    if (n <= 1) return { colors: [hexToGL(cols[0]?.hex || '#fff')], stops: [0.5], count: 1 };
+    const total = cols.reduce((s,c) => s + c.weight, 0) || 1;
+    const outC = [], outS = [];
+    if (state.wrap) {
+      let cum = 0;
+      for (let i = 0; i < n && i < 7; i++) {
+        outC.push(hexToGL(cols[i].hex)); outS.push(cum / total); cum += cols[i].weight;
+      }
+      outC.push(hexToGL(cols[0].hex)); outS.push(1.0);
+    } else {
+      const raw = []; let cum = 0;
+      for (let i = 0; i < n && i < 8; i++) { raw.push(cum + cols[i].weight / 2); cum += cols[i].weight; }
+      const first = raw[0], last = raw[raw.length - 1], range = last - first || 1;
+      for (let i = 0; i < raw.length; i++) {
+        outC.push(hexToGL(cols[i].hex)); outS.push((raw[i] - first) / range);
+      }
+    }
+    return { colors: outC, stops: outS, count: outC.length };
+  }
+
+  // ---- UI ----
+  const panel = document.getElementById('panel');
+  let previewEl;
+
+  function clearEl(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+
+  function updatePreview() {
+    if (!previewEl) return;
+    const g = prepareGradient();
+    const stops = g.colors.map((c, i) => {
+      const hex = '#' + c.map(v => Math.round(v*255).toString(16).padStart(2,'0')).join('');
+      return hex + ' ' + (g.stops[i]*100).toFixed(1) + '%';
+    });
+    previewEl.style.background = 'linear-gradient(to right, ' + stops.join(', ') + ')';
+  }
+
+  function buildUI() {
+    // Preserve the panel-header, remove everything else
+    var header = panel.querySelector('.panel-header');
+    clearEl(panel);
+    if (header) panel.appendChild(header);
+    // Colors
+    const colSec = mkSec('Colors');
+    previewEl = document.createElement('div');
+    previewEl.className = 'grad-preview';
+    colSec.body.appendChild(previewEl);
+    var dragSrcIdx = -1;
+    state.colors.forEach(function(c, i) {
+      var row = document.createElement('div'); row.className = 'color-item';
+      row.draggable = false;
+      row.dataset.idx = String(i);
+
+      var handle = document.createElement('span'); handle.className = 'drag-handle'; handle.textContent = '\u2847'; row.appendChild(handle);
+      handle.addEventListener('mousedown', function() { row.draggable = true; });
+      handle.addEventListener('mouseup', function() { row.draggable = false; });
+      var picker = document.createElement('input'); picker.type = 'color'; picker.value = c.hex; row.appendChild(picker);
+      var hex = document.createElement('input'); hex.className = 'hex'; hex.value = c.hex; hex.maxLength = 7; row.appendChild(hex);
+      var wSlider = document.createElement('input'); wSlider.type = 'range'; wSlider.min = '0.1'; wSlider.max = '3'; wSlider.step = '0.05'; wSlider.value = String(c.weight); row.appendChild(wSlider);
+      var wVal = document.createElement('span'); wVal.className = 'wval'; wVal.textContent = c.weight.toFixed(1); row.appendChild(wVal);
+      picker.addEventListener('input', function() { c.hex = picker.value; hex.value = picker.value; updatePreview(); });
+      hex.addEventListener('input', function() {
+        var v = hex.value.trim(); if (v[0] !== '#') v = '#' + v;
+        if (/^#[0-9a-fA-F]{6}$/.test(v)) { c.hex = v; picker.value = v; updatePreview(); }
+      });
+      hex.addEventListener('blur', function() { hex.value = c.hex; });
+      wSlider.addEventListener('input', function() { c.weight = parseFloat(wSlider.value); wVal.textContent = c.weight.toFixed(1); updatePreview(); });
+      if (state.colors.length > 2) {
+        var xBtn = document.createElement('button'); xBtn.className = 'x-btn'; xBtn.textContent = '\u00d7'; row.appendChild(xBtn);
+        xBtn.addEventListener('click', function() { state.colors.splice(i, 1); buildUI(); });
+      }
+
+      row.addEventListener('dragstart', function(e) {
+        dragSrcIdx = i;
+        row.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', String(i));
+      });
+      row.addEventListener('dragend', function() {
+        row.draggable = false;
+        row.classList.remove('dragging');
+        colSec.body.querySelectorAll('.color-item').forEach(function(el) { el.classList.remove('drag-over'); });
+      });
+      row.addEventListener('dragover', function(e) {
+        e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+      });
+      row.addEventListener('dragenter', function(e) {
+        e.preventDefault();
+        if (parseInt(row.dataset.idx) !== dragSrcIdx) row.classList.add('drag-over');
+      });
+      row.addEventListener('dragleave', function() { row.classList.remove('drag-over'); });
+      row.addEventListener('drop', function(e) {
+        e.preventDefault();
+        row.classList.remove('drag-over');
+        var from = dragSrcIdx;
+        var to = parseInt(row.dataset.idx);
+        if (from !== to && from >= 0) {
+          var item = state.colors.splice(from, 1)[0];
+          state.colors.splice(to, 0, item);
+          buildUI();
+        }
+      });
+
+      colSec.body.appendChild(row);
+    });
+    const addRow = document.createElement('div'); addRow.className = 'btn-row';
+    const addBtn = document.createElement('button'); addBtn.className = 'btn'; addBtn.textContent = '+ Add Color';
+    if (state.colors.length >= 7) addBtn.style.opacity = '0.4';
+    addBtn.addEventListener('click', function() { if (state.colors.length < 7) { state.colors.push({ hex: '#ffffff', weight: 1 }); buildUI(); } });
+    addRow.appendChild(addBtn);
+    colSec.body.appendChild(addRow);
+
+    // Gradient
+    var gradSec = mkSec('Gradient');
+    mkSlider(gradSec.body, 'Clusters', 'clusters', 1, 8, 1, 0);
+    mkToggle(gradSec.body, 'Wrap', 'wrap', [{ label: 'Off', val: false }, { label: 'On', val: true }]);
+    mkSlider(gradSec.body, 'Along Stream', 'alongMix', 0, 1, 0.01, 2);
+    mkSlider(gradSec.body, 'Across Stream', 'acrossMix', 0, 1, 0.01, 2);
+    mkSlider(gradSec.body, 'Color Noise', 'colorNoise', 0, 0.4, 0.01, 2);
+
+    // Rotation
+    var rotSec = mkSec('Rotation');
+    mkSlider(rotSec.body, 'Speed', 'rotSpeed', -0.3, 0.3, 0.005, 3);
+    mkPills(rotSec.body, 'Axis', 'rotAxis', ['along', 'across', 'spiral']);
+
+    // Appearance
+    var appSec = mkSec('Appearance');
+    mkSlider(appSec.body, 'Alpha', 'alphaPow', 0.1, 2.0, 0.01, 2);
+    mkSlider(appSec.body, 'Opacity', 'opacity', 0.3, 1.0, 0.01, 2);
+    mkSlider(appSec.body, 'Softness', 'softness', 0.1, 2.0, 0.01, 2);
+    mkSlider(appSec.body, 'Outer Soft', 'outerSoft', 0.1, 3.0, 0.01, 2);
+    mkSlider(appSec.body, 'Saturation', 'saturation', 0, 2.0, 0.01, 2);
+    mkSlider(appSec.body, 'Flow Speed', 'flow', 0, 0.20, 0.001, 3);
+
+    // Shape
+    var shapeSec = mkSec('Shape', true);
+    mkSlider(shapeSec.body, 'Width', 'width', 0.01, 0.30, 0.005, 3);
+    mkSlider(shapeSec.body, 'Curve Dip', 'curveY1', 0, 1, 0.01, 2);
+    mkSlider(shapeSec.body, 'Curve Rise', 'curveY2', 0, 1, 0.01, 2);
+    mkSlider(shapeSec.body, 'Turbulence', 'turbulence', 0, 1, 0.01, 2);
+
+    // Interaction
+    var intSec = mkSec('Interaction', true);
+    mkSlider(intSec.body, 'Attract', 'attract', 0, 0.15, 0.001, 3);
+    mkSlider(intSec.body, 'Ripple', 'ripple', 0, 0.04, 0.001, 3);
+
+    // Buttons
+    var btnSec = document.createElement('div'); btnSec.className = 'sec';
+    var btnRow = document.createElement('div'); btnRow.className = 'btn-row';
+    var resetBtn = document.createElement('button'); resetBtn.className = 'btn'; resetBtn.textContent = 'Reset All';
+    resetBtn.addEventListener('click', function() {
+      state.colors = [
+        { hex: '#cc2a7a', weight: 1 }, { hex: '#f5ab1f', weight: 1 },
+        { hex: '#eb401a', weight: 1 }, { hex: '#8cc729', weight: 1 },
+        { hex: '#0f9966', weight: 1 }, { hex: '#00a1a1', weight: 1 },
+      ];
+      state.clusters = 1; state.wrap = false; state.alongMix = 1.0; state.acrossMix = 0.25;
+      state.rotSpeed = 0.0; state.rotAxis = 'along'; state.alphaPow = 0.55; state.opacity = 0.96;
+      state.softness = 0.7; state.outerSoft = 1.0; state.saturation = 1.0; state.flow = 0.06;
+      state.colorNoise = 0.13; state.width = 0.10; state.curveY1 = 0.72; state.curveY2 = 0.22;
+      state.turbulence = 0.5; state.attract = 0.04; state.ripple = 0.01;
+      buildUI();
+    });
+    btnRow.appendChild(resetBtn);
+    var copyBtn = document.createElement('button'); copyBtn.className = 'btn'; copyBtn.textContent = 'Copy Values';
+    copyBtn.addEventListener('click', function() {
+      navigator.clipboard.writeText(JSON.stringify(state, null, 2));
+      copyBtn.textContent = 'Copied!'; setTimeout(function() { copyBtn.textContent = 'Copy Values'; }, 1200);
+    });
+    btnRow.appendChild(copyBtn);
+    btnSec.appendChild(btnRow); panel.appendChild(btnSec);
+    updatePreview();
+  }
+
+  function mkSec(title, collapsed) {
+    var sec = document.createElement('div'); sec.className = 'sec' + (collapsed ? ' collapsed' : '');
+    var t = document.createElement('div'); t.className = 'sec-title'; t.textContent = title;
+    t.addEventListener('click', function() { sec.classList.toggle('collapsed'); });
+    sec.appendChild(t);
+    var body = document.createElement('div'); body.className = 'sec-body';
+    sec.appendChild(body); panel.appendChild(sec);
+    return { sec: sec, body: body };
+  }
+
+  function mkSlider(parent, label, key, min, max, step, decimals) {
+    var row = document.createElement('div'); row.className = 'ctrl';
+    var lbl = document.createElement('label'); lbl.textContent = label; row.appendChild(lbl);
+    var input = document.createElement('input'); input.type = 'range';
+    input.min = String(min); input.max = String(max); input.step = String(step); input.value = String(state[key]); row.appendChild(input);
+    var val = document.createElement('span'); val.className = 'val';
+    val.textContent = parseFloat(state[key]).toFixed(decimals); row.appendChild(val);
+    input.addEventListener('input', function() {
+      state[key] = parseFloat(input.value);
+      val.textContent = state[key].toFixed(decimals);
+      if (key === 'wrap' || key === 'clusters') updatePreview();
+    });
+    parent.appendChild(row);
+  }
+
+  function mkToggle(parent, label, key, options) {
+    var row = document.createElement('div'); row.className = 'ctrl';
+    var lbl = document.createElement('label'); lbl.textContent = label; row.appendChild(lbl);
+    var pills = document.createElement('div'); pills.className = 'pills';
+    options.forEach(function(opt) {
+      var p = document.createElement('div'); p.className = 'pill' + (state[key] === opt.val ? ' active' : '');
+      p.textContent = opt.label;
+      p.addEventListener('click', function() {
+        state[key] = opt.val;
+        pills.querySelectorAll('.pill').forEach(function(pp) { pp.classList.remove('active'); });
+        p.classList.add('active');
+        updatePreview();
+      });
+      pills.appendChild(p);
+    });
+    row.appendChild(pills); parent.appendChild(row);
+  }
+
+  function mkPills(parent, label, key, options) {
+    var row = document.createElement('div'); row.className = 'ctrl';
+    var lbl = document.createElement('label'); lbl.textContent = label; row.appendChild(lbl);
+    var pills = document.createElement('div'); pills.className = 'pills';
+    options.forEach(function(opt) {
+      var p = document.createElement('div'); p.className = 'pill' + (state[key] === opt ? ' active' : '');
+      p.textContent = opt.charAt(0).toUpperCase() + opt.slice(1);
+      p.addEventListener('click', function() {
+        state[key] = opt;
+        pills.querySelectorAll('.pill').forEach(function(pp) { pp.classList.remove('active'); });
+        p.classList.add('active');
+      });
+      pills.appendChild(p);
+    });
+    row.appendChild(pills); parent.appendChild(row);
+  }
+
+  buildUI();
+
+  // ---- WebGL ----
+  var canvas = document.getElementById('c');
+  var gl = canvas.getContext('webgl', { antialias: true, alpha: false });
+  if (!gl) { document.body.textContent = 'WebGL not supported'; return; }
+
+  function resize() {
+    var w = canvas.parentElement;
+    var dpr = window.devicePixelRatio || 1;
+    canvas.width = w.clientWidth * dpr; canvas.height = w.clientHeight * dpr;
+    canvas.style.width = w.clientWidth + 'px'; canvas.style.height = w.clientHeight + 'px';
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
+  window.addEventListener('resize', resize); resize();
+
+  var vsSource = [
+    'attribute vec2 aPos;',
+    'varying vec2 vUV;',
+    'void main() { vUV = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }'
+  ].join('\n');
+
+  var fsSource = [
+    'precision highp float;',
+    'varying vec2 vUV;',
+    'uniform float uTime;',
+    'uniform vec2 uRes;',
+    'uniform vec2 uMouse;',
+    'uniform vec3 uGC[8];',
+    'uniform float uGS[8];',
+    'uniform float uGN;',
+    'uniform float uClusters, uWrap;',
+    'uniform float uAlongMix, uAcrossMix;',
+    'uniform float uRotSpeed, uRotAlong, uRotAcross;',
+    'uniform float uAlphaPow, uOpacity, uSoftness, uOuterSoft;',
+    'uniform float uSaturation, uFlow, uColorNoise;',
+    'uniform float uWidth, uCurveY1, uCurveY2, uTurbulence;',
+    'uniform float uAttract, uRipple;',
+    '',
+    'vec3 mod289v3(vec3 x){ return x - floor(x*(1.0/289.0))*289.0; }',
+    'vec2 mod289v2(vec2 x){ return x - floor(x*(1.0/289.0))*289.0; }',
+    'vec3 permute(vec3 x){ return mod289v3(((x*34.0)+10.0)*x); }',
+    'float snoise(vec2 v){',
+    '  const vec4 C = vec4(0.211324865405187, 0.366025403784439, -0.577350269189626, 0.024390243902439);',
+    '  vec2 i = floor(v + dot(v, C.yy));',
+    '  vec2 x0 = v - i + dot(i, C.xx);',
+    '  vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);',
+    '  vec4 x12 = x0.xyxy + C.xxzz; x12.xy -= i1;',
+    '  i = mod289v2(i);',
+    '  vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0)) + i.x + vec3(0.0, i1.x, 1.0));',
+    '  vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);',
+    '  m = m*m; m = m*m;',
+    '  vec3 x = 2.0*fract(p*C.www) - 1.0;',
+    '  vec3 h = abs(x) - 0.5;',
+    '  vec3 ox = floor(x + 0.5);',
+    '  vec3 a0 = x - ox;',
+    '  m *= 1.79284291400159 - 0.85373472095314*(a0*a0+h*h);',
+    '  vec3 g; g.x = a0.x*x0.x + h.x*x0.y; g.yz = a0.yz*x12.xz + h.yz*x12.yw;',
+    '  return 130.0 * dot(m, g);',
+    '}',
+    '',
+    'float bezier1D(float t, float p0, float p1, float p2, float p3) {',
+    '  float u = 1.0 - t;',
+    '  return u*u*u*p0 + 3.0*u*u*t*p1 + 3.0*u*t*t*p2 + t*t*t*p3;',
+    '}',
+    '',
+    'float getCenterY(float x) {',
+    '  float t = x;',
+    '  for (int i = 0; i < 6; i++) {',
+    '    float ex = bezier1D(t, -0.05, 0.30, 0.70, 1.05);',
+    '    float dex = 3.0*(1.0-t)*(1.0-t)*0.35 + 6.0*(1.0-t)*t*0.40 + 3.0*t*t*0.35;',
+    '    t -= (ex - x) / max(dex, 0.001);',
+    '    t = clamp(t, 0.0, 1.0);',
+    '  }',
+    '  return bezier1D(t, 0.25, uCurveY1, uCurveY2, 0.32);',
+    '}',
+    '',
+    'float getHalfWidth(float x) {',
+    '  float sq = 1.0 - 0.55 * exp(-((x - 0.45)*(x - 0.45)) / 0.035);',
+    '  return uWidth * sq * (1.0 - 0.25 * x);',
+    '}',
+    '',
+    'vec3 sampleGrad(float t) {',
+    '  t = uWrap > 0.5 ? fract(t) : clamp(t, 0.0, 1.0);',
+    '  vec3 c = uGC[0];',
+    '  float pS = uGS[0];',
+    '  for (int i = 1; i < 8; i++) {',
+    '    if (float(i) >= uGN) break;',
+    '    float s = uGS[i];',
+    '    float f = clamp((t - pS) / max(s - pS, 0.001), 0.0, 1.0);',
+    '    c = mix(c, uGC[i], f * step(pS, t));',
+    '    pS = s;',
+    '  }',
+    '  return c;',
+    '}',
+    '',
+    'void main() {',
+    '  vec2 uv = vUV;',
+    '  float aspect = uRes.x / uRes.y;',
+    '  float x = uv.x, y = uv.y;',
+    '  float flow = uTime * uFlow;',
+    '  float turb = uTurbulence;',
+    '',
+    '  float centerNoise = snoise(vec2(x * 1.8 + 0.3 - flow, uTime * 0.10)) * 0.028 * turb',
+    '                    + snoise(vec2(x * 4.5 + 5.0 - flow * 1.5, uTime * 0.14 + 3.0)) * 0.014 * turb;',
+    '',
+    '  float mdx = x - uMouse.x;',
+    '  float bendY = (uMouse.y - getCenterY(x)) * uAttract * exp(-(mdx*mdx) / 0.03);',
+    '  float mDistSq = (x-uMouse.x)*(x-uMouse.x) + (y-uMouse.y)*(y-uMouse.y);',
+    '  float ripple = uRipple * exp(-mDistSq / 0.020) * snoise(vec2(x*10.0 - uTime*0.4, y*10.0));',
+    '  float ambient = snoise(vec2(x*8.0 - uTime*0.3, y*6.0 + uTime*0.15)) * 0.005 * turb',
+    '                 + snoise(vec2(x*12.0 + uTime*0.2, y*10.0 - uTime*0.1)) * 0.003 * turb;',
+    '',
+    '  float centerY = getCenterY(x) + centerNoise + bendY + ripple + ambient;',
+    '  float hw = getHalfWidth(x);',
+    '  hw += (snoise(vec2(x*3.0 + 10.0 - flow, uTime*0.12 + 7.0)) * 0.010',
+    '       + snoise(vec2(x*6.0 - uTime*0.08 - flow*1.5, 20.0)) * 0.004) * turb;',
+    '  hw = max(hw, 0.01);',
+    '',
+    '  float dist = (y - centerY) / hw;',
+    '  float gauss = exp(-(dist*dist) / (2.0 * uSoftness * uSoftness));',
+    '  float outerG = exp(-(dist*dist) / (2.0 * uOuterSoft * uOuterSoft));',
+    '  float alpha = mix(outerG, gauss, 0.5);',
+    '  float aN = snoise(vec2(x*5.0 - flow*1.5, y*5.0*aspect + uTime*0.03)) * 0.08;',
+    '  alpha = clamp(alpha + aN * alpha, 0.0, 1.0);',
+    '  alpha = pow(alpha, uAlphaPow);',
+    '  alpha *= smoothstep(0.0, 0.03, alpha);',
+    '',
+    '  float vPos = clamp(dist * 0.5 + 0.5, 0.0, 1.0);',
+    '  float vNoise = snoise(vec2(x*3.0 - flow*2.0 + 20.0, y*4.0*aspect - uTime*0.04)) * uColorNoise;',
+    '  vPos = clamp(vPos + vNoise, 0.0, 1.0);',
+    '',
+    '  float tAlong = x * uAlongMix;',
+    '  float tAcross = vPos * uAcrossMix;',
+    '  tAlong += uTime * uRotSpeed * uRotAlong;',
+    '  tAcross += uTime * uRotSpeed * uRotAcross;',
+    '  float gradT = (tAlong + tAcross) * uClusters;',
+    '',
+    '  vec3 color = sampleGrad(gradT);',
+    '  float lum = dot(color, vec3(0.299, 0.587, 0.114));',
+    '  color = mix(vec3(lum), color, uSaturation);',
+    '',
+    '  vec3 fc = mix(vec3(1.0), color, alpha * uOpacity);',
+    '  gl_FragColor = vec4(fc, 1.0);',
+    '}'
+  ].join('\n');
+
+  function createShader(type, source) {
+    var s = gl.createShader(type);
+    gl.shaderSource(s, source); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { console.error(gl.getShaderInfoLog(s)); return null; }
+    return s;
+  }
+
+  var vs = createShader(gl.VERTEX_SHADER, vsSource);
+  var fs = createShader(gl.FRAGMENT_SHADER, fsSource);
+  var prog = gl.createProgram();
+  gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { console.error(gl.getProgramInfoLog(prog)); return; }
+  gl.useProgram(prog);
+
+  var aPos = gl.getAttribLocation(prog, 'aPos');
+  var buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  var u = {};
+  ['uTime','uRes','uMouse','uGN','uClusters','uWrap','uAlongMix','uAcrossMix',
+   'uRotSpeed','uRotAlong','uRotAcross','uAlphaPow','uOpacity','uSoftness','uOuterSoft',
+   'uSaturation','uFlow','uColorNoise','uWidth','uCurveY1','uCurveY2','uTurbulence',
+   'uAttract','uRipple'].forEach(function(n) { u[n] = gl.getUniformLocation(prog, n); });
+  for (var i = 0; i < 8; i++) {
+    u['uGC'+i] = gl.getUniformLocation(prog, 'uGC['+i+']');
+    u['uGS'+i] = gl.getUniformLocation(prog, 'uGS['+i+']');
+  }
+
+  var mx = 0.5, my = 0.5, smx = 0.5, smy = 0.5;
+  var wrapEl = canvas.parentElement;
+  document.addEventListener('mousemove', function(e) {
+    var r = wrapEl.getBoundingClientRect();
+    mx = (e.clientX - r.left) / r.width;
+    my = 1.0 - (e.clientY - r.top) / r.height;
+  });
+
+  var t0 = performance.now();
+
+  function draw() {
+    var t = (performance.now() - t0) / 1000.0;
+    smx += (mx - smx) * 0.08; smy += (my - smy) * 0.08;
+
+    gl.uniform1f(u.uTime, t);
+    gl.uniform2f(u.uRes, canvas.width, canvas.height);
+    gl.uniform2f(u.uMouse, smx, smy);
+
+    var g = prepareGradient();
+    gl.uniform1f(u.uGN, g.count);
+    for (var i = 0; i < 8; i++) {
+      if (i < g.count) {
+        gl.uniform3f(u['uGC'+i], g.colors[i][0], g.colors[i][1], g.colors[i][2]);
+        gl.uniform1f(u['uGS'+i], g.stops[i]);
+      }
+    }
+
+    gl.uniform1f(u.uClusters, state.clusters);
+    gl.uniform1f(u.uWrap, state.wrap ? 1 : 0);
+    gl.uniform1f(u.uAlongMix, state.alongMix);
+    gl.uniform1f(u.uAcrossMix, state.acrossMix);
+    gl.uniform1f(u.uRotSpeed, state.rotSpeed);
+    var ra = state.rotAxis;
+    gl.uniform1f(u.uRotAlong, ra === 'along' || ra === 'spiral' ? 1 : 0);
+    gl.uniform1f(u.uRotAcross, ra === 'across' || ra === 'spiral' ? 1 : 0);
+    gl.uniform1f(u.uAlphaPow, state.alphaPow);
+    gl.uniform1f(u.uOpacity, state.opacity);
+    gl.uniform1f(u.uSoftness, state.softness);
+    gl.uniform1f(u.uOuterSoft, state.outerSoft);
+    gl.uniform1f(u.uSaturation, state.saturation);
+    gl.uniform1f(u.uFlow, state.flow);
+    gl.uniform1f(u.uColorNoise, state.colorNoise);
+    gl.uniform1f(u.uWidth, state.width);
+    gl.uniform1f(u.uCurveY1, state.curveY1);
+    gl.uniform1f(u.uCurveY2, state.curveY2);
+    gl.uniform1f(u.uTurbulence, state.turbulence);
+    gl.uniform1f(u.uAttract, state.attract);
+    gl.uniform1f(u.uRipple, state.ripple);
+
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    requestAnimationFrame(draw);
+  }
+
+  draw();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stream V7 — Curl Noise Flow</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #fff; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl', { alpha: false, antialias: false });
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = window.innerWidth * dpr;
+  canvas.height = window.innerHeight * dpr;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+window.addEventListener('resize', resize);
+resize();
+
+const vsrc = `
+attribute vec2 a_pos;
+void main(){ gl_Position = vec4(a_pos, 0.0, 1.0); }
+`;
+
+const fsrc = `
+precision highp float;
+uniform vec2 u_res;
+uniform float u_time;
+
+// --- Ashima Arts simplex 2D noise ---
+vec3 mod289(vec3 x){ return x - floor(x*(1.0/289.0))*289.0; }
+vec2 mod289(vec2 x){ return x - floor(x*(1.0/289.0))*289.0; }
+vec3 permute(vec3 x){ return mod289(((x*34.0)+10.0)*x); }
+float snoise(vec2 v){
+  const vec4 C = vec4(0.211324865405187, 0.366025403784439, -0.577350269189626, 0.024390243902439);
+  vec2 i = floor(v + dot(v, C.yy));
+  vec2 x0 = v - i + dot(i, C.xx);
+  vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+  vec4 x12 = x0.xyxy + C.xxzz; x12.xy -= i1;
+  i = mod289(i);
+  vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0)) + i.x + vec3(0.0, i1.x, 1.0));
+  vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
+  m = m*m; m = m*m;
+  vec3 x = 2.0*fract(p*C.www) - 1.0;
+  vec3 h = abs(x) - 0.5;
+  vec3 ox = floor(x + 0.5);
+  vec3 a0 = x - ox;
+  m *= 1.79284291400159 - 0.85373472095314*(a0*a0+h*h);
+  vec3 g; g.x = a0.x*x0.x + h.x*x0.y; g.yz = a0.yz*x12.xz + h.yz*x12.yw;
+  return 130.0 * dot(m, g);
+}
+
+// Curl noise: rotate gradient of noise by 90 degrees
+vec2 curlNoise(vec2 p){
+  float eps = 0.001;
+  float n1 = snoise(p + vec2(eps, 0.0));
+  float n2 = snoise(p - vec2(eps, 0.0));
+  float n3 = snoise(p + vec2(0.0, eps));
+  float n4 = snoise(p - vec2(0.0, eps));
+  float dndx = (n1 - n2) / (2.0 * eps);
+  float dndy = (n3 - n4) / (2.0 * eps);
+  // Rotate 90 degrees: (dy, -dx)
+  return vec2(dndy, -dndx);
+}
+
+// S-curve: starts upper-left, dips through center, rises to upper-right
+float sCurveY(float x){
+  // Normalize x to 0..1
+  // S-curve using sine: high at left, dips in center, high at right
+  float phase = x * 3.14159265;
+  return 0.5 + 0.22 * cos(phase) - 0.05 * sin(phase * 2.0);
+}
+
+// Stream width varies: thick left, narrow center, thinner right
+float streamWidth(float x){
+  float center = 0.5;
+  float narrowing = 1.0 - 0.5 * exp(-8.0 * (x - center) * (x - center));
+  float leftThick = mix(0.22, 0.10, smoothstep(0.0, 1.0, x));
+  return leftThick * narrowing + 0.06;
+}
+
+// Color palette based on x position
+vec3 getColor(float x, float yOff){
+  // Warm colors left, cool colors right
+  vec3 redOrange = vec3(237.0, 97.0, 46.0) / 255.0;
+  vec3 orange    = vec3(245.0, 166.0, 53.0) / 255.0;
+  vec3 gold      = vec3(248.0, 205.0, 70.0) / 255.0;
+  vec3 magenta   = vec3(200.0, 55.0, 115.0) / 255.0;
+  vec3 violet    = vec3(130.0, 88.0, 160.0) / 255.0;
+  vec3 teal      = vec3(50.0, 185.0, 175.0) / 255.0;
+  vec3 green     = vec3(65.0, 172.0, 130.0) / 255.0;
+  vec3 lime      = vec3(175.0, 210.0, 80.0) / 255.0;
+
+  // x-based gradient with y-offset color shifting
+  float t = clamp(x, 0.0, 1.0);
+  vec3 col;
+  if(t < 0.125){
+    col = mix(redOrange, orange, t / 0.125);
+  } else if(t < 0.25){
+    col = mix(orange, gold, (t - 0.125) / 0.125);
+  } else if(t < 0.375){
+    col = mix(gold, magenta, (t - 0.25) / 0.125);
+  } else if(t < 0.5){
+    col = mix(magenta, violet, (t - 0.375) / 0.125);
+  } else if(t < 0.625){
+    col = mix(violet, teal, (t - 0.5) / 0.125);
+  } else if(t < 0.75){
+    col = mix(teal, green, (t - 0.625) / 0.125);
+  } else {
+    col = mix(green, lime, (t - 0.75) / 0.25);
+  }
+
+  // Shift hue slightly based on vertical offset within stream
+  float shift = yOff * 0.3;
+  // Shift warm colors toward magenta when below, toward gold when above
+  if(t < 0.5){
+    col = mix(col, magenta, clamp(-shift * 0.5, 0.0, 0.3));
+    col = mix(col, gold, clamp(shift * 0.5, 0.0, 0.3));
+  } else {
+    col = mix(col, teal, clamp(-shift * 0.5, 0.0, 0.3));
+    col = mix(col, lime, clamp(shift * 0.5, 0.0, 0.3));
+  }
+  return col;
+}
+
+void main(){
+  vec2 uv = gl_FragCoord.xy / u_res;
+  float aspect = u_res.x / u_res.y;
+
+  // Aspect-corrected coordinates
+  vec2 p = vec2(uv.x, uv.y);
+
+  // S-curve center and distance
+  float cy = sCurveY(p.x);
+  float sw = streamWidth(p.x);
+  float dist = abs(p.y - cy) / sw;
+
+  // Add curl noise distortion to the distance field
+  float t = u_time * 0.04;
+  vec2 noiseCoord = vec2(p.x * 3.0 + t * 0.5, p.y * 3.0 * aspect);
+  vec2 curl = curlNoise(noiseCoord * 1.5 + t * 0.3);
+  float curl2mag = length(curlNoise(noiseCoord * 3.0 + t * 0.7));
+
+  // Distort the distance with curl noise
+  float noiseDist = dist + curl.x * 0.12 + curl.y * 0.08;
+
+  // Multi-octave noise for internal texture
+  float detail = snoise(noiseCoord * 2.0 + t * 0.2) * 0.5
+               + snoise(noiseCoord * 4.0 - t * 0.3) * 0.25
+               + snoise(noiseCoord * 8.0 + t * 0.5) * 0.125;
+
+  // Soft mask with very wide Gaussian falloff
+  float mask = exp(-noiseDist * noiseDist * 3.5);
+
+  // Add internal texture variation to the mask
+  float innerMask = smoothstep(1.2, 0.0, noiseDist);
+  mask += innerMask * detail * 0.15;
+  mask = clamp(mask, 0.0, 1.0);
+
+  // Extra softness at edges
+  mask = pow(mask, 0.8);
+
+  // Compute displaced x for color lookup (curl advection effect)
+  float colorX = p.x + curl.x * 0.03 + detail * 0.02;
+  float yOffset = (p.y - cy) / sw; // normalized vertical offset within stream
+
+  vec3 streamColor = getColor(colorX, yOffset);
+
+  // Add subtle brightness variation from curl noise
+  streamColor *= 1.0 + detail * 0.1 * innerMask;
+
+  // Composite over white
+  vec3 color = mix(vec3(1.0), streamColor, mask);
+
+  gl_FragColor = vec4(color, 1.0);
+}
+`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, vsrc));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fsrc));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const uRes = gl.getUniformLocation(prog, 'u_res');
+const uTime = gl.getUniformLocation(prog, 'u_time');
+
+let startTime = performance.now();
+
+function frame() {
+  const t = (performance.now() - startTime) / 1000.0;
+  gl.uniform2f(uRes, canvas.width, canvas.height);
+  gl.uniform1f(uTime, t);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  requestAnimationFrame(frame);
+}
+frame();
+</script>
+</body>
+</html>

@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stream v2</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #ffffff; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(() => {
+  var canvas = document.getElementById('c');
+  var gl = canvas.getContext('webgl', { antialias: true, alpha: false });
+  if (!gl) { document.body.textContent = 'WebGL not supported'; return; }
+
+  function resize() {
+    var dpr = window.devicePixelRatio || 1;
+    canvas.width = window.innerWidth * dpr;
+    canvas.height = window.innerHeight * dpr;
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
+  window.addEventListener('resize', resize); resize();
+
+  var vsSource = [
+    'attribute vec2 aPos;',
+    'varying vec2 vUV;',
+    'void main() { vUV = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }'
+  ].join('\n');
+
+  var fsSource = [
+    'precision highp float;',
+    'varying vec2 vUV;',
+    'uniform float uTime;',
+    'uniform vec2 uRes;',
+    'uniform vec2 uMouse;',
+    '',
+    'const int GN = 6;',
+    'const float clusters = 2.0;',
+    'const float alongMix = 0.46;',
+    'const float acrossMix = 0.11;',
+    'const float alphaPow = 0.65;',
+    'const float opacity = 1.0;',
+    'const float softness = 0.69;',
+    'const float outerSoft = 0.84;',
+    'const float sat = 1.32;',
+    'const float flowSpeed = 0.119;',
+    'const float colorNoise = 0.4;',
+    'const float baseWidth = 0.1;',
+    'const float curveY1 = 0.72;',
+    'const float curveY2 = 0.19;',
+    'const float turb = 0.67;',
+    'const float attractStr = 0.04;',
+    'const float rippleAmp = 0.022;',
+    '',
+    'vec3 mod289v3(vec3 x){ return x - floor(x*(1.0/289.0))*289.0; }',
+    'vec2 mod289v2(vec2 x){ return x - floor(x*(1.0/289.0))*289.0; }',
+    'vec3 permute(vec3 x){ return mod289v3(((x*34.0)+10.0)*x); }',
+    'float snoise(vec2 v){',
+    '  const vec4 C = vec4(0.211324865405187, 0.366025403784439, -0.577350269189626, 0.024390243902439);',
+    '  vec2 i = floor(v + dot(v, C.yy));',
+    '  vec2 x0 = v - i + dot(i, C.xx);',
+    '  vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);',
+    '  vec4 x12 = x0.xyxy + C.xxzz; x12.xy -= i1;',
+    '  i = mod289v2(i);',
+    '  vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0)) + i.x + vec3(0.0, i1.x, 1.0));',
+    '  vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);',
+    '  m = m*m; m = m*m;',
+    '  vec3 x = 2.0*fract(p*C.www) - 1.0;',
+    '  vec3 h = abs(x) - 0.5;',
+    '  vec3 ox = floor(x + 0.5);',
+    '  vec3 a0 = x - ox;',
+    '  m *= 1.79284291400159 - 0.85373472095314*(a0*a0+h*h);',
+    '  vec3 g; g.x = a0.x*x0.x + h.x*x0.y; g.yz = a0.yz*x12.xz + h.yz*x12.yw;',
+    '  return 130.0 * dot(m, g);',
+    '}',
+    '',
+    'float bezier1D(float t, float p0, float p1, float p2, float p3) {',
+    '  float u = 1.0 - t;',
+    '  return u*u*u*p0 + 3.0*u*u*t*p1 + 3.0*u*t*t*p2 + t*t*t*p3;',
+    '}',
+    '',
+    'float getCenterY(float x) {',
+    '  float t = x;',
+    '  for (int i = 0; i < 6; i++) {',
+    '    float ex = bezier1D(t, -0.05, 0.30, 0.70, 1.05);',
+    '    float dex = 3.0*(1.0-t)*(1.0-t)*0.35 + 6.0*(1.0-t)*t*0.40 + 3.0*t*t*0.35;',
+    '    t -= (ex - x) / max(dex, 0.001);',
+    '    t = clamp(t, 0.0, 1.0);',
+    '  }',
+    '  return bezier1D(t, 0.25, curveY1, curveY2, 0.32);',
+    '}',
+    '',
+    'float getHalfWidth(float x) {',
+    '  float sq = 1.0 - 0.55 * exp(-((x - 0.45)*(x - 0.45)) / 0.035);',
+    '  return baseWidth * sq * (1.0 - 0.25 * x);',
+    '}',
+    '',
+    'vec3 sampleGrad(float t) {',
+    '  t = clamp(t, 0.0, 1.0);',
+    '  vec3 colors[6];',
+    '  float stops[6];',
+    '  colors[0] = vec3(0.718, 0.239, 0.337);',
+    '  colors[1] = vec3(0.918, 0.761, 0.282);',
+    '  colors[2] = vec3(0.576, 0.439, 0.596);',
+    '  colors[3] = vec3(0.412, 0.463, 0.682);',
+    '  colors[4] = vec3(0.322, 0.659, 0.773);',
+    '  colors[5] = vec3(0.325, 0.745, 0.663);',
+    '  stops[0] = 0.0;',
+    '  stops[1] = 0.333;',
+    '  stops[2] = 0.5;',
+    '  stops[3] = 0.667;',
+    '  stops[4] = 0.833;',
+    '  stops[5] = 1.0;',
+    '  vec3 c = colors[0];',
+    '  float pS = stops[0];',
+    '  for (int i = 1; i < 6; i++) {',
+    '    float s = stops[i];',
+    '    float f = clamp((t - pS) / max(s - pS, 0.001), 0.0, 1.0);',
+    '    c = mix(c, colors[i], f * step(pS, t));',
+    '    pS = s;',
+    '  }',
+    '  return c;',
+    '}',
+    '',
+    'void main() {',
+    '  vec2 uv = vUV;',
+    '  float aspect = uRes.x / uRes.y;',
+    '  float x = uv.x, y = uv.y;',
+    '  float flow = uTime * flowSpeed;',
+    '',
+    '  float centerNoise = snoise(vec2(x * 1.8 + 0.3 - flow, uTime * 0.10)) * 0.028 * turb',
+    '                    + snoise(vec2(x * 4.5 + 5.0 - flow * 1.5, uTime * 0.14 + 3.0)) * 0.014 * turb;',
+    '',
+    '  float mdx = x - uMouse.x;',
+    '  float bendY = (uMouse.y - getCenterY(x)) * attractStr * exp(-(mdx*mdx) / 0.03);',
+    '  float mDistSq = (x-uMouse.x)*(x-uMouse.x) + (y-uMouse.y)*(y-uMouse.y);',
+    '  float ripple = rippleAmp * exp(-mDistSq / 0.020) * snoise(vec2(x*10.0 - uTime*0.4, y*10.0));',
+    '  float ambient = snoise(vec2(x*8.0 - uTime*0.3, y*6.0 + uTime*0.15)) * 0.005 * turb',
+    '                 + snoise(vec2(x*12.0 + uTime*0.2, y*10.0 - uTime*0.1)) * 0.003 * turb;',
+    '',
+    '  float centerY = getCenterY(x) + centerNoise + bendY + ripple + ambient;',
+    '  float hw = getHalfWidth(x);',
+    '  hw += (snoise(vec2(x*3.0 + 10.0 - flow, uTime*0.12 + 7.0)) * 0.010',
+    '       + snoise(vec2(x*6.0 - uTime*0.08 - flow*1.5, 20.0)) * 0.004) * turb;',
+    '  hw = max(hw, 0.01);',
+    '',
+    '  float dist = (y - centerY) / hw;',
+    '  float gauss = exp(-(dist*dist) / (2.0 * softness * softness));',
+    '  float outerG = exp(-(dist*dist) / (2.0 * outerSoft * outerSoft));',
+    '  float alpha = mix(outerG, gauss, 0.5);',
+    '  float aN = snoise(vec2(x*5.0 - flow*1.5, y*5.0*aspect + uTime*0.03)) * 0.08;',
+    '  alpha = clamp(alpha + aN * alpha, 0.0, 1.0);',
+    '  alpha = pow(alpha, alphaPow);',
+    '  alpha *= smoothstep(0.0, 0.03, alpha);',
+    '',
+    '  float vPos = clamp(dist * 0.5 + 0.5, 0.0, 1.0);',
+    '  float vNoise = snoise(vec2(x*3.0 - flow*2.0 + 20.0, y*4.0*aspect - uTime*0.04)) * colorNoise;',
+    '  vPos = clamp(vPos + vNoise, 0.0, 1.0);',
+    '',
+    '  float gradT = (x * alongMix + vPos * acrossMix) * clusters;',
+    '',
+    '  vec3 color = sampleGrad(gradT);',
+    '  float lum = dot(color, vec3(0.299, 0.587, 0.114));',
+    '  color = mix(vec3(lum), color, sat);',
+    '',
+    '  vec3 fc = mix(vec3(1.0), color, alpha * opacity);',
+    '  gl_FragColor = vec4(fc, 1.0);',
+    '}'
+  ].join('\n');
+
+  function createShader(type, source) {
+    var s = gl.createShader(type);
+    gl.shaderSource(s, source); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { console.error(gl.getShaderInfoLog(s)); return null; }
+    return s;
+  }
+
+  var vs = createShader(gl.VERTEX_SHADER, vsSource);
+  var fs = createShader(gl.FRAGMENT_SHADER, fsSource);
+  var prog = gl.createProgram();
+  gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { console.error(gl.getProgramInfoLog(prog)); return; }
+  gl.useProgram(prog);
+
+  var aPos = gl.getAttribLocation(prog, 'aPos');
+  var buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  var uTime = gl.getUniformLocation(prog, 'uTime');
+  var uRes = gl.getUniformLocation(prog, 'uRes');
+  var uMouse = gl.getUniformLocation(prog, 'uMouse');
+
+  var mx = 0.5, my = 0.5, smx = 0.5, smy = 0.5;
+  document.addEventListener('mousemove', function(e) {
+    mx = e.clientX / window.innerWidth;
+    my = 1.0 - e.clientY / window.innerHeight;
+  });
+
+  var t0 = performance.now();
+
+  function draw() {
+    var t = (performance.now() - t0) / 1000.0;
+    smx += (mx - smx) * 0.08; smy += (my - smy) * 0.08;
+    gl.uniform1f(uTime, t);
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+    gl.uniform2f(uMouse, smx, smy);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    requestAnimationFrame(draw);
+  }
+
+  draw();
+})();
+</script>
+</body>
+</html>

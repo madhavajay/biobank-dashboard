@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gradient Map Colors — OpenMined Brand</title>
+  <meta name="description" content="Keyboard gradient map color stops with CMYK values and Pantone references for vendor production.">
+  <link rel="icon" href="../assets/logo/OpenMined-Icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300..700&family=Rubik:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../style.css">
+  <style>
+    .gc-back {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--font-primary);
+      font-size: var(--type-subtitle-size);
+      font-weight: 600;
+      color: var(--grayscale-400);
+      margin-bottom: var(--spacing-3xl);
+      transition: color var(--transition-duration);
+    }
+    .gc-back:hover { color: var(--grayscale-00); }
+
+    .gc-hero {
+      background: var(--grayscale-950);
+      padding: 80px var(--spacing-2xl) 60px;
+    }
+    .gc-hero-inner {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .gc-hero h1 {
+      font-family: var(--font-secondary);
+      font-size: var(--type-h2-size);
+      font-weight: 400;
+      line-height: var(--type-h2-line);
+      color: var(--grayscale-00);
+      margin-bottom: var(--spacing-l);
+    }
+    .gc-hero p {
+      font-family: var(--font-primary);
+      font-size: var(--type-body-size);
+      line-height: 1.7;
+      color: var(--grayscale-500);
+      max-width: 640px;
+    }
+
+    /* Gradient map image */
+    .gc-gradient-image {
+      margin-top: var(--spacing-3xl);
+      border-radius: var(--radius-l);
+      border: 1px solid var(--grayscale-800);
+      overflow: hidden;
+    }
+    .gc-gradient-image img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    /* Gradient ramp strip with dots */
+    .gc-ramp-wrap {
+      margin-top: var(--spacing-2xl);
+    }
+    .gc-ramp-label {
+      font-family: var(--font-primary);
+      font-size: var(--type-footnote-bold-size);
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--grayscale-500);
+      margin-bottom: var(--spacing-s);
+    }
+    .gc-ramp {
+      position: relative;
+      height: 48px;
+      border-radius: var(--radius-m);
+      border: 1px solid var(--grayscale-800);
+      overflow: visible;
+    }
+    .gc-ramp-bar {
+      width: 100%;
+      height: 100%;
+      border-radius: inherit;
+    }
+    .gc-ramp-dots {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+    }
+    .gc-dot {
+      position: absolute;
+      top: 50%;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 2px solid #fff;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.4), 0 0 0 1px rgba(0,0,0,0.15);
+      transform: translate(-50%, -50%);
+      cursor: default;
+      transition: transform 0.15s, box-shadow 0.15s;
+      z-index: 1;
+    }
+    .gc-dot:hover {
+      transform: translate(-50%, -50%) scale(1.5);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5), 0 0 0 1px rgba(0,0,0,0.2);
+      z-index: 2;
+    }
+    .gc-dot-tip {
+      display: none;
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--grayscale-900);
+      color: var(--grayscale-00);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      padding: 4px 8px;
+      border-radius: var(--radius-s);
+      white-space: nowrap;
+      pointer-events: none;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+    .gc-dot-tip::after {
+      content: '';
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      border: 4px solid transparent;
+      border-top-color: var(--grayscale-900);
+    }
+    .gc-dot:hover .gc-dot-tip {
+      display: block;
+    }
+
+    /* Ramp axis labels */
+    .gc-ramp-axis {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 6px;
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--grayscale-600);
+    }
+
+    .gc-stops-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: var(--spacing-l);
+    }
+
+    .gc-stop-card {
+      border-radius: var(--radius-l);
+      overflow: hidden;
+      border: 1px solid var(--surface-fg-default);
+      cursor: pointer;
+      transition: transform var(--transition-duration), box-shadow var(--transition-duration);
+    }
+    .gc-stop-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+    }
+
+    .gc-stop-color {
+      height: 80px;
+      position: relative;
+    }
+    .gc-stop-number {
+      position: absolute;
+      top: var(--spacing-s);
+      left: var(--spacing-m);
+      font-family: var(--font-mono);
+      font-size: var(--type-footnote-bold-size);
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: var(--radius-xs);
+      line-height: 1.4;
+    }
+    .gc-stop-number--light {
+      background: rgba(255,255,255,0.85);
+      color: var(--grayscale-900);
+    }
+    .gc-stop-number--dark {
+      background: rgba(0,0,0,0.45);
+      color: var(--grayscale-00);
+    }
+
+    .gc-stop-info {
+      padding: var(--spacing-m) var(--spacing-l);
+      background: var(--surface-bg-bright);
+      border-top: 1px solid var(--surface-fg-default);
+    }
+    .gc-stop-pantone {
+      font-family: var(--font-primary);
+      font-size: var(--type-subtitle-size);
+      font-weight: 700;
+      color: var(--text-headline);
+      margin-bottom: 2px;
+    }
+    .gc-stop-cmyk {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      line-height: 1.5;
+      color: var(--grayscale-600);
+    }
+    .gc-stop-hex {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--grayscale-500);
+    }
+    .gc-stop-quality {
+      display: inline-block;
+      font-family: var(--font-primary);
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 1px 5px;
+      border-radius: var(--radius-xs);
+      margin-top: 4px;
+    }
+    .gc-quality--exact { background: var(--green-100); color: var(--green-700); }
+    .gc-quality--very-close { background: var(--teal-100); color: var(--teal-700); }
+    .gc-quality--close { background: var(--gold-100); color: var(--gold-700); }
+    .gc-quality--approximate { background: var(--orange-100); color: var(--orange-700); }
+    .gc-quality--rough { background: var(--red-100); color: var(--red-700); }
+
+    .gc-anchor-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: var(--spacing-2xl);
+    }
+    .gc-anchor-card {
+      border-radius: var(--radius-l);
+      overflow: hidden;
+      border: 1px solid var(--surface-fg-default);
+    }
+    .gc-anchor-color {
+      height: 120px;
+      display: flex;
+      align-items: flex-end;
+      padding: var(--spacing-l);
+    }
+    .gc-anchor-label {
+      font-family: var(--font-secondary);
+      font-size: var(--type-headline-size);
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: var(--radius-s);
+    }
+    .gc-anchor-label--light {
+      background: rgba(255,255,255,0.9);
+      color: var(--grayscale-900);
+    }
+    .gc-anchor-label--dark {
+      background: rgba(0,0,0,0.5);
+      color: var(--grayscale-00);
+    }
+    .gc-anchor-info {
+      padding: var(--spacing-xl);
+      background: var(--surface-bg-bright);
+      border-top: 1px solid var(--surface-fg-default);
+    }
+    .gc-anchor-pantone {
+      font-family: var(--font-secondary);
+      font-size: var(--type-body-size);
+      font-weight: 600;
+      color: var(--text-headline);
+      margin-bottom: 4px;
+    }
+    .gc-anchor-details {
+      font-family: var(--font-mono);
+      font-size: var(--type-caption-size);
+      line-height: 1.8;
+      color: var(--grayscale-600);
+    }
+
+    .gc-solids-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: var(--spacing-2xl);
+    }
+    .gc-solid-card {
+      border-radius: var(--radius-l);
+      overflow: hidden;
+      border: 1px solid var(--surface-fg-default);
+    }
+    .gc-solid-color { height: 100px; }
+    .gc-solid-info {
+      padding: var(--spacing-xl);
+      background: var(--surface-bg-bright);
+      border-top: 1px solid var(--surface-fg-default);
+    }
+    .gc-solid-name {
+      font-family: var(--font-primary);
+      font-size: var(--type-body-size);
+      font-weight: 600;
+      color: var(--text-headline);
+      margin-bottom: 4px;
+    }
+    .gc-solid-details {
+      font-family: var(--font-mono);
+      font-size: var(--type-caption-size);
+      line-height: 1.8;
+      color: var(--grayscale-600);
+    }
+
+    .gc-notes {
+      background: var(--surface-bg-bright);
+      border: 1px solid var(--surface-fg-default);
+      border-radius: var(--radius-l);
+      padding: var(--spacing-2xl);
+    }
+    .gc-notes h3 {
+      font-family: var(--font-primary);
+      font-size: var(--type-body-size);
+      font-weight: 600;
+      color: var(--text-headline);
+      margin-bottom: var(--spacing-l);
+    }
+    .gc-notes ul {
+      list-style: none;
+      padding: 0;
+    }
+    .gc-notes li {
+      position: relative;
+      padding-left: var(--spacing-xl);
+      margin-bottom: var(--spacing-s);
+      font-size: var(--type-body-size);
+      line-height: 1.7;
+      color: var(--text-body);
+    }
+    .gc-notes li::before {
+      content: "\2022";
+      position: absolute;
+      left: 0;
+      color: var(--grayscale-500);
+    }
+
+    @media (max-width: 767px) {
+      .gc-hero h1 {
+        font-size: var(--type-h3-size);
+        line-height: var(--type-h3-line);
+      }
+      .gc-stops-grid {
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        gap: var(--spacing-s);
+      }
+      .gc-stop-color { height: 60px; }
+      .gc-anchor-grid { grid-template-columns: 1fr; }
+      .gc-dot { width: 10px; height: 10px; border-width: 1.5px; }
+      .gc-ramp { height: 36px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Hero -->
+  <header class="gc-hero">
+    <div class="gc-hero-inner">
+      <a href="../" class="gc-back">&larr; Brand Guidelines</a>
+      <h1>Keyboard Gradient Colors</h1>
+      <p>Gradient map color stops extracted from the keyboard design Illustrator file, with CMYK source values and closest Pantone Coated references for vendor production.</p>
+      <div class="gc-gradient-image">
+        <img src="gradient-map.png" alt="OpenMined keyboard gradient map" width="2796" height="898">
+      </div>
+
+      <div class="gc-ramp-wrap">
+        <div class="gc-ramp-label">Gradient Map Color Ramp — 25 Stops (dark to light)</div>
+        <div class="gc-ramp" id="gradientRamp">
+          <div class="gc-ramp-bar" id="rampBar"></div>
+          <div class="gc-ramp-dots" id="rampDots"></div>
+        </div>
+        <div class="gc-ramp-axis">
+          <span>Shadows (Stop 1)</span>
+          <span>Midtones</span>
+          <span>Highlights (Stop 25)</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+
+  <!-- Key Anchor Colors -->
+  <section class="section" id="anchor-colors">
+    <div class="section-inner">
+      <div class="section-header">
+        <h2 class="section-title">Key Anchor Colors</h2>
+        <p class="section-subtitle">The 8 primary Pantone references that define the gradient's color arc. Use these as the core spec for your vendor.</p>
+      </div>
+      <div class="gc-anchor-grid" id="anchorGrid"></div>
+    </div>
+  </section>
+
+  <!-- All 25 Gradient Stops -->
+  <section class="section section--dim" id="all-stops">
+    <div class="section-inner">
+      <div class="section-header">
+        <h2 class="section-title">All 25 Gradient Stops</h2>
+        <p class="section-subtitle">Every color stop from the Illustrator gradient map with source CMYK, approximate hex, and closest Pantone C match. Click any swatch to copy its hex value.</p>
+      </div>
+      <div class="gc-stops-grid" id="stopsGrid"></div>
+    </div>
+  </section>
+
+  <!-- Keyboard Solid Colors -->
+  <section class="section" id="solid-colors">
+    <div class="section-inner">
+      <div class="section-header">
+        <h2 class="section-title">Keyboard Solid Colors</h2>
+        <p class="section-subtitle">The flat colors used for key body, keycap surfaces, and legends on the keyboard hardware.</p>
+      </div>
+      <div class="gc-solids-grid" id="solidsGrid"></div>
+    </div>
+  </section>
+
+  <!-- Production Notes -->
+  <section class="section section--dim" id="notes">
+    <div class="section-inner">
+      <div class="section-header">
+        <h2 class="section-title">Production Notes</h2>
+      </div>
+      <div class="gc-notes">
+        <h3>For Your Vendor</h3>
+        <ul id="notesList"></ul>
+      </div>
+    </div>
+  </section>
+
+  </main>
+
+  <footer class="site-footer">
+    <a href="../">OpenMined Brand Guidelines</a>
+  </footer>
+
+  <div class="toast" id="toast" aria-live="polite"></div>
+
+<script>
+(function() {
+  // ---- Data ----
+  var stops = [
+    { n: 1,  cmyk: [24.6, 43.4, 43.8, 0.8], hex: '#BF8F8E', pantone: '7613 C', quality: 'close' },
+    { n: 2,  cmyk: [3.9, 52.7, 63.3, 0.0],  hex: '#F5795E', pantone: '7416 C', quality: 'very-close' },
+    { n: 3,  cmyk: [3.1, 50.8, 64.8, 0.0],  hex: '#F77D5A', pantone: '1635 C', quality: 'close' },
+    { n: 4,  cmyk: [1.2, 30.5, 61.7, 0.0],  hex: '#FCB162', pantone: '1485 C', quality: 'very-close' },
+    { n: 5,  cmyk: [0.0, 23.8, 57.8, 0.0],  hex: '#FFC26C', pantone: '1355 C', quality: 'exact' },
+    { n: 6,  cmyk: [0.0, 28.5, 69.5, 0.0],  hex: '#FFB64E', pantone: '1365 C', quality: 'exact' },
+    { n: 7,  cmyk: [0.0, 25.0, 61.7, 0.0],  hex: '#FFBF62', pantone: '1355 C', quality: 'very-close' },
+    { n: 8,  cmyk: [16.0, 24.6, 55.1, 0.0], hex: '#D6C072', pantone: '617 C',  quality: 'close' },
+    { n: 9,  cmyk: [15.2, 18.4, 55.9, 0.0], hex: '#D8D070', pantone: '460 C',  quality: 'very-close' },
+    { n: 10, cmyk: [30.5, 10.9, 54.3, 0.0], hex: '#B1E375', pantone: '367 C',  quality: 'close' },
+    { n: 11, cmyk: [30.9, 2.7, 49.2, 0.0],  hex: '#B0F882', pantone: '7487 C', quality: 'approximate' },
+    { n: 12, cmyk: [32.8, 0.0, 45.3, 0.0],  hex: '#ABFF8B', pantone: '7487 C', quality: 'approximate' },
+    { n: 13, cmyk: [43.0, 0.0, 45.7, 0.0],  hex: '#91FF8A', pantone: '7487 C', quality: 'approximate' },
+    { n: 14, cmyk: [52.0, 5.1, 39.8, 0.0],  hex: '#7AF29A', pantone: '353 C',  quality: 'approximate' },
+    { n: 15, cmyk: [53.1, 9.0, 37.9, 0.0],  hex: '#78E89E', pantone: '353 C',  quality: 'approximate' },
+    { n: 16, cmyk: [53.5, 27.7, 32.8, 0.8], hex: '#76B7AA', pantone: '563 C',  quality: 'very-close' },
+    { n: 17, cmyk: [68.4, 14.5, 24.6, 0.0], hex: '#51DAC0', pantone: '333 C',  quality: 'very-close' },
+    { n: 18, cmyk: [68.0, 23.0, 22.7, 0.0], hex: '#52C4C5', pantone: '325 C',  quality: 'very-close' },
+    { n: 19, cmyk: [65.2, 37.9, 18.0, 0.4], hex: '#589ED0', pantone: '7688 C', quality: 'very-close' },
+    { n: 20, cmyk: [57.8, 74.6, 11.3, 0.8], hex: '#6B40E0', pantone: '266 C',  quality: 'rough' },
+    { n: 21, cmyk: [43.8, 57.8, 25.4, 2.0], hex: '#8C69BA', pantone: '2655 C', quality: 'close' },
+    { n: 22, cmyk: [41.8, 84.0, 16.8, 1.2], hex: '#9328D2', pantone: '2592 C', quality: 'rough' },
+    { n: 23, cmyk: [34.0, 91.4, 22.7, 1.6], hex: '#A616C2', pantone: '2592 C', quality: 'close' },
+    { n: 24, cmyk: [23.4, 81.6, 34.4, 1.2], hex: '#C12EA5', pantone: '240 C',  quality: 'very-close' },
+    { n: 25, cmyk: [19.5, 77.7, 37.9, 0.8], hex: '#CC389D', pantone: '240 C',  quality: 'very-close' },
+  ];
+
+  var anchors = [
+    { name: 'Pink / Magenta', stop: 25, hex: '#CC389D', pantone: 'PANTONE 240 C', cmyk: 'C=20  M=78  Y=38  K=1' },
+    { name: 'Coral / Orange',  stop: 3,  hex: '#F77D5A', pantone: 'PANTONE 1635 C', cmyk: 'C=3  M=51  Y=65  K=0' },
+    { name: 'Gold / Amber',    stop: 6,  hex: '#FFB64E', pantone: 'PANTONE 1365 C', cmyk: 'C=0  M=29  Y=70  K=0' },
+    { name: 'Warm Yellow',     stop: 9,  hex: '#D8D070', pantone: 'PANTONE 460 C',  cmyk: 'C=15  M=18  Y=56  K=0' },
+    { name: 'Lime Green',      stop: 11, hex: '#B0F882', pantone: 'PANTONE 7487 C', cmyk: 'C=31  M=3  Y=49  K=0' },
+    { name: 'Teal',            stop: 17, hex: '#51DAC0', pantone: 'PANTONE 333 C',  cmyk: 'C=68  M=15  Y=25  K=0' },
+    { name: 'Blue',            stop: 19, hex: '#589ED0', pantone: 'PANTONE 7688 C', cmyk: 'C=65  M=38  Y=18  K=0' },
+    { name: 'Deep Violet',     stop: 20, hex: '#6B40E0', pantone: 'PANTONE 266 C',  cmyk: 'C=58  M=75  Y=11  K=1' },
+  ];
+
+  var solids = [
+    { name: 'Key Body',      hex: '#23202C', pantone: 'PANTONE 532 C', cmyk: 'C=76  M=68  Y=47  K=58', desc: 'Main keyboard housing and key backgrounds' },
+    { name: 'Keycap Surface', hex: '#353243', pantone: 'PANTONE 2380 C', cmyk: 'C=68  M=62  Y=38  K=33', desc: 'Top face of physical keycaps' },
+    { name: 'White (Legends)', hex: '#FFFFFF', pantone: 'White', cmyk: 'C=0  M=0  Y=0  K=0', desc: 'Key legend lettering' },
+    { name: 'Black',          hex: '#000100', pantone: 'Black C', cmyk: 'C=0  M=0  Y=0  K=100', desc: 'Accents and borders' },
+  ];
+
+  var notes = [
+    'This gradient uses 25 color stops mapped across a luminosity gradient map in Adobe Illustrator. It cannot be reproduced with 25 individual spot inks.',
+    'Recommended approach: Print as CMYK process (4-color) using the source CMYK values, and reference the 8 anchor Pantone colors above for proofing and color matching.',
+    'Stops 11\u201315 (bright greens) are highly saturated and push beyond what standard Pantone Coated inks cover. PANTONE 7487 C and 353 C are the best available matches.',
+    'Stops 20 and 22 (deep violet/purple) are similarly hard to match in Pantone. PANTONE 266 C and 2592 C are closest.',
+    'All Pantone matches are based on digital CIE Lab Delta E comparison. Always verify against a physical Pantone Formula Guide (Coated) before final production.',
+    'Source file: OM keyboard.ai / Untitled-3.ase (Adobe Swatch Exchange)',
+  ];
+
+  // ---- Helpers ----
+  function luma(hex) {
+    var r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+    return (0.299*r + 0.587*g + 0.114*b) / 255;
+  }
+
+  var qualityLabels = { 'exact':'Exact', 'very-close':'Very Close', 'close':'Close', 'approximate':'Approx', 'rough':'Rough' };
+
+  function cmykStr(arr) {
+    return 'C=' + arr[0].toFixed(0) + ' M=' + arr[1].toFixed(0) + ' Y=' + arr[2].toFixed(0) + ' K=' + arr[3].toFixed(0);
+  }
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text) e.textContent = text;
+    return e;
+  }
+
+  function showToast(msg) {
+    var t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('visible');
+    clearTimeout(t._tid);
+    t._tid = setTimeout(function() { t.classList.remove('visible'); }, 1800);
+  }
+
+  // ---- Render gradient ramp with dots ----
+  var rampBar = document.getElementById('rampBar');
+  var rampDots = document.getElementById('rampDots');
+  var gradStops = stops.map(function(s, i) {
+    return s.hex + ' ' + (i / (stops.length - 1) * 100).toFixed(1) + '%';
+  });
+  rampBar.style.background = 'linear-gradient(to right, ' + gradStops.join(', ') + ')';
+
+  // Place dots on the ramp
+  stops.forEach(function(s, i) {
+    var pct = (i / (stops.length - 1) * 100);
+    var dot = el('div', 'gc-dot');
+    dot.style.left = pct.toFixed(1) + '%';
+    dot.style.background = s.hex;
+
+    var tip = el('div', 'gc-dot-tip', '#' + s.n + '  ' + s.hex + '  PMS ' + s.pantone);
+    dot.appendChild(tip);
+
+    rampDots.appendChild(dot);
+  });
+
+  // ---- Render anchor cards ----
+  var anchorGrid = document.getElementById('anchorGrid');
+  anchors.forEach(function(a) {
+    var light = luma(a.hex) > 0.55;
+    var card = el('div', 'gc-anchor-card');
+
+    var colorDiv = el('div', 'gc-anchor-color');
+    colorDiv.style.background = a.hex;
+    var label = el('span', 'gc-anchor-label ' + (light ? 'gc-anchor-label--light' : 'gc-anchor-label--dark'), a.name);
+    colorDiv.appendChild(label);
+    card.appendChild(colorDiv);
+
+    var info = el('div', 'gc-anchor-info');
+    info.appendChild(el('div', 'gc-anchor-pantone', a.pantone));
+    var details = el('div', 'gc-anchor-details');
+    details.appendChild(document.createTextNode(a.cmyk));
+    details.appendChild(document.createElement('br'));
+    details.appendChild(document.createTextNode(a.hex + '  (Stop #' + a.stop + ')'));
+    info.appendChild(details);
+    card.appendChild(info);
+
+    anchorGrid.appendChild(card);
+  });
+
+  // ---- Render all 25 stops ----
+  var stopsGrid = document.getElementById('stopsGrid');
+  stops.forEach(function(s) {
+    var light = luma(s.hex) > 0.55;
+    var card = el('div', 'gc-stop-card');
+    card.setAttribute('role', 'button');
+    card.setAttribute('tabindex', '0');
+    card.setAttribute('aria-label', 'Copy ' + s.hex);
+
+    var colorDiv = el('div', 'gc-stop-color');
+    colorDiv.style.background = s.hex;
+    var num = el('span', 'gc-stop-number ' + (light ? 'gc-stop-number--light' : 'gc-stop-number--dark'), String(s.n));
+    colorDiv.appendChild(num);
+    card.appendChild(colorDiv);
+
+    var info = el('div', 'gc-stop-info');
+    info.appendChild(el('div', 'gc-stop-pantone', 'PMS ' + s.pantone));
+    info.appendChild(el('div', 'gc-stop-cmyk', cmykStr(s.cmyk)));
+    info.appendChild(el('div', 'gc-stop-hex', s.hex));
+    info.appendChild(el('span', 'gc-stop-quality gc-quality--' + s.quality, qualityLabels[s.quality]));
+    card.appendChild(info);
+
+    function copy() {
+      navigator.clipboard.writeText(s.hex).then(function() {
+        showToast('Copied ' + s.hex);
+      });
+    }
+    card.addEventListener('click', copy);
+    card.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); copy(); }
+    });
+
+    stopsGrid.appendChild(card);
+  });
+
+  // ---- Render solid colors ----
+  var solidsGrid = document.getElementById('solidsGrid');
+  solids.forEach(function(s) {
+    var card = el('div', 'gc-solid-card');
+
+    var colorDiv = el('div', 'gc-solid-color');
+    colorDiv.style.background = s.hex;
+    if (s.hex === '#FFFFFF') colorDiv.style.borderBottom = '1px solid var(--surface-fg-default)';
+    card.appendChild(colorDiv);
+
+    var info = el('div', 'gc-solid-info');
+    info.appendChild(el('div', 'gc-solid-name', s.name));
+    var details = el('div', 'gc-solid-details');
+    details.appendChild(document.createTextNode(s.pantone));
+    details.appendChild(document.createElement('br'));
+    details.appendChild(document.createTextNode(s.cmyk));
+    details.appendChild(document.createElement('br'));
+    details.appendChild(document.createTextNode(s.hex));
+    details.appendChild(document.createElement('br'));
+    var descSpan = el('span', null, s.desc);
+    descSpan.style.color = 'var(--grayscale-500)';
+    details.appendChild(descSpan);
+    info.appendChild(details);
+    card.appendChild(info);
+
+    solidsGrid.appendChild(card);
+  });
+
+  // ---- Render notes ----
+  var notesList = document.getElementById('notesList');
+  notes.forEach(function(text) {
+    notesList.appendChild(el('li', null, text));
+  });
+})();
+</script>
+</body>
+</html>
