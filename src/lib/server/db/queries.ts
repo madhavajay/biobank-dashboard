@@ -80,12 +80,7 @@ export const getHomePageData = async (platform: App.Platform | undefined) => {
 		.groupBy(states.region)
 		.orderBy(desc(sum(states.samples)));
 
-	const variantRows = await db
-		.select({
-			gene: variants.gene,
-			alleleFrequency: variants.alleleFrequency
-		})
-		.from(variants);
+	const [variantTotalRow] = await db.select({ total: count() }).from(variants);
 
 	const aggregated = totals[0]!;
 	const totalIndividuals = asNumber(aggregated.individuals);
@@ -116,11 +111,11 @@ export const getHomePageData = async (platform: App.Platform | undefined) => {
 			value: entry.total,
 			display: entry.total.toLocaleString(),
 			color: consequenceColors[index] ?? consequenceColors[consequenceColors.length - 1]
-		})),
+			})),
 		{
 			label: 'Others',
-			value: Math.max(0, variantRows.length - topConsequenceTotal),
-			display: Math.max(0, variantRows.length - topConsequenceTotal).toLocaleString(),
+			value: Math.max(0, (variantTotalRow?.total ?? 0) - topConsequenceTotal),
+			display: Math.max(0, (variantTotalRow?.total ?? 0) - topConsequenceTotal).toLocaleString(),
 			color: consequenceColors[4]
 		}
 	];

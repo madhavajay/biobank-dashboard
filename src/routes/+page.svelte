@@ -433,6 +433,8 @@
 		height: 100%;
 		padding: 1.15rem 1.3rem;
 		background: #fff;
+		overflow: visible;
+		z-index: 1;
 	}
 
 	.map-stage {
@@ -442,6 +444,7 @@
 		background: transparent;
 		padding: 0;
 		min-height: 0;
+		overflow: visible;
 	}
 
 	:global(.map-stage svg) {
@@ -535,7 +538,7 @@
 
 	.map-tooltip {
 		position: absolute;
-		z-index: 2;
+		z-index: 3;
 		width: min(15rem, calc(100% - 2rem));
 		padding: 0.85rem 0.95rem;
 		border: 1px solid rgba(31, 49, 87, 0.08);
