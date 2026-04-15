@@ -1,0 +1,22 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "bipmed-biobank",
+	"main": ".svelte-kit/cloudflare/_worker.js",
+	"assets": {
+		"directory": ".svelte-kit/cloudflare"
+	},
+	"compatibility_date": "2026-04-15",
+	"compatibility_flags": ["nodejs_compat"],
+	"observability": {
+		"enabled": true
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "bipmed-biobank",
+			"database_id": "d8b2c3de-a161-470f-b734-9be4ef329ff0",
+			"preview_database_id": "d8b2c3de-a161-470f-b734-9be4ef329ff0",
+			"remote": true
+		}
+	]
+}
