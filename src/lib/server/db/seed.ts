@@ -62,6 +62,7 @@ export type VariantRow = {
 	heterozygote: number;
 	homozygoteAlternative: number;
 	homozygoteReference: number;
+	homozygoteOther: number;
 };
 
 export type VariantConsequenceRow = {
@@ -270,7 +271,8 @@ export const createSeedData = () => {
 			const dbSnp = `rs${371554528 + seedIndex}`;
 			const heterozygote = Math.max(1, Math.floor(subjectCount * 0.72));
 			const homozygoteAlternative = Math.max(0, Math.floor(subjectCount * 0.08));
-			const homozygoteReference = Math.max(0, entry.individuals - heterozygote - homozygoteAlternative);
+			const homozygoteOther = Math.max(0, Math.min(3, Math.floor(subjectCount * 0.03) + (j % 2)));
+			const homozygoteReference = Math.max(0, entry.individuals - heterozygote - homozygoteAlternative - homozygoteOther);
 
 			variantRows.push({
 				id,
@@ -297,7 +299,8 @@ export const createSeedData = () => {
 				functionalImpactVep: impact,
 				heterozygote,
 				homozygoteAlternative,
-				homozygoteReference
+				homozygoteReference,
+				homozygoteOther
 			});
 
 			const consequenceRows = 3 + (j % 5);
@@ -357,7 +360,8 @@ export const createSeedData = () => {
 			functionalImpactVep: impactForConsequence(special.consequence),
 			heterozygote: 110 - index * 15,
 			homozygoteAlternative: 18 - index * 3,
-			homozygoteReference: state.individuals - 128 + index * 12
+			homozygoteReference: state.individuals - 130 + index * 12,
+			homozygoteOther: 2 + (index % 3)
 		};
 	}
 

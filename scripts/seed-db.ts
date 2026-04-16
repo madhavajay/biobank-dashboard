@@ -147,7 +147,8 @@ const sql = [
 			'functional_impact_vep',
 			'heterozygote',
 			'homozygote_alternative',
-			'homozygote_reference'
+			'homozygote_reference',
+			'homozygote_other'
 		],
 		data.variants.map((row) => ({
 			id: row.id,
@@ -174,7 +175,8 @@ const sql = [
 			functional_impact_vep: row.functionalImpactVep,
 			heterozygote: row.heterozygote,
 			homozygote_alternative: row.homozygoteAlternative,
-			homozygote_reference: row.homozygoteReference
+			homozygote_reference: row.homozygoteReference,
+			homozygote_other: row.homozygoteOther
 		}))
 	),
 	toInsertSql(

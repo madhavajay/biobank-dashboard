@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
+	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { Search } from '@lucide/svelte';
 	import logo from '$lib/assets/logo.png';
@@ -51,6 +52,7 @@
 	let hoveredState = $state<HoverState | null>(null);
 	let mapElement: HTMLDivElement | null = null;
 	let useTapTooltip = $state(false);
+	let heroQuery = $state('');
 
 	onMount(() => {
 		if (!browser) return;
@@ -123,6 +125,14 @@
 		hoveredState = buildHoverState(link, event);
 		updateHoveredPath(code);
 	};
+
+	const handleHeroSearchSubmit = async (event: SubmitEvent) => {
+		event.preventDefault();
+
+		const query = heroQuery.trim();
+		const href = query ? `/explorer?q=${encodeURIComponent(query)}` : '/explorer';
+		await goto(href);
+	};
 </script>
 
 <svelte:head>
@@ -136,18 +146,19 @@
 			<img class="hero-logo" src={logo} alt="BIPMed" />
 			<div class="hero-search-block">
 				<p class="eyebrow">Data Portal</p>
-				<form action="/explorer" class="hero-search">
+				<form action="/explorer" class="hero-search" onsubmit={handleHeroSearchSubmit}>
 					<div class="hero-search__icon">
 						<Search class="size-5" />
 					</div>
 					<Input
 						type="search"
 						name="q"
+						bind:value={heroQuery}
 						placeholder={data.portalMeta.searchPlaceholder}
 						aria-label="Search variants"
 						class="hero-search__input"
 					/>
-					<Button type="submit" class="hero-search__button">Explore</Button>
+					<Button type="submit" class="hero-search__button">{heroQuery.trim() ? 'Search' : 'Explore'}</Button>
 				</form>
 			</div>
 		</div>
@@ -406,6 +417,23 @@
 		border-radius: 0.85rem;
 		padding-inline: 1.05rem;
 		font-size: 0.92rem;
+		cursor: pointer;
+		transition:
+			background-color 140ms ease,
+			border-color 140ms ease,
+			color 140ms ease,
+			transform 140ms ease,
+			box-shadow 140ms ease;
+	}
+
+	:global(.hero-search__button:hover) {
+		background-color: color-mix(in srgb, var(--primary) 88%, white);
+		border-color: color-mix(in srgb, var(--primary) 74%, #173a4b);
+		box-shadow: 0 10px 18px rgba(29, 65, 90, 0.14);
+	}
+
+	:global(.hero-search__button:active) {
+		transform: translateY(1px);
 	}
 
 	.panel-head {

@@ -25,6 +25,7 @@
 				heterozygote: string;
 				homozygoteAlternative: string;
 				homozygoteReference: string;
+				homozygoteOther: string;
 				genotypeQuality: number;
 				gene: string;
 				rsid: string;
@@ -70,8 +71,15 @@
 		['Heterozygote', data.variant.heterozygote],
 		['Homozygote Alternative', data.variant.homozygoteAlternative],
 		['Homozygote Reference', data.variant.homozygoteReference],
-		['Genotype Quality', String(data.variant.genotypeQuality)]
+		['Homozygote Other', data.variant.homozygoteOther],
+		['Genotype Quality', String(data.variant.genotypeQuality)],
+		['Subjects', data.variant.subjectCount.toLocaleString()]
 	] as const;
+	const summaryColumns = () => {
+		const rows = summaryRows();
+		const midpoint = Math.ceil(rows.length / 2);
+		return [rows.slice(0, midpoint), rows.slice(midpoint)] as const;
+	};
 
 	const formatSummaryValue = (label: string, value: string) => {
 		if (label === 'Functional Impact') return `GENE: ${data.variant.functionalImpactGene} · VEP: ${data.variant.functionalImpactVep}`;
@@ -116,20 +124,14 @@
 						<Card.Title class="text-2xl tracking-[-0.05em]">Variant overview</Card.Title>
 					</div>
 				</Card.Header>
-				<Card.Content class="p-0">
-					<div class="px-5 pt-3">
-						<p class="text-[11px] font-semibold tracking-[0.14em] text-muted-foreground uppercase">Scroll for more</p>
-					</div>
-					<div class="variant-scroll-wrap">
-						<div class="max-h-[14.5rem] overflow-auto px-5 pb-5">
-						<table class="min-w-[680px] w-full border-separate border-spacing-0 text-sm">
-							<tbody>
-								{#each summaryRows() as [label, value], index}
-									<tr class={index % 2 === 0 ? 'bg-[#f4f7f8]' : 'bg-transparent'}>
-										<th class="w-[280px] border-y border-[#e1eaee] px-4 py-3 text-left text-[11px] font-semibold tracking-[0.14em] text-muted-foreground uppercase">
-											{label}
-										</th>
-										<td class="border-y border-[#e1eaee] px-4 py-3 text-sm font-medium text-foreground">
+				<Card.Content class="px-5 pb-5 pt-4">
+					<div class="grid gap-4 lg:grid-cols-2">
+						{#each summaryColumns() as column}
+							<div class="space-y-3">
+								{#each column as [label, value]}
+									<div class="rounded-2xl border border-[#e1eaee] bg-[#f7fafb] px-4 py-4 ring-1 ring-[#edf3f6]">
+										<p class="text-[11px] font-semibold tracking-[0.14em] text-muted-foreground uppercase">{label}</p>
+										<div class="mt-2 text-sm font-medium text-foreground">
 											{#if label === 'Variant Class'}
 												<Badge variant="outline" class="rounded-md px-2 py-0 text-[10px]">{value}</Badge>
 											{:else if label === 'Consequence'}
@@ -137,20 +139,11 @@
 											{:else}
 												{formatSummaryValue(label, value)}
 											{/if}
-										</td>
-									</tr>
+										</div>
+									</div>
 								{/each}
-								<tr class="bg-[#f4f7f8]">
-									<th class="w-[280px] border-y border-[#e1eaee] px-4 py-3 text-left text-[11px] font-semibold tracking-[0.14em] text-muted-foreground uppercase">
-										Subjects
-									</th>
-									<td class="border-y border-[#e1eaee] px-4 py-3 text-sm font-medium text-foreground">
-										{data.variant.subjectCount.toLocaleString()}
-									</td>
-								</tr>
-							</tbody>
-						</table>
-						</div>
+							</div>
+						{/each}
 					</div>
 				</Card.Content>
 			</Card.Root>
@@ -158,12 +151,9 @@
 			<Card.Root class="border-border/70 bg-white/76 shadow-[0_12px_28px_rgba(22,52,79,0.06)] ring-1 ring-[#d6e4ea] backdrop-blur-sm">
 				<Card.Content class="p-0">
 				<Tabs.Root value="consequence" class="p-4 sm:p-5">
-					<Tabs.List class="variant-tabs mb-4 grid w-full grid-cols-4 rounded-none border-b bg-transparent p-0" variant="default">
+					<Tabs.List class="variant-tabs mb-4 grid w-full grid-cols-3 rounded-none border-b bg-transparent p-0" variant="default">
 						<Tabs.Trigger value="consequence" class="rounded-none border-b-2 border-transparent px-3 py-3 text-[11px] tracking-[0.14em] uppercase data-[state=active]:border-primary data-[state=active]:bg-transparent">
 							Consequence
-						</Tabs.Trigger>
-						<Tabs.Trigger value="subject" class="rounded-none border-b-2 border-transparent px-3 py-3 text-[11px] tracking-[0.14em] uppercase data-[state=active]:border-primary data-[state=active]:bg-transparent">
-							Subject
 						</Tabs.Trigger>
 						<Tabs.Trigger value="distribution" class="rounded-none border-b-2 border-transparent px-3 py-3 text-[11px] tracking-[0.14em] uppercase data-[state=active]:border-primary data-[state=active]:bg-transparent">
 							Distribution
@@ -218,47 +208,6 @@
 												</Table.Cell>
 												<Table.Cell class="py-2 text-[13px] text-muted-foreground">{row.strand}</Table.Cell>
 												<Table.Cell class="py-2 font-mono text-[13px] text-foreground">{row.transcript}</Table.Cell>
-											</Table.Row>
-										{/each}
-									</Table.Body>
-								</Table.Root>
-							</div>
-							</Card.Content>
-						</Card.Root>
-					</Tabs.Content>
-
-					<Tabs.Content value="subject">
-						<Card.Root class="border-0 bg-transparent shadow-none ring-0">
-							<Card.Header class="px-0 pt-0">
-								<div class="space-y-1">
-									<p class="text-[11px] font-semibold tracking-[0.14em] text-muted-foreground uppercase">Subject</p>
-									<Card.Title class="text-2xl tracking-[-0.05em]">
-										Showing 1 - {data.subjectRows.length} of {data.subjectRows.length}
-									</Card.Title>
-								</div>
-							</Card.Header>
-							<Card.Content class="px-0 pb-0">
-							<div class="overflow-x-auto">
-								<Table.Root class="min-w-[760px] text-sm">
-									<Table.Header>
-										<Table.Row class="bg-transparent hover:bg-transparent">
-											<Table.Head class="h-9 w-12 text-[11px] tracking-[0.12em] uppercase">#</Table.Head>
-											<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">Subject</Table.Head>
-											<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">Ethnicity</Table.Head>
-											<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">State</Table.Head>
-											<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">Center</Table.Head>
-											<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">Project</Table.Head>
-										</Table.Row>
-									</Table.Header>
-									<Table.Body>
-										{#each data.subjectRows as row, index}
-											<Table.Row>
-												<Table.Cell class="py-2 text-xs text-muted-foreground">{index + 1}</Table.Cell>
-												<Table.Cell class="py-2 font-mono text-[13px] font-medium text-foreground">{row.subjectId}</Table.Cell>
-												<Table.Cell class="py-2 text-[13px] text-muted-foreground">{row.ethnicity}</Table.Cell>
-												<Table.Cell class="py-2 text-[13px] text-foreground">{row.state}</Table.Cell>
-												<Table.Cell class="py-2 text-[13px] text-muted-foreground">{row.center}</Table.Cell>
-												<Table.Cell class="py-2 text-[13px] text-muted-foreground">{row.project}</Table.Cell>
 											</Table.Row>
 										{/each}
 									</Table.Body>
@@ -364,20 +313,3 @@
 			</Card.Root>
 	</div>
 </section>
-
-<style>
-	.variant-scroll-wrap {
-		position: relative;
-	}
-
-	.variant-scroll-wrap::after {
-		content: '';
-		position: absolute;
-		right: 0;
-		bottom: 0;
-		left: 0;
-		height: 2.5rem;
-		background: linear-gradient(180deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.96));
-		pointer-events: none;
-	}
-</style>

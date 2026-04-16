@@ -15,7 +15,19 @@
 			q: string;
 			page: number;
 			pageSize: number;
-			sort: 'position' | 'af_desc' | 'gene';
+			sort:
+				| 'position'
+				| 'af_desc'
+				| 'ac_desc'
+				| 'an_desc'
+				| 'het_desc'
+				| 'hom_alt_desc'
+				| 'hom_ref_desc'
+				| 'hom_oth_desc'
+				| 'subjects_desc'
+				| 'genes_desc'
+				| 'gene'
+				| 'dbsnp';
 			variantClassFilter: 'all' | 'SNV' | 'INS' | 'DEL';
 			stateFilter: 'all' | 'SP' | 'RJ' | 'MG' | 'ES';
 			tagFilter: string;
@@ -32,7 +44,13 @@
 				stateCode: string;
 				variantClass: string;
 				consequence: string;
-				afLabel: string;
+				ac: number;
+				an: number;
+				afPercentLabel: string;
+				heterozygote: number;
+				homozygoteAlternative: number;
+				homozygoteReference: number;
+				homozygoteOther: number;
 				geneCount: number;
 				subjectCount: number;
 				impact: string;
@@ -46,6 +64,19 @@
 
 	const startRow = () => (data.totalRows === 0 ? 0 : (data.page - 1) * data.pageSize + 1);
 	const endRow = () => Math.min(data.page * data.pageSize, data.totalRows);
+	type ExplorerSort =
+		| 'position'
+		| 'af_desc'
+		| 'ac_desc'
+		| 'an_desc'
+		| 'het_desc'
+		| 'hom_alt_desc'
+		| 'hom_ref_desc'
+		| 'hom_oth_desc'
+		| 'subjects_desc'
+		| 'genes_desc'
+		| 'gene'
+		| 'dbsnp';
 	const buildPageHref = (page: number) => {
 		const params = new URLSearchParams();
 		if (data.q) params.set('q', data.q);
@@ -59,7 +90,7 @@
 		return query ? `/explorer?${query}` : '/explorer';
 	};
 	const buildFilterHref = (next: {
-		sort?: 'position' | 'af_desc' | 'gene';
+		sort?: ExplorerSort;
 		variantClassFilter?: 'all' | 'SNV' | 'INS' | 'DEL';
 		pageSize?: number;
 		stateFilter?: 'all' | 'SP' | 'RJ' | 'MG' | 'ES';
@@ -86,7 +117,33 @@
 		return 'outline';
 	};
 	const currentSortLabel = () =>
-		data.sort === 'position' ? 'Genomic position ↑' : data.sort === 'af_desc' ? 'Highest AF ↓' : 'Gene A-Z';
+		data.sort === 'position'
+			? 'DNA change ↑'
+			: data.sort === 'af_desc'
+				? 'Highest AF ↓'
+				: data.sort === 'ac_desc'
+					? 'Highest AC ↓'
+					: data.sort === 'an_desc'
+						? 'Highest AN ↓'
+						: data.sort === 'het_desc'
+							? 'Highest HET ↓'
+							: data.sort === 'hom_alt_desc'
+								? 'Highest HOM_ALT ↓'
+								: data.sort === 'hom_ref_desc'
+									? 'Highest HOM_REF ↓'
+									: data.sort === 'hom_oth_desc'
+										? 'Highest HOM_OTH ↓'
+										: data.sort === 'subjects_desc'
+											? 'Most subjects ↓'
+											: data.sort === 'genes_desc'
+												? 'Most genes ↓'
+												: data.sort === 'dbsnp'
+													? 'dbSNP A-Z'
+													: 'Gene A-Z';
+	const sortIndicator = (sort: ExplorerSort) => {
+		if (data.sort !== sort) return '';
+		return sort === 'position' || sort === 'gene' || sort === 'dbsnp' ? '↑' : '↓';
+	};
 	const handlePageChange = (nextPage: number) => {
 		if (!browser || nextPage === data.page) return;
 		void goto(buildPageHref(nextPage), {
@@ -274,24 +331,24 @@
 										{#if data.sort === 'af_desc'}<span class="text-xs text-muted-foreground">↓</span>{/if}
 									</a>
 								</Table.Head>
+								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">AC</Table.Head>
+								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">AN</Table.Head>
+								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">HET</Table.Head>
+								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">HOM_ALT</Table.Head>
+								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">HOM_REF</Table.Head>
+								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">HOM_OTH</Table.Head>
 								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">Tag</Table.Head>
 								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">Subjects</Table.Head>
 								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">Genes</Table.Head>
 								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">Impact</Table.Head>
 								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">dbSNP</Table.Head>
 								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">GQ</Table.Head>
-								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">
-									<a href={buildFilterHref({ sort: 'gene' })} class="inline-flex items-center gap-1 underline-offset-4 hover:underline">
-										Gene / State
-										{#if data.sort === 'gene'}<span class="text-xs text-muted-foreground">A-Z</span>{/if}
-									</a>
-								</Table.Head>
 							</Table.Row>
 						</Table.Header>
 						<Table.Body>
 							{#if data.rows.length === 0}
 								<Table.Row>
-									<Table.Cell colspan={12} class="py-10 text-center text-sm text-muted-foreground">
+									<Table.Cell colspan={18} class="py-10 text-center text-sm text-muted-foreground">
 										No rows match that search.
 									</Table.Cell>
 								</Table.Row>
@@ -308,7 +365,13 @@
 									</Table.Cell>
 									<Table.Cell class="py-2"><Badge variant="outline" class="rounded-full px-2 py-0 text-[10px]">{row.variantClass}</Badge></Table.Cell>
 									<Table.Cell class="py-2 text-[13px] text-muted-foreground">{row.consequence.replaceAll('_', ' ')}</Table.Cell>
-									<Table.Cell class="py-2 font-mono text-[13px]">{row.afLabel}</Table.Cell>
+									<Table.Cell class="py-2 font-mono text-[13px]">{row.afPercentLabel}</Table.Cell>
+									<Table.Cell class="py-2 font-mono text-[13px]">{row.ac}</Table.Cell>
+									<Table.Cell class="py-2 font-mono text-[13px]">{row.an}</Table.Cell>
+									<Table.Cell class="py-2 font-mono text-[11px] text-muted-foreground">{row.heterozygote}</Table.Cell>
+									<Table.Cell class="py-2 font-mono text-[11px] text-muted-foreground">{row.homozygoteAlternative}</Table.Cell>
+									<Table.Cell class="py-2 font-mono text-[11px] text-muted-foreground">{row.homozygoteReference}</Table.Cell>
+									<Table.Cell class="py-2 font-mono text-[11px] text-muted-foreground">{row.homozygoteOther}</Table.Cell>
 									<Table.Cell class="py-2"><Badge variant="outline" class="rounded-full px-2 py-0 text-[10px]">{row.tag}</Badge></Table.Cell>
 									<Table.Cell class="py-2 text-[13px]">{row.subjectCount}</Table.Cell>
 									<Table.Cell class="py-2 text-[13px]">{row.geneCount}</Table.Cell>
@@ -317,12 +380,6 @@
 									</Table.Cell>
 									<Table.Cell class="py-2 font-mono text-[13px] text-muted-foreground">{row.dbSnp}</Table.Cell>
 									<Table.Cell class="py-2 text-[13px] text-muted-foreground">{row.genotypeQuality}</Table.Cell>
-									<Table.Cell class="py-2">
-										<div class="space-y-0.5">
-											<p class="font-medium text-foreground">{row.gene}</p>
-											<p class="text-[11px] tracking-[0.08em] text-muted-foreground uppercase">{row.stateCode}</p>
-										</div>
-									</Table.Cell>
 								</Table.Row>
 							{/each}
 						{/if}

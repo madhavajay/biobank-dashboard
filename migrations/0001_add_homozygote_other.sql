@@ -1,0 +1,1 @@
+ALTER TABLE variants ADD COLUMN homozygote_other INTEGER NOT NULL DEFAULT 0;

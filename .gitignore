@@ -28,3 +28,5 @@ vite.config.ts.timestamp-*
 
 # Local data
 /data
+/context
+tmp-bundle-*.js

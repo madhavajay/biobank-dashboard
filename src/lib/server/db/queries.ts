@@ -188,7 +188,19 @@ export const getHomePageData = async (platform: App.Platform | undefined) => {
 	};
 };
 
-type ExplorerSort = 'position' | 'af_desc' | 'gene';
+type ExplorerSort =
+	| 'position'
+	| 'af_desc'
+	| 'ac_desc'
+	| 'an_desc'
+	| 'het_desc'
+	| 'hom_alt_desc'
+	| 'hom_ref_desc'
+	| 'hom_oth_desc'
+	| 'subjects_desc'
+	| 'genes_desc'
+	| 'gene'
+	| 'dbsnp';
 type ExplorerClassFilter = 'all' | 'SNV' | 'INS' | 'DEL';
 type ExplorerStateFilter = 'all' | 'SP' | 'RJ' | 'MG' | 'ES';
 
@@ -222,8 +234,26 @@ export const getExplorerPageData = async (
 	const orderBy =
 		sort === 'af_desc'
 			? [desc(variants.alleleFrequency), asc(variants.chromosome), asc(variants.position)]
+			: sort === 'ac_desc'
+				? [desc(variants.ac), asc(variants.chromosome), asc(variants.position)]
+				: sort === 'an_desc'
+					? [desc(variants.an), asc(variants.chromosome), asc(variants.position)]
+					: sort === 'het_desc'
+						? [desc(variants.heterozygote), asc(variants.chromosome), asc(variants.position)]
+						: sort === 'hom_alt_desc'
+							? [desc(variants.homozygoteAlternative), asc(variants.chromosome), asc(variants.position)]
+							: sort === 'hom_ref_desc'
+								? [desc(variants.homozygoteReference), asc(variants.chromosome), asc(variants.position)]
+								: sort === 'hom_oth_desc'
+									? [desc(variants.homozygoteOther), asc(variants.chromosome), asc(variants.position)]
+									: sort === 'subjects_desc'
+										? [desc(variants.subjectCount), asc(variants.chromosome), asc(variants.position)]
+										: sort === 'genes_desc'
+											? [desc(variants.geneCount), asc(variants.chromosome), asc(variants.position)]
 			: sort === 'gene'
 				? [asc(variants.gene), asc(variants.chromosome), asc(variants.position)]
+				: sort === 'dbsnp'
+					? [asc(variants.dbSnp), asc(variants.chromosome), asc(variants.position)]
 				: [asc(variants.chromosome), asc(variants.position)];
 
 	const [matching] = await db
@@ -251,6 +281,10 @@ export const getExplorerPageData = async (
 			alleleFrequency: variants.alleleFrequency,
 			ac: variants.ac,
 			an: variants.an,
+			heterozygote: variants.heterozygote,
+			homozygoteAlternative: variants.homozygoteAlternative,
+			homozygoteReference: variants.homozygoteReference,
+			homozygoteOther: variants.homozygoteOther,
 			geneCount: variants.geneCount,
 			subjectCount: variants.subjectCount,
 			impact: variants.impact,
@@ -282,7 +316,7 @@ export const getExplorerPageData = async (
 		tagOptions: tagOptionsRows.map((row) => row.tag),
 		rows: rows.map((row) => ({
 			...row,
-			afLabel: `${row.ac}/${row.an}${(row.alleleFrequency * 100).toFixed(row.alleleFrequency < 0.01 ? 2 : 2)}%`
+			afPercentLabel: `${(row.alleleFrequency * 100).toFixed(2)}%`
 		}))
 	};
 };
@@ -352,6 +386,7 @@ export const getVariantPageData = async (platform: App.Platform | undefined, id:
 			heterozygote: String(variant.heterozygote),
 			homozygoteAlternative: String(variant.homozygoteAlternative),
 			homozygoteReference: String(variant.homozygoteReference),
+			homozygoteOther: String(variant.homozygoteOther),
 			genotypeQuality: variant.genotypeQuality,
 			gene: variant.gene,
 			rsid: variant.dbSnp,

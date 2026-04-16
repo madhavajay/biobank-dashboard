@@ -57,7 +57,8 @@ export const variants = sqliteTable('variants', {
 	functionalImpactVep: text('functional_impact_vep').notNull(),
 	heterozygote: integer('heterozygote').notNull(),
 	homozygoteAlternative: integer('homozygote_alternative').notNull(),
-	homozygoteReference: integer('homozygote_reference').notNull()
+	homozygoteReference: integer('homozygote_reference').notNull(),
+	homozygoteOther: integer('homozygote_other').notNull()
 });
 
 export const variantConsequences = sqliteTable('variant_consequences', {
