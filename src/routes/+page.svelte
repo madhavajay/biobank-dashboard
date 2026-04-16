@@ -1,13 +1,8 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
-	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { Search } from '@lucide/svelte';
-	import logo from '$lib/assets/logo.png';
 	import HomeGeneBiotypeChart from '$lib/components/app/HomeGeneBiotypeChart.svelte';
 	import HomeVariantConsequencesChart from '$lib/components/app/HomeVariantConsequencesChart.svelte';
-	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
 
 	let { data } = $props<{
 		data: {
@@ -52,7 +47,6 @@
 	let hoveredState = $state<HoverState | null>(null);
 	let mapElement: HTMLDivElement | null = null;
 	let useTapTooltip = $state(false);
-	let heroQuery = $state('');
 
 	onMount(() => {
 		if (!browser) return;
@@ -125,14 +119,6 @@
 		hoveredState = buildHoverState(link, event);
 		updateHoveredPath(code);
 	};
-
-	const handleHeroSearchSubmit = async (event: SubmitEvent) => {
-		event.preventDefault();
-
-		const query = heroQuery.trim();
-		const href = query ? `/explorer?q=${encodeURIComponent(query)}` : '/explorer';
-		await goto(href);
-	};
 </script>
 
 <svelte:head>
@@ -141,30 +127,6 @@
 </svelte:head>
 
 <section class="home-shell">
-	<div class="hero-grid">
-		<div class="hero-copy">
-			<img class="hero-logo" src={logo} alt="BIPMed" />
-			<div class="hero-search-block">
-				<p class="eyebrow">Data Portal</p>
-				<form action="/explorer" class="hero-search" onsubmit={handleHeroSearchSubmit}>
-					<div class="hero-search__icon">
-						<Search class="size-5" />
-					</div>
-					<Input
-						type="search"
-						name="q"
-						bind:value={heroQuery}
-						placeholder={data.portalMeta.searchPlaceholder}
-						aria-label="Search variants"
-						class="hero-search__input"
-					/>
-					<Button type="submit" class="hero-search__button">{heroQuery.trim() ? 'Search' : 'Explore'}</Button>
-				</form>
-			</div>
-		</div>
-
-	</div>
-
 	<div class="map-layout">
 		<section class="panel panel--map">
 			<div class="panel-head">
@@ -320,7 +282,6 @@
 		padding: 1rem 0 2.75rem;
 	}
 
-	.hero-grid,
 	.map-layout {
 		display: grid;
 		gap: 1rem;
@@ -340,33 +301,18 @@
 			0 3px 0 rgba(34, 77, 103, 0.08);
 	}
 
-	.hero-copy,
 	.panel {
 		position: relative;
 		overflow: hidden;
 	}
 
-	.hero-copy,
 	.panel {
 		padding: 1.15rem 1.3rem;
-	}
-
-	.hero-copy {
-		border-radius: 1.2rem;
-		background: linear-gradient(180deg, #dff2f1 0%, #f8fdf9 100%);
-		border: 1px solid rgba(34, 77, 103, 0.1);
 	}
 
 	.panel h2 {
 		font-family: var(--font-heading);
 		letter-spacing: -0.06em;
-	}
-
-	.hero-logo {
-		display: block;
-		width: min(220px, 38vw);
-		height: auto;
-		margin-bottom: 0.55rem;
 	}
 
 	.eyebrow {
@@ -375,65 +321,6 @@
 		letter-spacing: 0.18em;
 		text-transform: uppercase;
 		color: #3e697f;
-	}
-
-	.hero-search-block {
-		display: grid;
-		gap: 0.45rem;
-		width: min(100%, 54rem);
-	}
-
-	.hero-search {
-		display: grid;
-		grid-template-columns: auto minmax(0, 1fr) auto;
-		align-items: center;
-		border-radius: 1rem;
-		background: rgba(255, 255, 255, 0.98);
-		box-shadow:
-			inset 0 0 0 1px rgba(34, 77, 103, 0.08),
-			0 14px 28px rgba(29, 65, 90, 0.1);
-		overflow: hidden;
-	}
-
-	.hero-search__icon {
-		display: grid;
-		place-items: center;
-		width: 3.5rem;
-		height: 3.5rem;
-		color: var(--primary);
-	}
-
-	:global(.hero-search__input) {
-		height: 3.5rem;
-		border: 0;
-		background: transparent;
-		box-shadow: none;
-		font-size: 0.96rem;
-	}
-
-	:global(.hero-search__button) {
-		margin: 0.34rem;
-		height: 2.8rem;
-		border-radius: 0.85rem;
-		padding-inline: 1.05rem;
-		font-size: 0.92rem;
-		cursor: pointer;
-		transition:
-			background-color 140ms ease,
-			border-color 140ms ease,
-			color 140ms ease,
-			transform 140ms ease,
-			box-shadow 140ms ease;
-	}
-
-	:global(.hero-search__button:hover) {
-		background-color: color-mix(in srgb, var(--primary) 88%, white);
-		border-color: color-mix(in srgb, var(--primary) 74%, #173a4b);
-		box-shadow: 0 10px 18px rgba(29, 65, 90, 0.14);
-	}
-
-	:global(.hero-search__button:active) {
-		transform: translateY(1px);
 	}
 
 	.panel-head {
@@ -792,18 +679,6 @@
 	}
 
 	@media (min-width: 700px) {
-		.hero-copy {
-			display: grid;
-			grid-template-columns: auto minmax(0, 1fr);
-			align-items: center;
-			gap: 1.25rem;
-		}
-
-		.hero-search-block {
-			justify-self: end;
-			align-self: center;
-		}
-
 		.map-layout {
 			grid-template-columns: minmax(0, 1.5fr) minmax(22rem, 0.98fr);
 		}
@@ -821,44 +696,19 @@
 		}
 	}
 
-	@media (min-width: 980px) {
-		.hero-grid {
-			grid-template-columns: minmax(0, 1fr);
-		}
-	}
-
 	@media (max-width: 699px) {
 		.home-shell {
 			gap: 1rem;
 		}
 
-		.hero-copy,
 		.panel {
 			padding: 1rem;
 			border-radius: 1.35rem;
 		}
 
-		.hero-copy {
-			display: block;
-		}
-
 		.sidebar-heading {
 			align-items: start;
 			flex-direction: column;
-		}
-
-		.hero-logo {
-			width: min(180px, 52vw);
-			margin-bottom: 0.5rem;
-		}
-
-		.hero-search {
-			grid-template-columns: auto minmax(0, 1fr);
-		}
-
-		:global(.hero-search__button) {
-			grid-column: 1 / -1;
-			margin: 0 0.28rem 0.28rem;
 		}
 
 		.map-stage {

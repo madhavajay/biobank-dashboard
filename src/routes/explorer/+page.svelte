@@ -1,69 +1,4 @@
-<script lang="ts">
-	import { browser } from '$app/environment';
-	import { goto } from '$app/navigation';
-	import { portalMeta } from '$lib/data/biobank';
-	import { Badge } from '$lib/components/ui/badge';
-	import * as Breadcrumb from '$lib/components/ui/breadcrumb';
-	import { Button } from '$lib/components/ui/button';
-	import * as Card from '$lib/components/ui/card';
-	import { Input } from '$lib/components/ui/input';
-	import * as Pagination from '$lib/components/ui/pagination';
-	import * as Table from '$lib/components/ui/table';
-
-	let { data } = $props<{
-		data: {
-			q: string;
-			page: number;
-			pageSize: number;
-			sort:
-				| 'position'
-				| 'af_desc'
-				| 'ac_desc'
-				| 'an_desc'
-				| 'het_desc'
-				| 'hom_alt_desc'
-				| 'hom_ref_desc'
-				| 'hom_oth_desc'
-				| 'subjects_desc'
-				| 'genes_desc'
-				| 'gene'
-				| 'dbsnp';
-			variantClassFilter: 'all' | 'SNV' | 'INS' | 'DEL';
-			stateFilter: 'all' | 'SP' | 'RJ' | 'MG' | 'ES';
-			tagFilter: string;
-			totalRows: number;
-			totalPages: number;
-			totalVariants: number;
-			totalSubjects: number;
-			totalGenes: number;
-			stateOptions: Array<{ code: string; name: string }>;
-			tagOptions: string[];
-			rows: Array<{
-				id: string;
-				dnaChange: string;
-				stateCode: string;
-				variantClass: string;
-				consequence: string;
-				ac: number;
-				an: number;
-				afPercentLabel: string;
-				heterozygote: number;
-				homozygoteAlternative: number;
-				homozygoteReference: number;
-				homozygoteOther: number;
-				geneCount: number;
-				subjectCount: number;
-				impact: string;
-				dbSnp: string;
-				tag: string;
-				genotypeQuality: number;
-				gene: string;
-			}>;
-		};
-	}>();
-
-	const startRow = () => (data.totalRows === 0 ? 0 : (data.page - 1) * data.pageSize + 1);
-	const endRow = () => Math.min(data.page * data.pageSize, data.totalRows);
+<script lang="ts" module>
 	type ExplorerSort =
 		| 'position'
 		| 'af_desc'
@@ -77,7 +12,101 @@
 		| 'genes_desc'
 		| 'gene'
 		| 'dbsnp';
-	const buildPageHref = (page: number) => {
+
+	type ExplorerPageData = {
+		q: string;
+		page: number;
+		pageSize: number;
+		sort: ExplorerSort;
+		variantClassFilter: 'all' | 'SNV' | 'INS' | 'DEL';
+		stateFilter: 'all' | 'SP' | 'RJ' | 'MG' | 'ES';
+		tagFilter: string;
+		totalRows: number;
+		totalPages: number;
+		totalVariants: number;
+		totalSubjects: number;
+		totalGenes: number;
+		stateOptions: Array<{ code: string; name: string }>;
+		tagOptions: string[];
+		rows: Array<{
+			id: string;
+			dnaChange: string;
+			variantClass: string;
+			consequence: string;
+			ac: number;
+			an: number;
+			afPercentLabel: string;
+			heterozygote: number;
+			homozygoteAlternative: number;
+			homozygoteReference: number;
+			homozygoteOther: number;
+			geneCount: number;
+			subjectCount: number;
+			impact: string;
+			dbSnp: string;
+		}>;
+	};
+
+	const explorerCache = new Map<string, ExplorerPageData>();
+	const explorerRequests = new Map<string, Promise<ExplorerPageData>>();
+</script>
+
+<script lang="ts">
+	import { browser } from '$app/environment';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+	import { portalMeta } from '$lib/data/biobank';
+	import { Badge } from '$lib/components/ui/badge';
+	import { Button } from '$lib/components/ui/button';
+	import * as Card from '$lib/components/ui/card';
+	import { Input } from '$lib/components/ui/input';
+	import * as Pagination from '$lib/components/ui/pagination';
+	import * as Table from '$lib/components/ui/table';
+
+	const parseSort = (value: string | null): ExplorerSort => {
+		if (
+			value === 'af_desc' ||
+			value === 'ac_desc' ||
+			value === 'an_desc' ||
+			value === 'het_desc' ||
+			value === 'hom_alt_desc' ||
+			value === 'hom_ref_desc' ||
+			value === 'hom_oth_desc' ||
+			value === 'subjects_desc' ||
+			value === 'genes_desc' ||
+			value === 'gene' ||
+			value === 'dbsnp'
+		)
+			return value;
+		return 'position';
+	};
+	const parseClass = (value: string | null): 'all' | 'SNV' | 'INS' | 'DEL' =>
+		value === 'SNV' || value === 'INS' || value === 'DEL' ? value : 'all';
+	const parseState = (value: string | null): 'all' | 'SP' | 'RJ' | 'MG' | 'ES' =>
+		value === 'SP' || value === 'RJ' || value === 'MG' || value === 'ES' ? value : 'all';
+
+	const data = $derived.by(() => {
+		const params = page.url.searchParams;
+		const pageNum = Number(params.get('page') ?? '1');
+		const pageSize = Number(params.get('pageSize') ?? '20');
+		return {
+			q: params.get('q') ?? '',
+			page: Number.isFinite(pageNum) && pageNum > 0 ? pageNum : 1,
+			pageSize: Number.isFinite(pageSize) && pageSize > 0 ? pageSize : 20,
+			sort: parseSort(params.get('sort')),
+			variantClassFilter: parseClass(params.get('class')),
+			stateFilter: parseState(params.get('state')),
+			tagFilter: params.get('tag') ?? 'all'
+		};
+	});
+
+	let explorer = $state<ExplorerPageData | null>(null);
+	let isLoading = $state(true);
+	let loadError = $state<string | null>(null);
+
+	const startRow = () => (explorer && explorer.totalRows > 0 ? (data.page - 1) * data.pageSize + 1 : 0);
+	const endRow = () => Math.min(data.page * data.pageSize, explorer?.totalRows ?? 0);
+	const buildExplorerParams = (overrides?: { page?: number }) => {
 		const params = new URLSearchParams();
 		if (data.q) params.set('q', data.q);
 		if (data.sort !== 'position') params.set('sort', data.sort);
@@ -85,8 +114,12 @@
 		if (data.stateFilter !== 'all') params.set('state', data.stateFilter);
 		if (data.tagFilter !== 'all') params.set('tag', data.tagFilter);
 		if (data.pageSize !== 20) params.set('pageSize', String(data.pageSize));
+		const page = overrides?.page ?? data.page;
 		if (page > 1) params.set('page', String(page));
-		const query = params.toString();
+		return params;
+	};
+	const buildPageHref = (page: number) => {
+		const query = buildExplorerParams({ page }).toString();
 		return query ? `/explorer?${query}` : '/explorer';
 	};
 	const buildFilterHref = (next: {
@@ -144,6 +177,63 @@
 		if (data.sort !== sort) return '';
 		return sort === 'position' || sort === 'gene' || sort === 'dbsnp' ? '↑' : '↓';
 	};
+
+	const getRequestKey = () => buildExplorerParams().toString();
+
+	const fetchExplorerData = async (requestKey: string) => {
+		isLoading = true;
+		loadError = null;
+
+		try {
+			let request = explorerRequests.get(requestKey);
+			if (!request) {
+				request = fetch(`/api/explorer?${requestKey}`)
+					.then(async (response) => {
+						if (!response.ok) throw new Error(`Request failed with ${response.status}`);
+						return (await response.json()) as ExplorerPageData;
+					})
+					.finally(() => {
+						explorerRequests.delete(requestKey);
+					});
+				explorerRequests.set(requestKey, request);
+			}
+
+			const result = await request;
+			explorerCache.set(requestKey, result);
+			explorer = result;
+		} catch (error) {
+			loadError = error instanceof Error ? error.message : 'Failed to load explorer data';
+			if (!explorerCache.has(requestKey)) {
+				explorer = null;
+			}
+		} finally {
+			isLoading = false;
+		}
+	};
+
+	$effect(() => {
+		data.q;
+		data.page;
+		data.pageSize;
+		data.sort;
+		data.variantClassFilter;
+		data.stateFilter;
+		data.tagFilter;
+
+		if (!browser) return;
+
+		const requestKey = getRequestKey();
+		const cached = explorerCache.get(requestKey);
+		if (cached) {
+			explorer = cached;
+			isLoading = false;
+			loadError = null;
+			return;
+		}
+
+		void fetchExplorerData(requestKey);
+	});
+
 	const handlePageChange = (nextPage: number) => {
 		if (!browser || nextPage === data.page) return;
 		void goto(buildPageHref(nextPage), {
@@ -159,20 +249,7 @@
 
 <section class="flex flex-col gap-6 pt-2 sm:pt-3">
 	<div class="space-y-4">
-		<Breadcrumb.Root>
-			<Breadcrumb.List class="text-[13px] text-muted-foreground">
-				<Breadcrumb.Item><Breadcrumb.Link href="/">Home</Breadcrumb.Link></Breadcrumb.Item>
-				<Breadcrumb.Separator />
-				<Breadcrumb.Item><Breadcrumb.Page>Exploration</Breadcrumb.Page></Breadcrumb.Item>
-			</Breadcrumb.List>
-		</Breadcrumb.Root>
 		<div class="space-y-2">
-			<div class="flex flex-wrap items-center gap-3">
-				<Badge variant="outline" class="rounded-full px-3 py-1 text-[11px] tracking-[0.18em] uppercase">
-					{portalMeta.explorerProject}
-				</Badge>
-				<p class="text-[11px] font-semibold tracking-[0.16em] text-muted-foreground uppercase">Data browser</p>
-			</div>
 			<div class="space-y-2">
 				<h1 class="font-heading text-3xl leading-none tracking-[-0.06em] text-foreground sm:text-[3.6rem]">Exploration</h1>
 				<p class="max-w-4xl text-sm leading-6 text-muted-foreground sm:text-base">
@@ -265,7 +342,7 @@
 											['gene', 'Gene']
 										] as [value, label]}
 											<Button
-												href={buildFilterHref({ sort: value as 'position' | 'af_desc' | 'gene' })}
+												href={buildFilterHref({ sort: value as ExplorerSort })}
 												variant={data.sort === value ? 'default' : 'outline'}
 												size="sm"
 												class="rounded-full"
@@ -279,7 +356,7 @@
 									<p class="text-[11px] font-semibold tracking-[0.14em] text-muted-foreground uppercase">State</p>
 									<div class="flex flex-wrap gap-2">
 										<Button href={buildFilterHref({ stateFilter: 'all' })} variant={data.stateFilter === 'all' ? 'default' : 'outline'} size="sm" class="rounded-full">All states</Button>
-										{#each data.stateOptions as state}
+										{#each explorer?.stateOptions ?? [] as state}
 											<Button
 												href={buildFilterHref({ stateFilter: state.code as 'SP' | 'RJ' | 'MG' | 'ES' })}
 												variant={data.stateFilter === state.code ? 'default' : 'outline'}
@@ -295,7 +372,7 @@
 									<p class="text-[11px] font-semibold tracking-[0.14em] text-muted-foreground uppercase">Tag</p>
 									<div class="flex flex-wrap gap-2">
 										<Button href={buildFilterHref({ tagFilter: 'all' })} variant={data.tagFilter === 'all' ? 'default' : 'outline'} size="sm" class="rounded-full">All tags</Button>
-										{#each data.tagOptions as tag}
+										{#each explorer?.tagOptions ?? [] as tag}
 											<Button
 												href={buildFilterHref({ tagFilter: tag })}
 												variant={data.tagFilter === tag ? 'default' : 'outline'}
@@ -312,7 +389,8 @@
 					</div>
 				</div>
 
-				<div class="overflow-x-auto">
+				<div class="px-6">
+					<div class="overflow-x-auto">
 					<Table.Root class="min-w-[1040px] text-sm">
 						<Table.Header>
 							<Table.Row class="bg-transparent hover:bg-transparent">
@@ -337,23 +415,39 @@
 								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">HOM_ALT</Table.Head>
 								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">HOM_REF</Table.Head>
 								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">HOM_OTH</Table.Head>
-								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">Tag</Table.Head>
 								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">Subjects</Table.Head>
 								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">Genes</Table.Head>
 								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">Impact</Table.Head>
 								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">dbSNP</Table.Head>
-								<Table.Head class="h-9 text-[11px] tracking-[0.12em] uppercase">GQ</Table.Head>
 							</Table.Row>
 						</Table.Header>
 						<Table.Body>
-							{#if data.rows.length === 0}
+							{#if isLoading}
 								<Table.Row>
-									<Table.Cell colspan={18} class="py-10 text-center text-sm text-muted-foreground">
+									<Table.Cell colspan={16} class="py-10 text-center text-sm text-muted-foreground">
+										<div class="flex items-center justify-center gap-3">
+											<span
+												class="inline-block size-4 animate-spin rounded-full border-2 border-primary/20 border-t-primary"
+												aria-hidden="true"
+											></span>
+											<span>Loading results...</span>
+										</div>
+									</Table.Cell>
+								</Table.Row>
+							{:else if loadError}
+								<Table.Row>
+									<Table.Cell colspan={16} class="py-10 text-center text-sm text-destructive">
+										{loadError}
+									</Table.Cell>
+								</Table.Row>
+							{:else if !explorer || explorer.rows.length === 0}
+								<Table.Row>
+									<Table.Cell colspan={16} class="py-10 text-center text-sm text-muted-foreground">
 										No rows match that search.
 									</Table.Cell>
 								</Table.Row>
 							{:else}
-								{#each data.rows as row, index}
+								{#each explorer.rows as row, index}
 									<Table.Row>
 										<Table.Cell class="py-2 text-xs text-muted-foreground">{startRow() + index}</Table.Cell>
 									<Table.Cell class="py-2">
@@ -372,24 +466,23 @@
 									<Table.Cell class="py-2 font-mono text-[11px] text-muted-foreground">{row.homozygoteAlternative}</Table.Cell>
 									<Table.Cell class="py-2 font-mono text-[11px] text-muted-foreground">{row.homozygoteReference}</Table.Cell>
 									<Table.Cell class="py-2 font-mono text-[11px] text-muted-foreground">{row.homozygoteOther}</Table.Cell>
-									<Table.Cell class="py-2"><Badge variant="outline" class="rounded-full px-2 py-0 text-[10px]">{row.tag}</Badge></Table.Cell>
 									<Table.Cell class="py-2 text-[13px]">{row.subjectCount}</Table.Cell>
 									<Table.Cell class="py-2 text-[13px]">{row.geneCount}</Table.Cell>
 									<Table.Cell class="py-2">
 										<Badge variant={impactVariant(row.impact)} class="rounded-full px-2 py-0 text-[10px]">{row.impact}</Badge>
 									</Table.Cell>
 									<Table.Cell class="py-2 font-mono text-[13px] text-muted-foreground">{row.dbSnp}</Table.Cell>
-									<Table.Cell class="py-2 text-[13px] text-muted-foreground">{row.genotypeQuality}</Table.Cell>
 								</Table.Row>
 							{/each}
 						{/if}
 						</Table.Body>
 					</Table.Root>
+					</div>
 				</div>
 
 				<div class="flex flex-col gap-4 border-t px-6 py-4 text-sm text-muted-foreground lg:flex-row lg:items-center lg:justify-between">
-					<p class="whitespace-nowrap">Page {data.page} of {data.totalPages}</p>
-					<Pagination.Root count={data.totalRows} perPage={data.pageSize} page={data.page} onPageChange={handlePageChange}>
+					<p class="whitespace-nowrap">Page {data.page} of {explorer?.totalPages ?? 1}</p>
+					<Pagination.Root count={explorer?.totalRows ?? 0} perPage={data.pageSize} page={data.page} onPageChange={handlePageChange}>
 						{#snippet children({ pages, currentPage })}
 							<Pagination.Content>
 								<Pagination.Item>

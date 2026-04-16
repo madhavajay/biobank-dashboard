@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, like, or, sum } from 'drizzle-orm';
+import { and, asc, count, desc, eq, like, or, sql, sum } from 'drizzle-orm';
 import { mapLegend, portalMeta } from '$lib/data/biobank';
 import { getDb } from './index';
 import { stateAnnotations, states, variantConsequences, variantSubjects, variants } from './schema.ts';
@@ -263,7 +263,9 @@ export const getExplorerPageData = async (
 
 	const [totalVariants] = await db.select({ total: count() }).from(variants);
 	const [subjectTotals] = await db.select({ total: sum(states.individuals) }).from(states);
-	const geneRows = await db.select({ gene: variants.gene }).from(variants);
+	const [geneTotals] = await db
+		.select({ total: sql<number>`count(distinct ${variants.gene})` })
+		.from(variants);
 	const stateOptionsRows = await db.select({ code: states.code, name: states.name }).from(states).orderBy(asc(states.code));
 	const tagOptionsRows = await db.select({ tag: variants.tag }).from(variants).groupBy(variants.tag).orderBy(asc(variants.tag));
 
@@ -275,7 +277,6 @@ export const getExplorerPageData = async (
 		.select({
 			id: variants.id,
 			dnaChange: variants.dnaChange,
-			stateCode: variants.stateCode,
 			variantClass: variants.variantClass,
 			consequence: variants.consequence,
 			alleleFrequency: variants.alleleFrequency,
@@ -288,10 +289,7 @@ export const getExplorerPageData = async (
 			geneCount: variants.geneCount,
 			subjectCount: variants.subjectCount,
 			impact: variants.impact,
-			dbSnp: variants.dbSnp,
-			tag: variants.tag,
-			genotypeQuality: variants.genotypeQuality,
-			gene: variants.gene
+			dbSnp: variants.dbSnp
 		})
 		.from(variants)
 		.where(where)
@@ -311,7 +309,7 @@ export const getExplorerPageData = async (
 		totalPages: Math.max(1, Math.ceil(totalRows / pageSize)),
 		totalVariants: totalVariants?.total ?? 0,
 		totalSubjects: asNumber(subjectTotals?.total),
-		totalGenes: new Set(geneRows.map((row) => row.gene)).size,
+		totalGenes: Number(geneTotals?.total ?? 0),
 		stateOptions: stateOptionsRows,
 		tagOptions: tagOptionsRows.map((row) => row.tag),
 		rows: rows.map((row) => ({
@@ -373,8 +371,6 @@ export const getVariantPageData = async (platform: App.Platform | undefined, id:
 		variant: {
 			id: variant.id,
 			project: variant.project,
-			stateCode: variant.stateCode,
-			tag: variant.tag,
 			variantClass: variant.variantClass,
 			consequence: variant.consequence,
 			functionalImpactGene: variant.functionalImpactGene,
@@ -387,8 +383,6 @@ export const getVariantPageData = async (platform: App.Platform | undefined, id:
 			homozygoteAlternative: String(variant.homozygoteAlternative),
 			homozygoteReference: String(variant.homozygoteReference),
 			homozygoteOther: String(variant.homozygoteOther),
-			genotypeQuality: variant.genotypeQuality,
-			gene: variant.gene,
 			rsid: variant.dbSnp,
 			externalReferences: buildVariantReferences(variant)
 		},

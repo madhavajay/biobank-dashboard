@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { ExternalLink } from '@lucide/svelte';
 	import { Badge } from '$lib/components/ui/badge';
-	import * as Breadcrumb from '$lib/components/ui/breadcrumb';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import * as Table from '$lib/components/ui/table';
@@ -12,8 +11,6 @@
 			variant: {
 				id: string;
 				project: string;
-				stateCode: string;
-				tag: string;
 				variantClass: string;
 				consequence: string;
 				functionalImpactGene: string;
@@ -26,8 +23,6 @@
 				homozygoteAlternative: string;
 				homozygoteReference: string;
 				homozygoteOther: string;
-				genotypeQuality: number;
-				gene: string;
 				rsid: string;
 				externalReferences: Array<{ label: string; value: string; url: string | null }>;
 			};
@@ -72,7 +67,6 @@
 		['Homozygote Alternative', data.variant.homozygoteAlternative],
 		['Homozygote Reference', data.variant.homozygoteReference],
 		['Homozygote Other', data.variant.homozygoteOther],
-		['Genotype Quality', String(data.variant.genotypeQuality)],
 		['Subjects', data.variant.subjectCount.toLocaleString()]
 	] as const;
 	const summaryColumns = () => {
@@ -99,15 +93,6 @@
 
 <section class="flex flex-col gap-6 pt-2 sm:pt-3">
 	<div class="space-y-4">
-		<Breadcrumb.Root>
-			<Breadcrumb.List class="text-[13px] text-muted-foreground">
-				<Breadcrumb.Item><Breadcrumb.Link href="/">Home</Breadcrumb.Link></Breadcrumb.Item>
-				<Breadcrumb.Separator />
-				<Breadcrumb.Item><Breadcrumb.Link href="/explorer">Exploration</Breadcrumb.Link></Breadcrumb.Item>
-				<Breadcrumb.Separator />
-				<Breadcrumb.Item><Breadcrumb.Page>{data.variant.id}</Breadcrumb.Page></Breadcrumb.Item>
-			</Breadcrumb.List>
-		</Breadcrumb.Root>
 		<div class="space-y-2">
 			<h1 class="font-heading text-3xl leading-none tracking-[-0.06em] text-foreground sm:text-[3.45rem]">{data.variant.id}</h1>
 			<p class="max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">

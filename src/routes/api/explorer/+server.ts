@@ -1,6 +1,7 @@
+import { json } from '@sveltejs/kit';
 import { getExplorerPageData } from '$lib/server/db/queries';
 
-export const load = async ({ url, platform }) => {
+const parseExplorerParams = (url: URL) => {
 	const q = url.searchParams.get('q') ?? '';
 	const page = Number(url.searchParams.get('page') ?? '1');
 	const pageSize = Number(url.searchParams.get('pageSize') ?? '20');
@@ -22,18 +23,37 @@ export const load = async ({ url, platform }) => {
 		sortParam === 'dbsnp'
 			? sortParam
 			: 'position';
-	const variantClassFilter = classParam === 'SNV' || classParam === 'INS' || classParam === 'DEL' ? classParam : 'all';
-	const stateFilter = stateParam === 'SP' || stateParam === 'RJ' || stateParam === 'MG' || stateParam === 'ES' ? stateParam : 'all';
+	const variantClassFilter =
+		classParam === 'SNV' || classParam === 'INS' || classParam === 'DEL' ? classParam : 'all';
+	const stateFilter =
+		stateParam === 'SP' || stateParam === 'RJ' || stateParam === 'MG' || stateParam === 'ES'
+			? stateParam
+			: 'all';
 	const tagFilter = tagParam ?? 'all';
 
-	return getExplorerPageData(
-		platform,
+	return {
 		q,
-		Number.isFinite(page) ? page : 1,
-		Number.isFinite(pageSize) && pageSize > 0 ? pageSize : 20,
+		page: Number.isFinite(page) ? page : 1,
+		pageSize: Number.isFinite(pageSize) && pageSize > 0 ? pageSize : 20,
 		sort,
 		variantClassFilter,
 		stateFilter,
 		tagFilter
+	} as const;
+};
+
+export const GET = async ({ url, platform }) => {
+	const params = parseExplorerParams(url);
+	const payload = await getExplorerPageData(
+		platform,
+		params.q,
+		params.page,
+		params.pageSize,
+		params.sort,
+		params.variantClassFilter,
+		params.stateFilter,
+		params.tagFilter
 	);
+
+	return json(payload);
 };

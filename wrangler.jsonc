@@ -16,8 +16,7 @@
 			"binding": "DB",
 			"database_name": "bipmed-biobank",
 			"database_id": "d8b2c3de-a161-470f-b734-9be4ef329ff0",
-			"preview_database_id": "d8b2c3de-a161-470f-b734-9be4ef329ff0",
-			"remote": true
+			"preview_database_id": "d8b2c3de-a161-470f-b734-9be4ef329ff0"
 		}
 	]
 }

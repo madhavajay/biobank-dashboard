@@ -30,3 +30,8 @@ vite.config.ts.timestamp-*
 /data
 /context
 tmp-bundle-*.js
+
+# Playwright
+/test-results
+/playwright-report
+/.last-run.json
