@@ -36,4 +36,40 @@ test.describe('BIPMed biobank smoke', () => {
 		await page.waitForURL(new RegExp(href!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 		await expect(page.locator('h1, h2').first()).toBeVisible();
 	});
+
+	test('beacon g_variants GET returns a matching variant', async ({ request }) => {
+		const response = await request.get(
+			'/g_variants?referenceName=19&start=45411940&referenceBases=T&alternateBases=C'
+		);
+		expect(response.ok()).toBeTruthy();
+		const payload = await response.json();
+		expect(payload.responseSummary.exists).toBe(true);
+		expect(payload.responseSummary.numTotalResults).toBeGreaterThan(0);
+		expect(payload.response.resultSets[0].results[0].id).toBe('chr19-45411941-T-C');
+	});
+
+	test('beacon g_variants POST accepts Beacon v2 request bodies', async ({ request }) => {
+		const response = await request.post('/g_variants', {
+			data: {
+				query: {
+					requestParameters: {
+						g_variant: {
+							geneId: 'APOE',
+							variantType: 'SNP'
+						}
+					},
+					requestedGranularity: 'record',
+					pagination: {
+						skip: 0,
+						limit: 5
+					}
+				}
+			}
+		});
+		expect(response.ok()).toBeTruthy();
+		const payload = await response.json();
+		expect(payload.meta.receivedRequestSummary.requestParameters.g_variant.geneId).toBe('APOE');
+		expect(payload.responseSummary.exists).toBe(true);
+		expect(payload.response.resultSets[0].results[0].molecularAttributes.geneIds).toContain('APOE');
+	});
 });

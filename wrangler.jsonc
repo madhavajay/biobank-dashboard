@@ -1,6 +1,7 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "bipmed-biobank",
+	"account_id": "a13177c2a05d56bdcc668c431ece4bba",
 	"main": ".svelte-kit/cloudflare/_worker.js",
 	"assets": {
 		"directory": ".svelte-kit/cloudflare",
@@ -8,15 +9,27 @@
 	},
 	"compatibility_date": "2026-04-15",
 	"compatibility_flags": ["nodejs_compat"],
+	// One Worker, multiple custom domains. The app resolves the tenant by hostname
+	// (see src/lib/tenants.ts); the D1 database + API live on this Worker and are
+	// reachable from each tenant domain (and cross-origin via CORS on /api).
+	"routes": [
+		{ "pattern": "data.biovault.net", "custom_domain": true },
+		{ "pattern": "bipmed.biovault.net", "custom_domain": true },
+		{ "pattern": "carigenetics.biovault.net", "custom_domain": true },
+		{ "pattern": "pgp-harvard.biovault.net", "custom_domain": true }
+		// Enable once these zones are proxied in this Cloudflare account:
+		// { "pattern": "bipmed.org", "custom_domain": true }
+		// { "pattern": "data.carigenetics.com", "custom_domain": true }
+	],
 	"observability": {
 		"enabled": true
 	},
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "bipmed-biobank",
-			"database_id": "d8b2c3de-a161-470f-b734-9be4ef329ff0",
-			"preview_database_id": "d8b2c3de-a161-470f-b734-9be4ef329ff0"
+			"database_name": "biovault-data",
+			"database_id": "6cfe544e-9782-457f-95ac-a000001e387f",
+			"preview_database_id": "6cfe544e-9782-457f-95ac-a000001e387f"
 		}
 	]
 }

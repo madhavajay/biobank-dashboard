@@ -1,10 +1,14 @@
-<svelte:head>
-	<title>About Us | BIPMed Data Portal</title>
-</svelte:head>
+<script lang="ts">
+	let { data } = $props();
+</script>
 
-<section class="flex flex-col gap-3 pt-2 sm:pt-3">
-	<h1 class="font-heading text-3xl leading-none tracking-[-0.06em] text-foreground sm:text-[3.45rem]">
-		About Us
-	</h1>
-	<p class="text-sm text-muted-foreground sm:text-base">(empty page)</p>
-</section>
+<svelte:head><title>About · {data.tenant.name}</title></svelte:head>
+
+<div class="mx-auto max-w-2xl py-6">
+	<h1 class="text-3xl font-bold tracking-tight">About <span class="brand-text">{data.tenant.name}</span></h1>
+	<p class="mt-3 text-muted-foreground">{data.tenant.tagline}</p>
+
+	<div class="card-surface mt-6 p-6 text-sm text-muted-foreground">
+		<p>This page is a placeholder — add the {data.tenant.name} description, team, citation, and data-use details here.</p>
+	</div>
+</div>

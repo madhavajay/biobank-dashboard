@@ -1,416 +1,473 @@
-import { and, asc, count, desc, eq, like, or, sql, sum } from 'drizzle-orm';
-import { mapLegend, portalMeta } from '$lib/data/biobank';
-import { getDb } from './index';
-import { stateAnnotations, states, variantConsequences, variantSubjects, variants } from './schema.ts';
+// Engine query layer — runs directly on the D1 binding for predictable analytics.
+import { CODE_CHROM, REFGET_SQ } from './chroms';
 
-const asNumber = (value: unknown) => Number(value ?? 0);
+export interface FreqCell {
+	cohortId: number;
+	cohortLabel: string;
+	population: string;
+	countryCode: string;
+	biobankId: number;
+	biobankSlug: string;
+	af: number;
+	ac: number;
+	an: number;
+	nHomo: number | null;
+	nHetero: number | null;
+	nHomoRef: number | null;
+}
 
-const regionColors = ['#4caf50', '#4ca0c7', '#f0c245', '#9e77d5', '#f28f4a'];
-const geneColors = ['#68b89a', '#8a6fe8', '#f2bf54', '#ef8d62', '#4cb9d8'];
-const storageColors = ['#68b89a', '#4ca0c7', '#8a6fe8'];
-const consequenceColors = ['#23426b', '#2ca6b1', '#68b89a', '#ef8d62', '#8a6fe8'];
-const metricColors = {
-	individuals: ['#68b89a', '#4ca0c7', '#d7dee9'],
-	datasets: ['#29427a', '#4ca0c7', '#8a6fe8'],
-	genes: ['#68b89a', '#8a6fe8', '#f2bf54'],
-	variants: ['#68b89a', '#ef8d62', '#4cb9d8']
-};
+export interface VariantRow {
+	id: number;
+	chrom: number;
+	chromName: string;
+	pos: number;
+	ref: string;
+	alt: string;
+	rsid: number | null;
+	vrsDigest: string | null;
+	posHg19: number | null;
+	lifted: number;
+	frequencies: FreqCell[];
+}
 
-const buildVariantReferences = (variant: {
-	id: string;
-	dbSnp: string;
-	gene: string;
-}) => [
-	{ label: 'dbSNP', value: variant.dbSnp, url: `https://www.ncbi.nlm.nih.gov/snp/${variant.dbSnp}` },
-	{ label: 'COSMIC', value: 'COSMIC', url: `https://cancer.sanger.ac.uk/cosmic/search?q=${encodeURIComponent(variant.id)}` },
-	{ label: 'ClinVar', value: 'ClinVar', url: `https://www.ncbi.nlm.nih.gov/clinvar/?term=${encodeURIComponent(variant.dbSnp)}` },
-	{ label: 'CIVIC', value: 'CIVIC', url: `https://civicdb.org/links/entrez_name/${encodeURIComponent(variant.gene)}` },
-	{ label: 'CPIC', value: 'CPIC', url: `https://cpicpgx.org/gene/${encodeURIComponent(variant.gene.toLowerCase())}/` },
-	{ label: 'UCSC', value: 'UCSC', url: `https://genome.ucsc.edu/cgi-bin/hgTracks?position=${encodeURIComponent(variant.id.replaceAll('-', ':'))}` }
-];
+async function biobankIdForSlug(db: D1Database, slug: string | null): Promise<number | null> {
+	if (!slug) return null;
+	const r = await db.prepare('SELECT id FROM biobanks WHERE slug=?').bind(slug).first<{ id: number }>();
+	return r?.id ?? null;
+}
 
-export const getHomePageData = async (platform: App.Platform | undefined) => {
-	const db = getDb(platform);
+async function biobankIdsForSlugs(db: D1Database, slugs: string[]): Promise<number[]> {
+	if (!slugs.length) return [];
+	const ph = slugs.map(() => '?').join(',');
+	const r = await db.prepare(`SELECT id FROM biobanks WHERE slug IN (${ph})`).bind(...slugs).all<{ id: number }>();
+	return r.results.map((x) => x.id);
+}
 
-	const stateRows = await db.select().from(states).orderBy(asc(states.code));
+export interface SearchParams {
+	q?: string;
+	chrom?: number;
+	posMin?: number;
+	posMax?: number;
+	rsid?: number;
+	rsids?: number[];
+	afMin?: number;
+	afMax?: number;
+	acMin?: number;
+	acMax?: number;
+	vrs?: string;
+	cohorts?: number[]; // restrict to these cohort/population ids (display + existence)
+	limit?: number;
+	offset?: number;
+	// biobank filter: which biobanks to require, and whether a variant must appear
+	// in ANY ('any') or ALL ('all') of them.
+	biobanks?: string[];
+	match?: 'any' | 'all';
+	sort?: 'variant' | 'rsid' | 'maxaf' | 'vrs';
+	dir?: 'asc' | 'desc';
+}
 
-	const totals = await db
-		.select({
-			samples: sum(states.samples),
-			individuals: sum(states.individuals),
-			individualsMale: sum(states.individualsMale),
-			individualsFemale: sum(states.individualsFemale),
-			wgsSamples: sum(states.wgsSamples),
-			snpSamples: sum(states.snpSamples),
-			singleCellSamples: sum(states.singleCellSamples),
-			volumeGb: sum(states.volumeGb),
-			fastqGb: sum(states.fastqGb),
-			bamGb: sum(states.bamGb),
-			vcfGb: sum(states.vcfGb),
-			genes: sum(states.genes),
-			proteinCoding: sum(states.proteinCoding),
-			lncRna: sum(states.lncRna),
-			processedPseudogene: sum(states.processedPseudogene),
-			unprocessedPseudogene: sum(states.unprocessedPseudogene),
-			otherGenes: sum(states.otherGenes),
-			variants: sum(states.variants),
-			commonVariants: sum(states.commonVariants),
-			lowFrequencyVariants: sum(states.lowFrequencyVariants),
-			rareVariants: sum(states.rareVariants),
-			otherVariants: sum(states.otherVariants)
-		})
-		.from(states);
+// A single search term -> a variant-matching SQL condition. Terms can be an rsID,
+// a VRS id, a chromosome, a position, or a range.
+function parseTerm(raw: string): { sql: string; args: unknown[] } | null {
+	const s = raw.trim().replace(/,/g, ''); // tolerate thousands separators: 44,903,787
+	if (!s) return null;
+	let m = /^rs(\d+)$/i.exec(s);
+	if (m) return { sql: 'v.rsid=?', args: [Number(m[1])] };
+	m = /^(?:ga4gh:VA\.)?([A-Za-z0-9_-]{32})$/.exec(s);
+	if (m) return { sql: 'v.vrs_digest=?', args: [m[1]] };
+	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:]\s?(\d+)\s*-\s*(\d+)$/i.exec(s); // range
+	if (m) {
+		const c = chromToCode(m[1]);
+		if (c) return { sql: '(v.chrom=? AND v.pos>=? AND v.pos<=?)', args: [c, Number(m[2]), Number(m[3])] };
+	}
+	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:]\s?(\d+)$/i.exec(s); // single position
+	if (m) {
+		const c = chromToCode(m[1]);
+		if (c) return { sql: '(v.chrom=? AND v.pos=?)', args: [c, Number(m[2])] };
+	}
+	m = /^(?:chr)?([0-9]+|x|y|mt|m)$/i.exec(s); // whole chromosome
+	if (m) {
+		const c = chromToCode(m[1]);
+		if (c) return { sql: 'v.chrom=?', args: [c] };
+	}
+	return null;
+}
 
-	const consequenceGroups = await db
-		.select({
-			consequence: variants.consequence,
-			total: count()
-		})
-		.from(variants)
-		.groupBy(variants.consequence)
-		.orderBy(desc(count()))
-		.limit(5);
+// Compound query: term | term | term  -> OR of the terms (any type mix).
+function parseQueryCondition(q: string): { sql: string; args: unknown[] } | null {
+	const conds = q
+		.split('|')
+		.map((t) => parseTerm(t))
+		.filter((t): t is { sql: string; args: unknown[] } => t !== null);
+	if (!conds.length) return null;
+	if (conds.length === 1) return conds[0];
+	return { sql: '(' + conds.map((c) => c.sql).join(' OR ') + ')', args: conds.flatMap((c) => c.args) };
+}
 
-	const regionGroups = await db
-		.select({
-			region: states.region,
-			totalSamples: sum(states.samples)
-		})
-		.from(states)
-		.groupBy(states.region)
-		.orderBy(desc(sum(states.samples)));
+function chromToCode(raw: string): number | null {
+	let c = raw.toUpperCase();
+	if (c === 'M') c = 'MT';
+	const entry = Object.entries(CODE_CHROM).find(([, name]) => name === c);
+	return entry ? Number(entry[0]) : null;
+}
 
-	const [variantTotalRow] = await db.select({ total: count() }).from(variants);
+export async function searchVariants(
+	db: D1Database,
+	scopeSlug: string | null,
+	params: SearchParams
+): Promise<{ rows: VariantRow[]; total: number }> {
+	const limit = Math.min(Math.max(params.limit ?? 50, 1), 500);
+	const offset = Math.max(params.offset ?? 0, 0);
 
-	const aggregated = totals[0]!;
-	const totalIndividuals = asNumber(aggregated.individuals);
-	const totalFemale = asNumber(aggregated.individualsFemale);
-	const totalMale = asNumber(aggregated.individualsMale);
-	const totalVolumeGb = asNumber(aggregated.volumeGb);
-	const totalSamples = asNumber(aggregated.samples);
-	const representedStates = stateRows.filter((entry) => entry.samples > 0).length;
-	const totalWgs = asNumber(aggregated.wgsSamples);
-	const totalSnp = asNumber(aggregated.snpSamples);
-	const totalSingleCell = asNumber(aggregated.singleCellSamples);
-	const totalGenes = asNumber(aggregated.genes);
-	const totalProteinCoding = asNumber(aggregated.proteinCoding);
-	const totalLncRna = asNumber(aggregated.lncRna);
-	const totalProcessedPseudogene = asNumber(aggregated.processedPseudogene);
-	const totalUnprocessedPseudogene = asNumber(aggregated.unprocessedPseudogene);
-	const totalOtherGenes = asNumber(aggregated.otherGenes);
-	const totalVariants = asNumber(aggregated.variants);
-	const totalCommonVariants = asNumber(aggregated.commonVariants);
-	const totalLowFrequencyVariants = asNumber(aggregated.lowFrequencyVariants);
-	const totalRareVariants = asNumber(aggregated.rareVariants);
-	const totalOtherVariants = totalLowFrequencyVariants + asNumber(aggregated.otherVariants);
-	const topConsequences = consequenceGroups.slice(0, 4);
-	const topConsequenceTotal = topConsequences.reduce((sum, entry) => sum + entry.total, 0);
-	const variantConsequenceSummary = [
-		...topConsequences.map((entry, index) => ({
-			label: entry.consequence.replaceAll('_', ' '),
-			value: entry.total,
-			display: entry.total.toLocaleString(),
-			color: consequenceColors[index] ?? consequenceColors[consequenceColors.length - 1]
-			})),
-		{
-			label: 'Others',
-			value: Math.max(0, (variantTotalRow?.total ?? 0) - topConsequenceTotal),
-			display: Math.max(0, (variantTotalRow?.total ?? 0) - topConsequenceTotal).toLocaleString(),
-			color: consequenceColors[4]
+	// Effective biobank set: a scoped tenant is a hard override; otherwise use the
+	// requested slugs (empty => all biobanks). `match` = ANY vs ALL of the set.
+	const requested = scopeSlug ? [scopeSlug] : params.biobanks ?? [];
+	const biobankIds = requested.length ? await biobankIdsForSlugs(db, requested) : [];
+	const match = params.match === 'all' ? 'all' : 'any';
+
+	const where: string[] = [];
+	const args: unknown[] = [];
+	// free-text query — supports compound `a|b|c` (OR of rsID / VRS / locus / range)
+	if (params.q && params.q.trim()) {
+		const cond = parseQueryCondition(params.q);
+		if (cond) {
+			where.push(cond.sql);
+			args.push(...cond.args);
 		}
-	];
+	}
+	// structured params (direct API use)
+	if (params.chrom) {
+		where.push('v.chrom=?');
+		args.push(params.chrom);
+	}
+	if (params.posMin != null) {
+		where.push('v.pos>=?');
+		args.push(params.posMin);
+	}
+	if (params.posMax != null) {
+		where.push('v.pos<=?');
+		args.push(params.posMax);
+	}
+	if (params.rsid != null) {
+		where.push('v.rsid=?');
+		args.push(params.rsid);
+	}
 
-	return {
-		portalMeta,
-		mapLegend,
-		states: stateRows,
-		homeMetrics: [
-			{
-				label: 'Individuals',
-				value: totalIndividuals.toLocaleString(),
-				details: [
-					{ label: 'Female', value: totalFemale, display: totalFemale.toLocaleString(), color: metricColors.individuals[0] },
-					{ label: 'Male', value: totalMale, display: totalMale.toLocaleString(), color: metricColors.individuals[1] },
-					{ label: 'No data', value: Math.max(0, totalIndividuals - totalFemale - totalMale), display: Math.max(0, totalIndividuals - totalFemale - totalMale).toLocaleString(), color: metricColors.individuals[2] }
-				]
-			},
-			{
-				label: 'Datasets',
-				value: [totalWgs, totalSnp, totalSingleCell].filter((value) => value > 0).length.toLocaleString(),
-				details: [
-					{ label: 'WGS', value: totalWgs, display: totalWgs.toLocaleString(), color: metricColors.datasets[0] },
-					{ label: 'SNP', value: totalSnp, display: totalSnp.toLocaleString(), color: metricColors.datasets[1] },
-					{ label: 'Single-cell', value: totalSingleCell, display: totalSingleCell.toLocaleString(), color: metricColors.datasets[2] }
-				]
-			},
-			{
-				label: 'Genes',
-				value: totalGenes.toLocaleString(),
-				details: [
-					{ label: 'Protein coding', value: totalProteinCoding, display: totalProteinCoding.toLocaleString(), color: metricColors.genes[0] },
-					{ label: 'lncRNA', value: totalLncRna, display: totalLncRna.toLocaleString(), color: metricColors.genes[1] },
-					{ label: 'Others', value: totalOtherGenes, display: totalOtherGenes.toLocaleString(), color: metricColors.genes[2] }
-				]
-			},
-			{
-				label: 'Variants',
-				value: totalVariants.toLocaleString(),
-				details: [
-					{ label: 'Common', value: totalCommonVariants, display: totalCommonVariants.toLocaleString(), color: metricColors.variants[0] },
-					{ label: 'Rare', value: totalRareVariants, display: totalRareVariants.toLocaleString(), color: metricColors.variants[2] },
-					{ label: 'Others', value: totalOtherVariants, display: totalOtherVariants.toLocaleString(), color: '#29427a' }
-				]
-			}
-		],
-		geneBiotype: [
-			{ label: 'Protein coding', value: totalProteinCoding, display: totalProteinCoding.toLocaleString(), color: geneColors[0] },
-			{ label: 'lncRNA', value: totalLncRna, display: totalLncRna.toLocaleString(), color: geneColors[1] },
-			{ label: 'Processed pseudogene', value: totalProcessedPseudogene, display: totalProcessedPseudogene.toLocaleString(), color: geneColors[2] },
-			{ label: 'Unprocessed pseudogene', value: totalUnprocessedPseudogene, display: totalUnprocessedPseudogene.toLocaleString(), color: geneColors[3] },
-			{ label: 'Others', value: totalOtherGenes, display: totalOtherGenes.toLocaleString(), color: geneColors[4] }
-		],
-		variantConsequences: variantConsequenceSummary,
-		storageBreakdown: [
-			{ label: 'FASTQ', value: asNumber(aggregated.fastqGb), display: `${asNumber(aggregated.fastqGb).toLocaleString()} GB`, color: storageColors[0] },
-			{ label: 'BAM', value: asNumber(aggregated.bamGb), display: `${asNumber(aggregated.bamGb).toLocaleString()} GB`, color: storageColors[1] },
-			{ label: 'VCF', value: asNumber(aggregated.vcfGb), display: `${asNumber(aggregated.vcfGb).toLocaleString()} GB`, color: storageColors[2] }
-		],
-		totalStorage: `${totalVolumeGb.toLocaleString()} GB`,
-		regionSplit: regionGroups.map((entry, index) => ({
-			label: entry.region,
-			value: asNumber(entry.totalSamples).toLocaleString(),
-			color: regionColors[index] ?? regionColors[regionColors.length - 1]
-		})),
-		homeSummary: {
-			samplesByState: totalSamples,
-			statesRepresented: representedStates
+	// af/count-range fragment reused inside each frequency EXISTS clause.
+	// When scoped to a biobank set, require the alt allele to be actually OBSERVED
+	// (ac>0) — don't surface variants the tenant genotyped but never saw.
+	const range: string[] = biobankIds.length > 0 ? ['f.ac > 0'] : [];
+	const rangeArgs: unknown[] = [];
+	const cohortIds = params.cohorts ?? [];
+	if (cohortIds.length) {
+		range.push(`f.cohort_id IN (${cohortIds.map(() => '?').join(',')})`);
+		rangeArgs.push(...cohortIds);
+	}
+	if (params.afMin != null) {
+		range.push('f.af>=?');
+		rangeArgs.push(params.afMin);
+	}
+	if (params.afMax != null) {
+		range.push('f.af<=?');
+		rangeArgs.push(params.afMax);
+	}
+	if (params.acMin != null) {
+		range.push('f.ac>=?');
+		rangeArgs.push(params.acMin);
+	}
+	if (params.acMax != null) {
+		range.push('f.ac<=?');
+		rangeArgs.push(params.acMax);
+	}
+	const rangeSql = range.length ? ' AND ' + range.join(' AND ') : '';
+
+	if (biobankIds.length === 0) {
+		if (range.length) {
+			where.push(`EXISTS (SELECT 1 FROM frequencies f WHERE f.variant_id=v.id${rangeSql})`);
+			args.push(...rangeArgs);
 		}
-	};
-};
+	} else if (match === 'all') {
+		// variant must have a qualifying frequency in EVERY selected biobank
+		for (const bid of biobankIds) {
+			where.push(`EXISTS (SELECT 1 FROM frequencies f WHERE f.variant_id=v.id AND f.biobank_id=?${rangeSql})`);
+			args.push(bid, ...rangeArgs);
+		}
+	} else {
+		// ANY: qualifying frequency in at least one selected biobank
+		const ph = biobankIds.map(() => '?').join(',');
+		where.push(`EXISTS (SELECT 1 FROM frequencies f WHERE f.variant_id=v.id AND f.biobank_id IN (${ph})${rangeSql})`);
+		args.push(...biobankIds, ...rangeArgs);
+	}
 
-type ExplorerSort =
-	| 'position'
-	| 'af_desc'
-	| 'ac_desc'
-	| 'an_desc'
-	| 'het_desc'
-	| 'hom_alt_desc'
-	| 'hom_ref_desc'
-	| 'hom_oth_desc'
-	| 'subjects_desc'
-	| 'genes_desc'
-	| 'gene'
-	| 'dbsnp';
-type ExplorerClassFilter = 'all' | 'SNV' | 'INS' | 'DEL';
-type ExplorerStateFilter = 'all' | 'SP' | 'RJ' | 'MG' | 'ES';
+	const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
-export const getExplorerPageData = async (
-	platform: App.Platform | undefined,
-	query: string,
-	page: number,
-	pageSize = 20,
-	sort: ExplorerSort = 'position',
-	variantClassFilter: ExplorerClassFilter = 'all',
-	stateFilter: ExplorerStateFilter = 'all',
-	tagFilter = 'all'
-) => {
-	const db = getDb(platform);
+	// sort
+	const dir = params.dir === 'desc' ? 'DESC' : 'ASC';
+	const orderArgs: unknown[] = [];
+	let orderExpr: string;
+	if (params.sort === 'rsid') orderExpr = `v.rsid ${dir}`;
+	else if (params.sort === 'vrs') orderExpr = `v.vrs_digest ${dir}`;
+	else if (params.sort === 'maxaf') {
+		const bf = biobankIds.length ? `AND f3.biobank_id IN (${biobankIds.map(() => '?').join(',')})` : '';
+		orderExpr = `(SELECT MAX(f3.af) FROM frequencies f3 WHERE f3.variant_id=v.id ${bf}) ${dir}`;
+		if (biobankIds.length) orderArgs.push(...biobankIds);
+	} else orderExpr = `v.chrom ${dir}, v.pos ${dir}`;
+	const orderSql = `ORDER BY ${orderExpr}, v.chrom, v.pos`;
 
-	const term = query.trim();
-	const searchWhere = term
-		? or(
-				like(variants.dnaChange, `%${term}%`),
-				like(variants.gene, `%${term}%`),
-				like(variants.dbSnp, `%${term}%`),
-				like(variants.consequence, `%${term}%`),
-				like(variants.tag, `%${term}%`)
-			)
-		: undefined;
-	const classWhere = variantClassFilter !== 'all' ? eq(variants.variantClass, variantClassFilter) : undefined;
-	const stateWhere = stateFilter !== 'all' ? eq(variants.stateCode, stateFilter) : undefined;
-	const tagWhere = tagFilter !== 'all' ? eq(variants.tag, tagFilter) : undefined;
-	const filters = [searchWhere, classWhere, stateWhere, tagWhere].filter(Boolean);
-	const where = filters.length > 1 ? and(...filters) : filters[0];
-	const orderBy =
-		sort === 'af_desc'
-			? [desc(variants.alleleFrequency), asc(variants.chromosome), asc(variants.position)]
-			: sort === 'ac_desc'
-				? [desc(variants.ac), asc(variants.chromosome), asc(variants.position)]
-				: sort === 'an_desc'
-					? [desc(variants.an), asc(variants.chromosome), asc(variants.position)]
-					: sort === 'het_desc'
-						? [desc(variants.heterozygote), asc(variants.chromosome), asc(variants.position)]
-						: sort === 'hom_alt_desc'
-							? [desc(variants.homozygoteAlternative), asc(variants.chromosome), asc(variants.position)]
-							: sort === 'hom_ref_desc'
-								? [desc(variants.homozygoteReference), asc(variants.chromosome), asc(variants.position)]
-								: sort === 'hom_oth_desc'
-									? [desc(variants.homozygoteOther), asc(variants.chromosome), asc(variants.position)]
-									: sort === 'subjects_desc'
-										? [desc(variants.subjectCount), asc(variants.chromosome), asc(variants.position)]
-										: sort === 'genes_desc'
-											? [desc(variants.geneCount), asc(variants.chromosome), asc(variants.position)]
-			: sort === 'gene'
-				? [asc(variants.gene), asc(variants.chromosome), asc(variants.position)]
-				: sort === 'dbsnp'
-					? [asc(variants.dbSnp), asc(variants.chromosome), asc(variants.position)]
-				: [asc(variants.chromosome), asc(variants.position)];
+	const totalRow = await db
+		.prepare(`SELECT COUNT(*) n FROM variants v ${whereSql}`)
+		.bind(...args)
+		.first<{ n: number }>();
+	const total = totalRow?.n ?? 0;
 
-	const [matching] = await db
-		.select({ total: count() })
-		.from(variants)
-		.where(where);
+	const vrows = await db
+		.prepare(`SELECT * FROM variants v ${whereSql} ${orderSql} LIMIT ? OFFSET ?`)
+		.bind(...args, ...orderArgs, limit, offset)
+		.all<any>();
 
-	const [totalVariants] = await db.select({ total: count() }).from(variants);
-	const [subjectTotals] = await db.select({ total: sum(states.individuals) }).from(states);
-	const [geneTotals] = await db
-		.select({ total: sql<number>`count(distinct ${variants.gene})` })
-		.from(variants);
-	const stateOptionsRows = await db.select({ code: states.code, name: states.name }).from(states).orderBy(asc(states.code));
-	const tagOptionsRows = await db.select({ tag: variants.tag }).from(variants).groupBy(variants.tag).orderBy(asc(variants.tag));
+	const ids = vrows.results.map((r) => r.id);
+	if (ids.length === 0) return { rows: [], total };
 
-	const totalRows = matching?.total ?? 0;
-	const currentPage = Math.max(1, page);
-	const offset = (currentPage - 1) * pageSize;
+	const placeholders = ids.map(() => '?').join(',');
+	const fbiobank = biobankIds.length ? `AND f.biobank_id IN (${biobankIds.map(() => '?').join(',')})` : '';
+	const fcohort = cohortIds.length ? `AND f.cohort_id IN (${cohortIds.map(() => '?').join(',')})` : '';
+	const freqSql = `
+		SELECT f.variant_id, f.cohort_id, c.label cohort_label, c.biobank_id, b.slug biobank_slug,
+		       p.name population, p.country_code, f.af, f.ac, f.an, f.n_homo, f.n_hetero, f.n_homo_ref
+		FROM frequencies f
+		JOIN cohorts c ON c.id=f.cohort_id
+		JOIN populations p ON p.id=c.population_id
+		JOIN biobanks b ON b.id=f.biobank_id
+		WHERE f.variant_id IN (${placeholders}) ${fbiobank} ${fcohort}
+		ORDER BY f.af DESC`;
+	const frows = await db.prepare(freqSql).bind(...ids, ...biobankIds, ...cohortIds).all<any>();
 
-	const rows = await db
-		.select({
-			id: variants.id,
-			dnaChange: variants.dnaChange,
-			variantClass: variants.variantClass,
-			consequence: variants.consequence,
-			alleleFrequency: variants.alleleFrequency,
-			ac: variants.ac,
-			an: variants.an,
-			heterozygote: variants.heterozygote,
-			homozygoteAlternative: variants.homozygoteAlternative,
-			homozygoteReference: variants.homozygoteReference,
-			homozygoteOther: variants.homozygoteOther,
-			geneCount: variants.geneCount,
-			subjectCount: variants.subjectCount,
-			impact: variants.impact,
-			dbSnp: variants.dbSnp
-		})
-		.from(variants)
-		.where(where)
-		.orderBy(...orderBy)
-		.limit(pageSize)
-		.offset(offset);
+	const byVariant = new Map<number, FreqCell[]>();
+	for (const f of frows.results) {
+		const cell: FreqCell = {
+			cohortId: f.cohort_id,
+			cohortLabel: f.cohort_label,
+			population: f.population,
+			countryCode: f.country_code,
+			biobankId: f.biobank_id,
+			biobankSlug: f.biobank_slug,
+			af: f.af,
+			ac: f.ac,
+			an: f.an,
+			nHomo: f.n_homo,
+			nHetero: f.n_hetero,
+			nHomoRef: f.n_homo_ref
+		};
+		const arr = byVariant.get(f.variant_id) ?? [];
+		arr.push(cell);
+		byVariant.set(f.variant_id, arr);
+	}
 
+	const rows: VariantRow[] = vrows.results.map((v) => ({
+		id: v.id,
+		chrom: v.chrom,
+		chromName: CODE_CHROM[v.chrom] ?? String(v.chrom),
+		pos: v.pos,
+		ref: v.ref,
+		alt: v.alt,
+		rsid: v.rsid,
+		vrsDigest: v.vrs_digest,
+		posHg19: v.pos_hg19,
+		lifted: v.lifted,
+		frequencies: byVariant.get(v.id) ?? []
+	}));
+	return { rows, total };
+}
+
+export async function getVariant(db: D1Database, id: number): Promise<VariantRow | null> {
+	const v = await db.prepare('SELECT * FROM variants WHERE id=?').bind(id).first<any>();
+	if (!v) return null;
+	const frows = await db
+		.prepare(
+			`SELECT f.cohort_id, c.label cohort_label, c.biobank_id, b.slug biobank_slug,
+			        p.name population, p.country_code, f.af, f.ac, f.an, f.n_homo, f.n_hetero
+			 FROM frequencies f
+			 JOIN cohorts c ON c.id=f.cohort_id
+			 JOIN populations p ON p.id=c.population_id
+			 JOIN biobanks b ON b.id=f.biobank_id
+			 WHERE f.variant_id=? ORDER BY f.af DESC`
+		)
+		.bind(id)
+		.all<any>();
 	return {
-		q: term,
-		page: currentPage,
-		pageSize,
-		sort,
-		variantClassFilter,
-		stateFilter,
-		tagFilter,
-		totalRows,
-		totalPages: Math.max(1, Math.ceil(totalRows / pageSize)),
-		totalVariants: totalVariants?.total ?? 0,
-		totalSubjects: asNumber(subjectTotals?.total),
-		totalGenes: Number(geneTotals?.total ?? 0),
-		stateOptions: stateOptionsRows,
-		tagOptions: tagOptionsRows.map((row) => row.tag),
-		rows: rows.map((row) => ({
-			...row,
-			afPercentLabel: `${(row.alleleFrequency * 100).toFixed(2)}%`
+		id: v.id,
+		chrom: v.chrom,
+		chromName: CODE_CHROM[v.chrom] ?? String(v.chrom),
+		pos: v.pos,
+		ref: v.ref,
+		alt: v.alt,
+		rsid: v.rsid,
+		vrsDigest: v.vrs_digest,
+		posHg19: v.pos_hg19,
+		lifted: v.lifted,
+		frequencies: frows.results.map((f) => ({
+			cohortId: f.cohort_id,
+			cohortLabel: f.cohort_label,
+			population: f.population,
+			countryCode: f.country_code,
+			biobankId: f.biobank_id,
+			biobankSlug: f.biobank_slug,
+			af: f.af,
+			ac: f.ac,
+			an: f.an,
+			nHomo: f.n_homo,
+			nHetero: f.n_hetero,
+			nHomoRef: f.n_homo_ref
 		}))
 	};
-};
+}
 
+export interface BiobankOverview {
+	id: number;
+	slug: string;
+	name: string;
+	description: string;
+	website: string;
+	populations: Array<{
+		id: number;
+		name: string;
+		country: string;
+		countryCode: string;
+		lat: number;
+		lon: number;
+		sampleCount: number;
+		cohortId: number;
+		variantCount: number;
+	}>;
+	totalSamples: number;
+	totalVariants: number;
+}
 
-export const getVariantPageData = async (platform: App.Platform | undefined, id: string) => {
-	const db = getDb(platform);
+export async function biobanksOverview(db: D1Database, scopeSlug: string | null): Promise<BiobankOverview[]> {
+	const scopeId = await biobankIdForSlug(db, scopeSlug);
+	const bWhere = scopeId ? 'WHERE id=?' : '';
+	const banks = await db.prepare(`SELECT * FROM biobanks ${bWhere} ORDER BY id`).bind(...(scopeId ? [scopeId] : [])).all<any>();
 
-	const [variant] = await db.select().from(variants).where(eq(variants.id, id));
-	if (!variant) return null;
+	const out: BiobankOverview[] = [];
+	for (const b of banks.results) {
+		const pops = await db
+			.prepare(
+				`SELECT p.id, p.name, p.country, p.country_code, p.lat, p.lon,
+				        c.id cohort_id, c.sample_count,
+				        (SELECT COUNT(*) FROM frequencies f WHERE f.cohort_id=c.id) variant_count
+				 FROM populations p
+				 JOIN cohorts c ON c.population_id=p.id
+				 WHERE p.biobank_id=? ORDER BY p.name`
+			)
+			.bind(b.id)
+			.all<any>();
+		const populations = pops.results.map((p) => ({
+			id: p.id,
+			name: p.name,
+			country: p.country,
+			countryCode: p.country_code,
+			lat: p.lat,
+			lon: p.lon,
+			sampleCount: p.sample_count,
+			cohortId: p.cohort_id,
+			variantCount: p.variant_count
+		}));
+		const totalSamples = populations.reduce((s, p) => s + p.sampleCount, 0);
+		const tv = await db
+			.prepare('SELECT COUNT(DISTINCT variant_id) n FROM frequencies WHERE biobank_id=?')
+			.bind(b.id)
+			.first<{ n: number }>();
+		out.push({
+			id: b.id,
+			slug: b.slug,
+			name: b.name,
+			description: b.description,
+			website: b.website,
+			populations,
+			totalSamples,
+			totalVariants: tv?.n ?? 0
+		});
+	}
+	return out;
+}
 
-	const consequenceRows = await db
-		.select({
-			gene: variantConsequences.gene,
-			ensemblGene: variantConsequences.ensemblGene,
-			consequence: variantConsequences.consequence,
-			impact: variantConsequences.impact,
-			canonical: variantConsequences.canonical,
-			strand: variantConsequences.strand,
-			transcript: variantConsequences.transcript
-		})
-		.from(variantConsequences)
-		.where(eq(variantConsequences.variantId, id))
-		.orderBy(asc(variantConsequences.id));
+// Tenant-scoped headline numbers + variant frequency-class breakdown (by each
+// variant's max AF within the biobank). Drives the "Database totals" panel.
+export interface TenantStats {
+	variants: number;
+	common: number; // AF >= 0.05
+	lowFreq: number; // 0.01 <= AF < 0.05
+	rare: number; // AF < 0.01
+}
 
-	const subjectRows = await db
-		.select({
-			subjectId: variantSubjects.subjectId,
-			ethnicity: variantSubjects.ethnicity,
-			state: variantSubjects.state,
-			center: variantSubjects.center,
-			project: variantSubjects.project
-		})
-		.from(variantSubjects)
-		.where(eq(variantSubjects.variantId, id))
-		.orderBy(asc(variantSubjects.id));
+export async function tenantStats(db: D1Database, scopeSlug: string | null): Promise<TenantStats> {
+	const id = await biobankIdForSlug(db, scopeSlug);
+	const where = id ? 'WHERE biobank_id=?' : '';
+	const args = id ? [id] : [];
+	const r = await db
+		.prepare(
+			`SELECT
+				COUNT(*) variants,
+				SUM(CASE WHEN m>=0.05 THEN 1 ELSE 0 END) common,
+				SUM(CASE WHEN m>=0.01 AND m<0.05 THEN 1 ELSE 0 END) lowFreq,
+				SUM(CASE WHEN m<0.01 THEN 1 ELSE 0 END) rare
+			 FROM (SELECT variant_id, MAX(af) m FROM frequencies ${where} GROUP BY variant_id)`
+		)
+		.bind(...args)
+		.first<any>();
+	return { variants: r?.variants ?? 0, common: r?.common ?? 0, lowFreq: r?.lowFreq ?? 0, rare: r?.rare ?? 0 };
+}
 
-	const distinctSubjectStates = Array.from(new Set(subjectRows.map((row) => row.state)));
-	const distinctCenters = Array.from(new Set(subjectRows.map((row) => row.center)));
-	const distinctEthnicities = Array.from(new Set(subjectRows.map((row) => row.ethnicity)));
-	const ethnicityCounts = subjectRows.reduce<Record<string, number>>((acc, row) => {
-		acc[row.ethnicity] = (acc[row.ethnicity] ?? 0) + 1;
-		return acc;
-	}, {});
-	const stateCounts = subjectRows.reduce<Record<string, number>>((acc, row) => {
-		acc[row.state] = (acc[row.state] ?? 0) + 1;
-		return acc;
-	}, {});
-	const canonicalCount = consequenceRows.filter((row) => row.canonical === '1').length;
-	const transcriptCount = new Set(consequenceRows.map((row) => row.transcript)).size;
-	const locus = `chr${variant.chromosome}:${variant.position}`;
+// Datasets (tenant-owned, JSON metadata). Counts are baked into the metadata at
+// seed time. Variants belong to a dataset via its cohorts.
+export interface DatasetRow {
+	id: number;
+	slug: string;
+	biobankId: number;
+	metadata: Record<string, any>;
+}
 
+function safeParse(s: string): Record<string, any> {
+	try {
+		return JSON.parse(s || '{}');
+	} catch {
+		return {};
+	}
+}
+
+export async function getDatasets(db: D1Database, scopeSlug: string | null): Promise<DatasetRow[]> {
+	const scopeId = await biobankIdForSlug(db, scopeSlug);
+	const where = scopeId ? 'WHERE biobank_id=?' : '';
+	const rows = await db
+		.prepare(`SELECT id, slug, biobank_id, metadata FROM datasets ${where} ORDER BY id`)
+		.bind(...(scopeId ? [scopeId] : []))
+		.all<any>();
+	return rows.results.map((d) => ({ id: d.id, slug: d.slug, biobankId: d.biobank_id, metadata: safeParse(d.metadata) }));
+}
+
+// The browser shows het/hom_alt/hom_ref unless every dataset in scope opts out.
+export async function showGenotypeCounts(db: D1Database, scopeSlug: string | null): Promise<boolean> {
+	const ds = await getDatasets(db, scopeSlug);
+	if (!ds.length) return true;
+	return ds.some((d) => d.metadata.showGenotypeCounts !== false);
+}
+
+// Build a full VRS Allele object from a stored variant row.
+export function buildVrsAllele(v: { chrom: number; pos: number; alt: string; vrsDigest: string | null }) {
+	const sq = REFGET_SQ[v.chrom];
+	if (!sq || !v.vrsDigest) return null;
+	const start = v.pos - 1;
+	const end = v.pos;
 	return {
-		variant: {
-			id: variant.id,
-			project: variant.project,
-			variantClass: variant.variantClass,
-			consequence: variant.consequence,
-			functionalImpactGene: variant.functionalImpactGene,
-			functionalImpactVep: variant.functionalImpactVep,
-			populationAlleleFrequency: `${(variant.alleleFrequency * 100).toFixed(2)}%`,
-			populationAlleleCount: String(variant.ac),
-			populationAlleleNumber: String(variant.an),
-			subjectCount: variant.subjectCount,
-			heterozygote: String(variant.heterozygote),
-			homozygoteAlternative: String(variant.homozygoteAlternative),
-			homozygoteReference: String(variant.homozygoteReference),
-			homozygoteOther: String(variant.homozygoteOther),
-			rsid: variant.dbSnp,
-			externalReferences: buildVariantReferences(variant)
+		id: `ga4gh:VA.${v.vrsDigest}`,
+		type: 'Allele',
+		digest: v.vrsDigest,
+		location: {
+			type: 'SequenceLocation',
+			sequenceReference: { type: 'SequenceReference', refgetAccession: sq },
+			start,
+			end
 		},
-		consequenceRows,
-		subjectRows,
-		distributionSummary: {
-			carrierSubjects: subjectRows.length,
-			statesRepresented: distinctSubjectStates.length,
-			centersRepresented: distinctCenters.length,
-			topEthnicity:
-				Object.entries(ethnicityCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'N/A',
-			topState: Object.entries(stateCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'N/A',
-			carrierRate: variant.an > 0 ? `${((variant.ac / variant.an) * 100).toFixed(2)}%` : '0.00%'
-		},
-		consequenceSummary: {
-			totalRows: consequenceRows.length,
-			canonicalRows: canonicalCount,
-			transcripts: transcriptCount,
-			genes: new Set(consequenceRows.map((row) => row.gene)).size
-		},
-		genomeBrowserSummary: {
-			locus,
-			chromosome: variant.chromosome,
-			position: variant.position,
-			reference: variant.ref,
-			alternate: variant.alt,
-			ucscUrl: `https://genome.ucsc.edu/cgi-bin/hgTracks?position=${encodeURIComponent(locus)}`,
-			dbSnpUrl: `https://www.ncbi.nlm.nih.gov/snp/${variant.dbSnp}`
-		}
+		state: { type: 'LiteralSequenceExpression', sequence: v.alt }
 	};
-};
+}

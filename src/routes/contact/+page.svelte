@@ -1,10 +1,14 @@
-<svelte:head>
-	<title>Contact | BIPMed Data Portal</title>
-</svelte:head>
+<script lang="ts">
+	let { data } = $props();
+</script>
 
-<section class="flex flex-col gap-3 pt-2 sm:pt-3">
-	<h1 class="font-heading text-3xl leading-none tracking-[-0.06em] text-foreground sm:text-[3.45rem]">
-		Contact
-	</h1>
-	<p class="text-sm text-muted-foreground sm:text-base">(empty page)</p>
-</section>
+<svelte:head><title>Contact · {data.tenant.name}</title></svelte:head>
+
+<div class="mx-auto max-w-2xl py-6">
+	<h1 class="text-3xl font-bold tracking-tight">Contact</h1>
+	<p class="mt-3 text-muted-foreground">Get in touch with the {data.tenant.name} team.</p>
+
+	<div class="card-surface mt-6 p-6 text-sm text-muted-foreground">
+		<p>This page is a placeholder — add contact details, a form, or data-access request info here.</p>
+	</div>
+</div>
