@@ -1,13 +1,14 @@
 <script lang="ts">
 	import VariantBrowser from '$lib/components/widgets/VariantBrowser.svelte';
+	import { lang, tr } from '$lib/i18n';
 	let { data } = $props();
 </script>
 
-<svelte:head><title>Explore · {data.tenant.name}</title></svelte:head>
+<svelte:head><title>{tr($lang, 'explore')} · {data.tenant.name}</title></svelte:head>
 
 <div class="mb-6">
-	<h1 class="text-3xl font-bold tracking-tight">Explore <span class="brand-text">{data.tenant.name}</span></h1>
-	<p class="text-muted-foreground">{data.tenant.scope ? 'Variants for this biobank.' : 'Variants across the whole network.'}</p>
+	<h1 class="text-3xl font-bold tracking-tight">{tr($lang, 'explore')} <span class="brand-text">{data.tenant.name}</span></h1>
+	<p class="text-muted-foreground">{data.tenant.scope ? tr($lang, 'exploreScopeOne') : tr($lang, 'exploreScopeAll')}</p>
 </div>
 
 <VariantBrowser
@@ -17,6 +18,4 @@
 	populations={data.populations}
 	initialQuery={data.q}
 	showGenotypeCounts={data.showGenotypeCounts}
-	title="Variant browser"
-	subtitle="Search by rsID, region (chr7), or position (1:100000723)."
 />

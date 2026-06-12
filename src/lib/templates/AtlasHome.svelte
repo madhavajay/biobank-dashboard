@@ -29,7 +29,7 @@
 	const vc = $derived(data.variantClasses);
 	const assays = $derived([...new Set(data.datasets.map((d: any) => d.assay))]);
 
-	const tryQueries = ['rs2465136', '1:1000000-1100000', 'chr7', 'ga4gh:VA.3W84-kCDOBIiXcaOdX8XvHqgcoTx7u2a'];
+	const tryQueries = ['BRCA1', 'rs2465136', '1:1000000-1100000', 'chr7', 'ga4gh:VA.3W84-kCDOBIiXcaOdX8XvHqgcoTx7u2a'];
 	const exploreLink = (q: string) =>
 		`/explore?q=${encodeURIComponent(q)}${data.forceTenant ? `&tenant=${data.forceTenant}` : ''}`;
 </script>

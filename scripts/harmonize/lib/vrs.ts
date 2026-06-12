@@ -5,18 +5,28 @@
 import { createHash } from 'node:crypto';
 import { REFGET_SQ } from './chroms';
 
+type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
 function sha512t24u(input: string): string {
 	const full = createHash('sha512').update(input, 'utf8').digest();
 	return full.subarray(0, 24).toString('base64url');
 }
 
-// Canonical JSON: recursively key-sorted, compact separators (JSON.stringify default).
-function canon(value: unknown): string {
-	if (value === null || typeof value !== 'object') return JSON.stringify(value);
-	if (Array.isArray(value)) return '[' + value.map(canon).join(',') + ']';
-	const obj = value as Record<string, unknown>;
+// RFC 8785 / JCS canonicalization for JSON-compatible values.
+// VRS digest input should be pure JSON: no undefined, non-finite numbers, symbols, etc.
+export function jcsCanonicalize(value: JsonValue): string {
+	if (value === null) return 'null';
+	if (typeof value === 'string') return JSON.stringify(value);
+	if (typeof value === 'boolean') return value ? 'true' : 'false';
+	if (typeof value === 'number') {
+		if (!Number.isFinite(value)) throw new TypeError('JCS cannot canonicalize non-finite numbers');
+		return JSON.stringify(value);
+	}
+	if (Array.isArray(value)) return '[' + value.map(jcsCanonicalize).join(',') + ']';
+	if (typeof value !== 'object') throw new TypeError(`JCS cannot canonicalize ${typeof value}`);
+	const obj = value as Record<string, JsonValue>;
 	const keys = Object.keys(obj).sort();
-	return '{' + keys.map((k) => JSON.stringify(k) + ':' + canon(obj[k])).join(',') + '}';
+	return '{' + keys.map((k) => JSON.stringify(k) + ':' + jcsCanonicalize(obj[k])).join(',') + '}';
 }
 
 export interface Snv {
@@ -41,7 +51,7 @@ export function snvToVrs(v: Snv): VrsResult | null {
 	const start = v.pos - 1; // interbase
 	const end = v.pos; // SNV: single base
 
-	const locSer = canon({
+	const locSer = jcsCanonicalize({
 		end,
 		sequenceReference: { refgetAccession: sq, type: 'SequenceReference' },
 		start,
@@ -49,7 +59,7 @@ export function snvToVrs(v: Snv): VrsResult | null {
 	});
 	const locDigest = sha512t24u(locSer);
 
-	const alleleSer = canon({
+	const alleleSer = jcsCanonicalize({
 		location: locDigest,
 		state: { sequence: v.alt, type: 'LiteralSequenceExpression' },
 		type: 'Allele'

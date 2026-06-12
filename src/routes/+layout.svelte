@@ -1,11 +1,13 @@
 <script lang="ts">
 	import './layout.css';
 	import { page } from '$app/state';
-	import { lang, LANGS } from '$lib/i18n';
+	import { lang, LANGS, tr } from '$lib/i18n';
+	import { tenantContent } from '$lib/content';
 
 	let { children, data } = $props();
 	const tenant = $derived(data.tenant);
 	const forceTenant = $derived(data.forceTenant);
+	const hasTeam = $derived(!!tenantContent(tenant.slug)?.team);
 
 	const link = (path: string) => (forceTenant ? `${path}?tenant=${forceTenant}` : path);
 	let dark = $state(false);
@@ -31,11 +33,14 @@
 				{/if}
 			</a>
 			<nav class="flex items-center gap-1 text-sm">
-				<a href={link('/')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/'}>Home</a>
-				<a href={link('/explore')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/explore'}>Explore</a>
-				<a href={link('/about')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/about'}>About</a>
-				<a href={link('/contact')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/contact'}>Contact</a>
-				<a href={link('/api')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/api'}>API</a>
+				<a href={link('/')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/'}>{tr($lang, 'navHome')}</a>
+				<a href={link('/explore')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/explore'}>{tr($lang, 'navExplore')}</a>
+				<a href={link('/about')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/about'}>{tr($lang, 'navAbout')}</a>
+				{#if hasTeam}
+					<a href={link('/team')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/team'}>{tr($lang, 'navTeam')}</a>
+				{/if}
+				<a href={link('/contact')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/contact'}>{tr($lang, 'navContact')}</a>
+				<a href={link('/api')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/api'}>{tr($lang, 'navApi')}</a>
 				{#if flags.length > 1}
 					<span class="ml-1 flex items-center gap-0.5">
 						{#each flags as f}

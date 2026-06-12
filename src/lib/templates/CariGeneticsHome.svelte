@@ -16,7 +16,7 @@
 			<div class="text-5xl">{tenant.logoEmoji}</div>
 			<h1 class="mt-3 text-4xl font-bold tracking-tight sm:text-5xl">{tenant.name}</h1>
 			<p class="mt-2 text-lg text-white/90">{tenant.tagline}</p>
-			<p class="mt-4 max-w-md text-sm text-white/80">Allele frequencies across {pins.length} Caribbean nations — {bank?.totalVariants.toLocaleString()} variants on GRCh38, with GA4GH VRS identifiers and a Beacon v2 endpoint.</p>
+			<p class="mt-4 max-w-md text-sm text-white/80">Allele frequencies across {pins.length} Caribbean nations, {bank?.totalVariants.toLocaleString()} variants on GRCh38, with GA4GH VRS identifiers and a Beacon v2 endpoint.</p>
 			<a href="/explore" class="mt-5 inline-block rounded-md bg-white px-4 py-2 text-sm font-semibold text-foreground shadow-sm">Explore the data</a>
 		</div>
 		<div class="rounded-[var(--radius)] bg-white/95 p-2 shadow-xl">

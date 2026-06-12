@@ -36,7 +36,7 @@ export const TENANTS: Tenant[] = [
 		tagline: 'A global window into population allele frequencies.',
 		logoEmoji: '🧬',
 		scope: null,
-		map: { center: [10, -20], zoom: 1.4 },
+		map: { center: [7, -78], zoom: 2.15 },
 		theme: {
 			primary: 'oklch(0.696 0.17 162.48)',
 			primaryFg: 'oklch(0.99 0 0)',
@@ -55,9 +55,9 @@ export const TENANTS: Tenant[] = [
 		product: 'CariGenetics Genome Portal',
 		tagline: 'Caribbean genomic diversity, made discoverable.',
 		logoEmoji: '🌴',
-		logoImg: '/carigenetics-logo.png',
+		logoImg: '/tenants/carigenetics/logo.png',
 		scope: 'carigenetics',
-		map: { center: [18.5, -69], zoom: 4.2 },
+		map: { center: [21, -66], zoom: 5.5 },
 		theme: {
 			primary: 'oklch(0.68 0.13 215)',
 			primaryFg: 'oklch(0.99 0 0)',
@@ -76,7 +76,7 @@ export const TENANTS: Tenant[] = [
 		product: 'BIPMed-Brazil Variant Browser',
 		tagline: 'Brazilian Initiative on Precision Medicine.',
 		logoEmoji: '🧬',
-		logoImg: '/bipmed-logo.png',
+		logoImg: '/tenants/bipmed/logo.png',
 		langs: ['en', 'pt'],
 		scope: 'bipmed',
 		map: { center: [-14.235, -51.925], zoom: 3.4 },
@@ -98,6 +98,7 @@ export const TENANTS: Tenant[] = [
 		product: 'Harvard Personal Genome Project',
 		tagline: 'Open-consent personal genomes from the United States.',
 		logoEmoji: '🧬',
+		logoImg: '/tenants/pgp-harvard/logo.png',
 		scope: 'pgp-harvard',
 		map: { center: [39.83, -98.58], zoom: 3.1 },
 		theme: {

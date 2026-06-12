@@ -1,6 +1,16 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { lang, tr } from '$lib/i18n';
 	let { data } = $props();
+
+	// translate the known example labels (label also serves as a lookup id, so keep it English)
+	const EX_LABEL: Record<string, 'apiExListBiobanks' | 'apiExSearchRsid' | 'apiExSearchGene' | 'apiExRegion'> = {
+		'List biobanks': 'apiExListBiobanks',
+		'Search rsID': 'apiExSearchRsid',
+		'Search gene': 'apiExSearchGene',
+		'Region query': 'apiExRegion'
+	};
+	const exLabel = (l: string) => (EX_LABEL[l] ? tr($lang, EX_LABEL[l]) : l);
 
 	// On a scoped tenant (bipmed/carigenetics) bake the tenant into every query and
 	// drop /api/biobanks (it's just their own biobank). biovault = global, untouched.
@@ -11,6 +21,7 @@
 	const baseExamples = [
 		{ label: 'List biobanks', path: '/api/biobanks' },
 		{ label: 'Search rsID', path: '/api/variants?q=rs2465136&limit=5' },
+		{ label: 'Search gene', path: '/api/variants?q=BRCA1&limit=5' },
 		{ label: 'Region query', path: '/api/variants?chrom=1&posMin=1000000&posMax=1100000&limit=5' },
 		{ label: 'Beacon g_variants', path: '/api/beacon/g_variants?referenceName=1&start=1055036&referenceBases=T&alternateBases=C' },
 		{ label: 'VRS allele', path: '/api/vrs/vom-G9UOPuYNLNvxb0WDH_CSuitKUQBF' }
@@ -23,9 +34,9 @@
 
 	const baseEndpoints = [
 		{ m: 'GET', p: '/api/biobanks', d: 'Biobanks, populations & sample counts (map source).' },
-		{ m: 'GET', p: '/api/variants', d: 'Search variants — q, chrom, posMin/posMax, rsid, afMin/afMax, acMin/acMax, sort, dir, limit, offset.' },
+		{ m: 'GET', p: '/api/variants', d: 'Search variants: q, gene, chrom, posMin/posMax, rsid, afMin/afMax, acMin/acMax, sort, dir, limit, offset.' },
 		{ m: 'GET', p: '/api/variants/:id', d: 'One variant across populations + its VRS allele.' },
-		{ m: 'GET', p: '/api/beacon/g_variants', d: 'GA4GH Beacon v2 — referenceName, start, referenceBases, alternateBases.' },
+		{ m: 'GET', p: '/api/beacon/g_variants', d: 'GA4GH Beacon v2: referenceName, start, referenceBases, alternateBases.' },
 		{ m: 'GET', p: '/api/vrs/:digest', d: 'GA4GH VRS Allele object by digest.' }
 	];
 	const endpoints = $derived(baseEndpoints.filter((e) => !(isTenant && e.p === '/api/biobanks')));
@@ -99,7 +110,7 @@
 <div class="mx-auto max-w-4xl py-2">
 	<h1 class="text-3xl font-bold tracking-tight">API</h1>
 	<p class="mt-2 text-muted-foreground">
-		Public, read-only JSON API (CORS-open). Try a query below, or call it from anywhere against
+		{tr($lang, 'apiIntro')}
 		<code class="rounded bg-muted px-1.5 py-0.5 text-sm">data.biovault.net</code>.
 	</p>
 
@@ -120,10 +131,10 @@
 
 	<!-- try it -->
 	<div class="card-surface mt-6 p-5">
-		<h2 class="text-lg font-semibold">Try it</h2>
+		<h2 class="text-lg font-semibold">{tr($lang, 'apiTryIt')}</h2>
 		<div class="mt-2 flex flex-wrap gap-2">
 			{#each examples as e}
-				<button type="button" onclick={() => preset(e)} class="rounded-full border px-3 py-1 text-xs hover:bg-muted">{e.label}</button>
+				<button type="button" onclick={() => preset(e)} class="rounded-full border px-3 py-1 text-xs hover:bg-muted">{exLabel(e.label)}</button>
 			{/each}
 		</div>
 
@@ -133,7 +144,7 @@
 				<option>POST</option>
 			</select>
 			<input bind:value={path} class="flex-1 rounded-md border bg-background px-3 py-2 font-mono text-sm" spellcheck="false" />
-			<button onclick={run} class="brand-gradient rounded-md px-5 py-2 text-sm font-semibold text-white transition-transform hover:scale-105 active:scale-95">{loading ? '…' : 'Run'}</button>
+			<button onclick={run} class="brand-gradient rounded-md px-5 py-2 text-sm font-semibold text-white transition-transform hover:scale-105 active:scale-95">{loading ? '…' : tr($lang, 'apiRun')}</button>
 		</div>
 
 		{#if method !== 'GET'}
@@ -145,7 +156,7 @@
 			{#if took}<span>{took}</span>{/if}
 		</div>
 
-		<pre class="mt-2 max-h-[28rem] overflow-auto rounded-md border bg-muted/40 p-3 text-xs leading-relaxed"><code>{resp || '// response will appear here'}</code></pre>
+		<pre class="mt-2 max-h-[28rem] overflow-auto rounded-md border bg-muted/40 p-3 text-xs leading-relaxed"><code>{resp || tr($lang, 'apiRespPlaceholder')}</code></pre>
 
 		<div class="mt-3">
 			<p class="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">cURL</p>

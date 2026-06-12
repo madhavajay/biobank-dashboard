@@ -1,12 +1,13 @@
 <script lang="ts">
 	import { replaceState } from '$app/navigation';
+	import { lang, tr } from '$lib/i18n';
 	let {
 		forceTenant = '',
-		title = 'Variant browser',
-		subtitle = 'Search allele frequencies by rsID, region, or position.',
+		title = '',
+		subtitle = '',
 		scoped = false,
 		options = [],
-		examples = ['rs2465136', '1:1000000-1100000', 'chr7', 'ga4gh:VA.3W84-kCDOBIiXcaOdX8XvHqgcoTx7u2a'],
+		examples = ['BRCA1', 'rs2465136', '1:1000000-1100000', 'chr7', 'ga4gh:VA.3W84-kCDOBIiXcaOdX8XvHqgcoTx7u2a'],
 		initialQuery = '',
 		showGenotypeCounts = true,
 		populations = []
@@ -60,6 +61,7 @@
 	}
 
 	interface FreqCell {
+		cohortId: number;
 		population: string;
 		biobankSlug: string;
 		af: number;
@@ -68,6 +70,14 @@
 		nHetero: number | null;
 		nHomo: number | null;
 		nHomoRef: number | null;
+	}
+	interface GeneHit {
+		ensemblId: string;
+		symbol: string;
+		geneType: string;
+		start: number;
+		end: number;
+		strand: string;
 	}
 	interface VRow {
 		id: number;
@@ -78,6 +88,7 @@
 		rsid: number | null;
 		vrsDigest: string | null;
 		lifted: number;
+		genes?: GeneHit[];
 		frequencies: FreqCell[];
 	}
 	interface VariantResponse {
@@ -86,11 +97,13 @@
 	}
 
 	let q = $state(sp0.get('q') ?? initialQuery); // bound to the text input
+	let gene = $state(sp0.get('gene') ?? '');
 	let afMin = $state(sp0.get('afMin') ?? '');
 	let afMax = $state(sp0.get('afMax') ?? '');
 	let acMin = $state(sp0.get('acMin') ?? '');
 	let acMax = $state(sp0.get('acMax') ?? '');
 	let qA = $state(sp0.get('q') ?? initialQuery); // debounced/applied values that actually drive queries
+	let geneA = $state(sp0.get('gene') ?? '');
 	let afMinA = $state(sp0.get('afMin') ?? '');
 	let afMaxA = $state(sp0.get('afMax') ?? '');
 	let acMinA = $state(sp0.get('acMin') ?? '');
@@ -122,6 +135,7 @@
 	function buildParams(extra = '') {
 		const p = new URLSearchParams();
 		if (qA.trim()) p.set('q', qA.trim());
+		if (geneA.trim()) p.set('gene', geneA.trim());
 		if (afMinA) p.set('afMin', afMinA);
 		if (afMaxA) p.set('afMax', afMaxA);
 		if (acMinA) p.set('acMin', acMinA);
@@ -133,7 +147,9 @@
 			p.set('sort', sortCol);
 			p.set('dir', sortDir);
 		}
-		if (showFilter && selectedSlugs.length) {
+		// `any` with all biobanks selected is the cacheable default. `all` still
+		// needs the explicit set so the API can require presence in every biobank.
+		if (showFilter && selectedSlugs.length && (matchMode === 'all' || selectedSlugs.length < options.length)) {
 			p.set('biobanks', selectedSlugs.join(','));
 			p.set('match', matchMode);
 		}
@@ -144,6 +160,7 @@
 	function syncUrl() {
 		const sp = new URLSearchParams();
 		if (qA.trim()) sp.set('q', qA.trim());
+		if (geneA.trim()) sp.set('gene', geneA.trim());
 		if (afMinA) sp.set('afMin', afMinA);
 		if (afMaxA) sp.set('afMax', afMaxA);
 		if (acMinA) sp.set('acMin', acMinA);
@@ -156,7 +173,7 @@
 		const pg = Math.floor(offset / pageSize) + 1;
 		if (pg > 1) sp.set('page', String(pg));
 		if (showPopFilter && selectedCohortIds.length < populations.length) sp.set('cohorts', selectedCohortIds.join(','));
-		if (showFilter && selectedSlugs.length < options.length) {
+		if (showFilter && selectedSlugs.length && (matchMode === 'all' || selectedSlugs.length < options.length)) {
 			sp.set('biobanks', selectedSlugs.join(','));
 			sp.set('match', matchMode);
 		}
@@ -172,6 +189,13 @@
 	let seq = 0;
 	async function load() {
 		const my = ++seq;
+		// an empty filter selection means "none" → no results (not "all")
+		if ((showFilter && selectedSlugs.length === 0) || (showPopFilter && selectedCohortIds.length === 0)) {
+			rows = [];
+			total = 0;
+			loading = false;
+			return;
+		}
 		loading = true;
 		try {
 			const res = (await fetch(`/api/variants?${buildParams()}`).then((r) => r.json())) as VariantResponse;
@@ -187,6 +211,7 @@
 	// The seq guard in load() drops stale (out-of-order) responses.
 	$effect(() => {
 		void qA;
+		void geneA;
 		void afMinA;
 		void afMaxA;
 		void acMinA;
@@ -207,6 +232,7 @@
 	function applyInputs() {
 		offset = 0;
 		qA = q;
+		geneA = gene;
 		afMinA = afMin;
 		afMaxA = afMax;
 		acMinA = acMin;
@@ -232,7 +258,9 @@
 	function reset() {
 		clearTimeout(timer);
 		q = afMin = afMax = acMin = acMax = '';
+		gene = '';
 		qA = afMinA = afMaxA = acMinA = acMaxA = '';
+		geneA = '';
 		sortCol = '';
 		offset = 0;
 	}
@@ -272,9 +300,33 @@
 	});
 
 	const ind = (c: SortCol) => (sortCol === c ? (sortDir === 'asc' ? '▲' : '▼') : '↕');
+	const visibleRows = $derived.by(() => {
+		if (!showFilter && !showPopFilter) return rows;
+
+		const slugSet = showFilter ? new Set(selectedSlugs) : null;
+		const cohortSet = showPopFilter ? new Set(selectedCohortIds) : null;
+		return rows
+			.map((r) => {
+				const frequencies = r.frequencies.filter(
+					(f) => (!slugSet || slugSet.has(f.biobankSlug)) && (!cohortSet || cohortSet.has(f.cohortId))
+				);
+				return { ...r, frequencies };
+			})
+			.filter((r) => {
+				if (showFilter) {
+					if (matchMode === 'all') {
+						return selectedSlugs.every((slug) =>
+							r.frequencies.some((f) => f.biobankSlug === slug && f.ac > 0)
+						);
+					}
+					return r.frequencies.some((f) => f.ac > 0);
+				}
+				return r.frequencies.length > 0;
+			});
+	});
 	// shared grid template for the population rows + their header (so they align).
 	// The last visible column is max-content so it collapses to its text width.
-	const multiPop = $derived(rows.some((r) => r.frequencies.length > 1));
+	const multiPop = $derived(visibleRows.some((r) => r.frequencies.length > 1));
 	const popTmpl = $derived(
 		[
 			multiPop ? 'minmax(5rem,7rem)' : null,
@@ -288,6 +340,7 @@
 	);
 	const fmtAf = (af: number) => (af >= 0.0001 || af === 0 ? af.toFixed(4) : af.toExponential(1));
 	const maxAf = (r: VRow) => (r.frequencies.length ? Math.max(...r.frequencies.map((f) => f.af)) : 0);
+	const geneLabel = (r: VRow) => (r.genes?.length ? [...new Set(r.genes.map((g) => g.symbol))].join(', ') : '');
 	let copied = $state<string | null>(null);
 	function copyVrs(d: string) {
 		navigator.clipboard?.writeText(`ga4gh:VA.${d}`);
@@ -303,13 +356,13 @@
 		</div>
 	{/if}
 	<div class="mb-4">
-		<h3 class="text-lg font-semibold">{title}</h3>
-		<p class="text-sm text-muted-foreground">{subtitle}</p>
+		<h3 class="text-lg font-semibold">{title || tr($lang, 'variantBrowser')}</h3>
+		<p class="text-sm text-muted-foreground">{subtitle || tr($lang, 'vbSubtitle')}</p>
 	</div>
 
 	{#if showFilter}
 		<div class="mb-3 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
-			<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Biobanks</span>
+			<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'biobanks')}</span>
 			<div class="flex flex-wrap gap-3">
 				{#each options as o}
 					<label class="flex cursor-pointer items-center gap-1.5">
@@ -319,14 +372,14 @@
 				{/each}
 			</div>
 			<div class="flex items-center gap-3" class:opacity-40={selectedSlugs.length < 2}>
-				<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Match</span>
+				<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'match')}</span>
 				<label class="flex cursor-pointer items-center gap-1.5">
 					<input type="radio" name="match" checked={matchMode === 'any'} onchange={() => setMatch('any')} disabled={selectedSlugs.length < 2} class="accent-[var(--primary)]" />
-					<span>Either</span>
+					<span>{tr($lang, 'either')}</span>
 				</label>
 				<label class="flex cursor-pointer items-center gap-1.5">
 					<input type="radio" name="match" checked={matchMode === 'all'} onchange={() => setMatch('all')} disabled={selectedSlugs.length < 2} class="accent-[var(--primary)]" />
-					<span>All</span>
+					<span>{tr($lang, 'matchAll')}</span>
 				</label>
 			</div>
 		</div>
@@ -334,7 +387,7 @@
 
 	{#if showPopFilter}
 		<div class="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
-			<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Populations</span>
+			<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'populations')}</span>
 			{#each populations as pop}
 				<label class="flex cursor-pointer items-center gap-1.5">
 					<input type="checkbox" checked={selectedPops[pop.cohortId]} onchange={() => togglePop(pop.cohortId)} class="accent-[var(--primary)]" />
@@ -346,7 +399,7 @@
 
 	{#if examples.length}
 		<div class="mb-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-			<span>Try:</span>
+			<span>{tr($lang, 'tryLabel')}</span>
 			{#each examples as ex}
 				<button onclick={() => runExample(ex)} class="rounded-full border px-2 py-0.5 font-mono hover:bg-muted hover:text-foreground">{ex}</button>
 			{/each}
@@ -359,16 +412,26 @@
 				bind:value={q}
 				oninput={onInput}
 				onkeydown={(e) => e.key === 'Enter' && go()}
-				placeholder="rs123 · rs1|rs2|rs3 · chr7 · 1:1000000-1100000 · ga4gh:VA.…"
+				placeholder="rs123 · rs1|rs2|rs3 · chr7 · 1:1000000-1100000 · 1:1000000-1100000 ISG15"
 				class="w-full rounded-md border bg-background px-3 py-2 pr-9 text-sm outline-none focus:ring-2 focus:ring-ring"
 			/>
 			{#if loading}
 				<span class="absolute right-2.5 top-1/2 size-4 -translate-y-1/2 animate-spin rounded-full border-2 border-muted border-t-primary"></span>
 			{/if}
 		</div>
-		<button onclick={go} class="rounded-md bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90">Go</button>
+		<button onclick={go} class="rounded-md bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90">{tr($lang, 'go')}</button>
 		<div class="flex flex-col gap-1">
-			<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Allele freq</span>
+			<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'gene')}</span>
+			<input
+				bind:value={gene}
+				oninput={onInput}
+				onkeydown={(e) => e.key === 'Enter' && go()}
+				placeholder="ISG15"
+				class="w-24 rounded-md border bg-background px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+			/>
+		</div>
+		<div class="flex flex-col gap-1">
+			<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'alleleFreq')}</span>
 			<div class="flex items-center gap-1">
 				<input bind:value={afMin} oninput={onInput} placeholder="min" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" />
 				<span class="text-muted-foreground">–</span>
@@ -376,7 +439,7 @@
 			</div>
 		</div>
 		<div class="flex flex-col gap-1">
-			<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Allele count</span>
+			<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'alleleCount')}</span>
 			<div class="flex items-center gap-1">
 				<input bind:value={acMin} oninput={onInput} placeholder="min" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" />
 				<span class="text-muted-foreground">–</span>
@@ -384,53 +447,49 @@
 			</div>
 		</div>
 		<label class="flex flex-col text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-			Per page
+			{tr($lang, 'perPage')}
 			<select value={pageSize} onchange={(e) => setPageSize(Number((e.target as HTMLSelectElement).value))} class="rounded-md border bg-background px-2 py-2 text-sm text-foreground">
 				{#each [25, 50, 100, 200, 500] as n}<option value={n}>{n}</option>{/each}
 			</select>
 		</label>
-		<button onclick={reset} class="rounded-md border px-3 py-2 text-sm hover:bg-muted">Reset</button>
+		<button onclick={reset} class="rounded-md border px-3 py-2 text-sm hover:bg-muted">{tr($lang, 'reset')}</button>
 	</div>
 
 	<!-- live curl for the current query -->
 	<div class="mb-3 flex items-center gap-2">
 		<code class="min-w-0 flex-1 truncate rounded-md border bg-muted/40 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground">{curlCmd}</code>
-		<button onclick={copyCurl} class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">{curlCopied ? 'copied!' : 'copy curl'}</button>
+		<button onclick={copyCurl} class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">{curlCopied ? tr($lang, 'copiedLabel') : tr($lang, 'copyCurl')}</button>
 		<a href={apiLink} class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">API ↗</a>
 	</div>
 
 	<div class="mb-3">{@render pager()}</div>
 
 	<div class="relative overflow-x-auto rounded-md border">
-		{#if loading}
-			<div class="absolute inset-0 z-10 grid place-items-center bg-background/55 backdrop-blur-[1px]">
-				<span class="size-7 animate-spin rounded-full border-2 border-muted border-t-primary"></span>
-			</div>
-		{/if}
 		<table class="w-full text-sm">
 			<thead class="bg-muted/60 text-left text-xs uppercase tracking-wide text-muted-foreground">
 				<tr>
-					<th class="px-3 py-2 font-medium"><button onclick={() => setSort('variant')} class="inline-flex items-center gap-1 uppercase hover:text-foreground">Variant <span class="normal-case text-[9px] text-muted-foreground/70">GRCh38</span> <span class="text-[9px]">{ind('variant')}</span></button></th>
-					<th class="px-3 py-2 font-medium"><button onclick={() => setSort('rsid')} class="inline-flex items-center gap-1 uppercase hover:text-foreground">rsID <span class="text-[9px]">{ind('rsid')}</span></button></th>
+					<th class="px-3 py-2 font-medium"><button onclick={() => setSort('variant')} title="Genomic location on the GRCh38 assembly. Chromosome:position, then reference›alternate allele. Click to sort by position." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">{tr($lang, 'colVariant')} <span class="normal-case text-[9px] text-muted-foreground/70">GRCh38</span> <span class="text-[9px]">{ind('variant')}</span></button></th>
+					<th class="px-3 py-2 font-medium"><button onclick={() => setSort('rsid')} title="dbSNP Reference SNP cluster ID (rsID). Links out to NCBI dbSNP. Click to sort." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">rsID <span class="text-[9px]">{ind('rsid')}</span></button></th>
+					<th class="px-3 py-2 font-medium"><span title="Gene(s) whose transcribed region overlaps this position (Ensembl)." class="cursor-help">Gene</span></th>
 					<th class="px-3 py-2 font-medium">
 						<div class="grid items-center gap-x-3 uppercase" style={`grid-template-columns:${popTmpl}`}>
-							{#if multiPop}<span class="text-left">Population</span>{/if}
+							{#if multiPop}<span class="cursor-help text-left" title="Cohort / population in which the allele frequencies on this row were measured.">{tr($lang, 'colPopulation')}</span>{/if}
 							<span></span>
-							<button onclick={() => setSort('maxaf')} class="inline-flex items-center justify-end gap-1 uppercase hover:text-foreground">Freq <span class="text-[9px]">{ind('maxaf')}</span></button>
-							<span class="text-right">AC/AN</span>
+							<button onclick={() => setSort('maxaf')} title="Alternate allele frequency in this population = allele count ÷ allele number (AC ÷ AN). Click to sort." class="inline-flex cursor-help items-center justify-end gap-1 uppercase hover:text-foreground">Freq <span class="text-[9px]">{ind('maxaf')}</span></button>
+							<span class="cursor-help text-right" title="Allele count / allele number. Observed alternate alleles ÷ total alleles genotyped in this population.">AC/AN</span>
 							{#if showGenotypeCounts}
-								<span class="text-right">HET</span>
-								<span class="text-right">HOM_ALT</span>
-								<span class="text-right">HOM_REF</span>
+								<span class="cursor-help text-right" title="HET: heterozygous individuals (one copy of the alternate allele).">HET</span>
+								<span class="cursor-help text-right" title="HOM_ALT: homozygous-alternate individuals (two copies of the alternate allele).">HOM_ALT</span>
+								<span class="cursor-help text-right" title="HOM_REF: homozygous-reference individuals (no copies of the alternate allele).">HOM_REF</span>
 							{/if}
 						</div>
 					</th>
-					<th class="whitespace-nowrap px-3 py-2 text-right font-medium"><button onclick={() => setSort('maxaf')} class="inline-flex items-center gap-1 whitespace-nowrap uppercase hover:text-foreground">Max AF <span class="text-[9px]">{ind('maxaf')}</span></button></th>
-					<th class="px-3 py-2 font-medium"><button onclick={() => setSort('vrs')} class="inline-flex items-center gap-1 uppercase hover:text-foreground">VRS <span class="text-[9px]">{ind('vrs')}</span></button></th>
+					<th class="whitespace-nowrap px-3 py-2 text-right font-medium"><button onclick={() => setSort('maxaf')} title="Highest alternate allele frequency across all populations shown for this variant. Click to sort." class="inline-flex cursor-help items-center gap-1 whitespace-nowrap uppercase hover:text-foreground">Max AF <span class="text-[9px]">{ind('maxaf')}</span></button></th>
+					<th class="px-3 py-2 font-medium"><button onclick={() => setSort('vrs')} title="GA4GH VRS computed allele identifier (ga4gh:VA.…): a global, sequence-derived variant ID. Click a cell to copy the full ID." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">VRS <span class="text-[9px]">{ind('vrs')}</span></button></th>
 				</tr>
 			</thead>
 			<tbody>
-				{#each rows as r (r.id)}
+				{#each visibleRows as r (r.id)}
 					<tr class="border-t hover:bg-muted/40">
 						<td class="whitespace-nowrap px-3 py-2 font-mono text-xs">
 							<span class="font-semibold">chr{r.chromName}:{r.pos.toLocaleString()}</span>
@@ -441,9 +500,16 @@
 								<a class="text-primary hover:underline" href={`https://www.ncbi.nlm.nih.gov/snp/rs${r.rsid}`} target="_blank" rel="noreferrer">rs{r.rsid}</a>
 							{:else}<span class="text-muted-foreground">—</span>{/if}
 						</td>
+						<td class="max-w-36 px-3 py-2">
+							{#if geneLabel(r)}
+								<span class="block truncate text-xs font-medium" title={r.genes?.map((g) => `${g.symbol} (${g.geneType}, ${g.ensemblId})`).join('\n')}>{geneLabel(r)}</span>
+							{:else}
+								<span class="text-muted-foreground">—</span>
+							{/if}
+						</td>
 						<td class="px-3 py-2">
 							<div class="grid items-center gap-x-3 gap-y-1" style={`grid-template-columns:${popTmpl}`}>
-								{#each r.frequencies.slice(0, 6) as f}
+								{#each r.frequencies as f}
 									{#if multiPop}
 										<span class="truncate text-xs text-muted-foreground" title={f.population}>{f.population}</span>
 									{/if}
@@ -466,7 +532,7 @@
 								<button
 									onclick={() => copyVrs(r.vrsDigest!)}
 									class="rounded border px-1.5 py-0.5 font-mono text-[10px] hover:bg-muted"
-									title={`ga4gh:VA.${r.vrsDigest} — click to copy`}
+									title={`ga4gh:VA.${r.vrsDigest} · click to copy`}
 								>
 									{copied === r.vrsDigest ? 'copied!' : `VA.${r.vrsDigest.slice(0, 6)}…`}
 								</button>
@@ -474,8 +540,8 @@
 						</td>
 					</tr>
 				{/each}
-				{#if !rows.length && !loading}
-					<tr><td colspan="5" class="px-3 py-10 text-center text-muted-foreground">No variants match.</td></tr>
+				{#if !visibleRows.length && !loading}
+					<tr><td colspan="6" class="px-3 py-10 text-center text-muted-foreground">{tr($lang, 'noVariants')}</td></tr>
 				{/if}
 			</tbody>
 		</table>
@@ -486,9 +552,9 @@
 
 {#snippet pager()}
 	<div class="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
-		<span>{loading ? 'Loading…' : `${total.toLocaleString()} variants`}</span>
+		<span>{loading ? tr($lang, 'loadingLabel') : `${total.toLocaleString()} ${tr($lang, 'variantsLower')}`}</span>
 		<div class="flex flex-wrap items-center gap-1">
-			<button onclick={() => goPage(curPage - 1)} disabled={curPage <= 1} class="rounded-md border px-2.5 py-1 disabled:opacity-40 hover:bg-muted">Prev</button>
+			<button onclick={() => goPage(curPage - 1)} disabled={curPage <= 1} class="rounded-md border px-2.5 py-1 disabled:opacity-40 hover:bg-muted">{tr($lang, 'prev')}</button>
 			{#each pageItems as it}
 				{#if it === '…'}
 					<span class="px-1 text-muted-foreground">…</span>
@@ -496,7 +562,7 @@
 					<button onclick={() => goPage(it)} class={`min-w-8 rounded-md border px-2 py-1 ${it === curPage ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}>{it}</button>
 				{/if}
 			{/each}
-			<button onclick={() => goPage(curPage + 1)} disabled={curPage >= totalPages} class="rounded-md border px-2.5 py-1 disabled:opacity-40 hover:bg-muted">Next</button>
+			<button onclick={() => goPage(curPage + 1)} disabled={curPage >= totalPages} class="rounded-md border px-2.5 py-1 disabled:opacity-40 hover:bg-muted">{tr($lang, 'next')}</button>
 		</div>
 	</div>
 {/snippet}

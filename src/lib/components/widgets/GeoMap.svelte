@@ -25,11 +25,15 @@
 		pins = [],
 		center = [10, -20] as [number, number],
 		zoom = 1.4,
+		showMatchedDots = false,
+		framed = true,
 		onselect = (_p: Pin) => {}
 	}: {
 		pins?: Pin[];
 		center?: [number, number];
 		zoom?: number;
+		showMatchedDots?: boolean;
+		framed?: boolean;
 		onselect?: (p: Pin) => void;
 	} = $props();
 
@@ -46,11 +50,17 @@
 	}
 
 	// population.country -> geojson feature name
-	const ALIAS: Record<string, string> = { Bahamas: 'The Bahamas', 'Trinidad and Tobago': 'Trinidad and Tobago' };
+	const ALIAS: Record<string, string> = {
+		Bahamas: 'The Bahamas',
+		'Trinidad and Tobago': 'Trinidad and Tobago',
+		'United States': 'United States of America'
+	};
 	const featureName = (country: string) => ALIAS[country] ?? country;
 
 	const pinByFeature = $derived(new Map(pins.map((p) => [featureName(p.country), p])));
-	const pinsAsDots = $derived(pins.filter((p) => !features.some((f) => f.name === featureName(p.country))));
+	const pinsAsDots = $derived(
+		showMatchedDots ? pins : pins.filter((p) => !features.some((f) => f.name === featureName(p.country)))
+	);
 
 	onMount(async () => {
 		try {
@@ -75,6 +85,7 @@
 	const cy = $derived(Math.min(Math.max(projY(center[0]), vh / 2), H - vh / 2));
 	const viewBox = $derived(`${cx - vw / 2} ${cy - vh / 2} ${vw} ${vh}`);
 	const dotR = $derived(Math.max(2.4, 7 / Math.sqrt(zoom)));
+	const dotScale = $derived(showMatchedDots ? 0.68 : 1);
 	const maxSamples = $derived(Math.max(1, ...pins.map((p) => p.sampleCount)));
 
 	function enter(p: Pin, key: string) {
@@ -82,7 +93,13 @@
 	}
 </script>
 
-<div class="relative h-full w-full overflow-hidden rounded-[var(--radius)] border" style="background: color-mix(in oklch, var(--brand-from) 8%, var(--card));">
+<div
+	class={[
+		'relative h-full w-full overflow-hidden',
+		framed ? 'rounded-[var(--radius)] border' : 'rounded-none border-0'
+	]}
+	style="background: color-mix(in oklch, var(--brand-from) 8%, var(--card));"
+>
 	<svg {viewBox} class="block h-full w-full" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Biobank map">
 		<g>
 			{#each features as feat}
@@ -112,8 +129,8 @@
 			{#each pinsAsDots as p}
 				{@const key = `dot:${p.cohortId}`}
 				<g class="cursor-pointer outline-none focus:outline-none [-webkit-tap-highlight-color:transparent]" role="button" tabindex="0" onmouseenter={() => enter(p, key)} onmouseleave={() => (hover = null)} onclick={() => onselect(p)} onkeydown={(e) => e.key === 'Enter' && onselect(p)}>
-					<circle cx={projX(p.lon)} cy={projY(p.lat)} r={(dotR + 2 / zoom) * (0.6 + 0.6 * Math.sqrt(p.sampleCount / maxSamples))} fill="var(--map-pin)" opacity={hover?.key === key ? 0.35 : 0.18} />
-					<circle cx={projX(p.lon)} cy={projY(p.lat)} r={dotR * (0.7 + 0.6 * Math.sqrt(p.sampleCount / maxSamples))} fill="var(--map-pin)" stroke="white" stroke-width={0.8 / zoom} />
+					<circle cx={projX(p.lon)} cy={projY(p.lat)} r={(dotR + 2 / zoom) * dotScale * (0.6 + 0.6 * Math.sqrt(p.sampleCount / maxSamples))} fill="var(--map-pin)" opacity={hover?.key === key ? 0.25 : 0.1} />
+					<circle cx={projX(p.lon)} cy={projY(p.lat)} r={dotR * dotScale * (0.7 + 0.6 * Math.sqrt(p.sampleCount / maxSamples))} fill="var(--map-pin)" opacity="0.9" stroke="white" stroke-width={0.7 / zoom} />
 				</g>
 			{/each}
 		</g>

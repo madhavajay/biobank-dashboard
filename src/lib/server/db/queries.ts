@@ -27,7 +27,17 @@ export interface VariantRow {
 	vrsDigest: string | null;
 	posHg19: number | null;
 	lifted: number;
+	genes: GeneHit[];
 	frequencies: FreqCell[];
+}
+
+export interface GeneHit {
+	ensemblId: string;
+	symbol: string;
+	geneType: string;
+	start: number;
+	end: number;
+	strand: string;
 }
 
 async function biobankIdForSlug(db: D1Database, slug: string | null): Promise<number | null> {
@@ -50,6 +60,7 @@ export interface SearchParams {
 	posMax?: number;
 	rsid?: number;
 	rsids?: number[];
+	gene?: string;
 	afMin?: number;
 	afMax?: number;
 	acMin?: number;
@@ -104,6 +115,108 @@ function parseQueryCondition(q: string): { sql: string; args: unknown[] } | null
 	return { sql: '(' + conds.map((c) => c.sql).join(' OR ') + ')', args: conds.flatMap((c) => c.args) };
 }
 
+function normGeneSymbol(raw: string): string {
+	return raw.trim().toUpperCase();
+}
+
+function looksLikeGeneSymbol(raw: string): boolean {
+	return /^[A-Za-z][A-Za-z0-9._-]{1,31}$/.test(raw.trim());
+}
+
+async function genesForSymbols(db: D1Database, symbols: string[]): Promise<{ chrom: number; start: number; end: number }[]> {
+	const norms = [...new Set(symbols.map(normGeneSymbol).filter(Boolean))];
+	if (!norms.length) return [];
+	const ph = norms.map(() => '?').join(',');
+	try {
+		const r = await db
+			.prepare(`SELECT chrom,start,end FROM genes WHERE symbol_norm IN (${ph})`)
+			.bind(...norms)
+			.all<{ chrom: number; start: number; end: number }>();
+		return r.results;
+	} catch {
+		return [];
+	}
+}
+
+export async function attachGenesToRows<T extends { id: number }>(db: D1Database, rows: T[]): Promise<(T & { genes: GeneHit[] })[]> {
+	const ids = rows.map((r) => r.id);
+	if (!ids.length) return rows.map((r) => ({ ...r, genes: [] }));
+	const placeholders = ids.map(() => '?').join(',');
+	try {
+		const grows = await db
+			.prepare(`
+			SELECT v.id variant_id, g.ensembl_id, g.symbol, g.gene_type, g.start, g.end, g.strand
+			FROM variants v
+			JOIN genes g ON g.chrom=v.chrom AND v.pos BETWEEN g.start AND g.end
+			WHERE v.id IN (${placeholders})
+			ORDER BY g.symbol`)
+			.bind(...ids)
+			.all<any>();
+		const genesByVariant = new Map<number, GeneHit[]>();
+		for (const g of grows.results) {
+			const arr = genesByVariant.get(g.variant_id) ?? [];
+			arr.push({
+				ensemblId: g.ensembl_id,
+				symbol: g.symbol,
+				geneType: g.gene_type,
+				start: g.start,
+				end: g.end,
+				strand: g.strand
+			});
+			genesByVariant.set(g.variant_id, arr);
+		}
+		return rows.map((r) => ({ ...r, genes: genesByVariant.get(r.id) ?? [] }));
+	} catch {
+		return rows.map((r) => ({ ...r, genes: [] }));
+	}
+}
+
+async function conditionForQueryToken(db: D1Database, raw: string): Promise<{ sql: string; args: unknown[] } | null> {
+	const parsed = parseTerm(raw);
+	if (parsed) return parsed;
+	if (!looksLikeGeneSymbol(raw)) return null;
+	const geneIntervals = await genesForSymbols(db, [raw]);
+	if (!geneIntervals.length) return { sql: '0', args: [] };
+	if (geneIntervals.length === 1) {
+		const g = geneIntervals[0];
+		return { sql: '(v.chrom=? AND v.pos>=? AND v.pos<=?)', args: [g.chrom, g.start, g.end] };
+	}
+	return {
+		sql: '(' + geneIntervals.map(() => '(v.chrom=? AND v.pos>=? AND v.pos<=?)').join(' OR ') + ')',
+		args: geneIntervals.flatMap((g) => [g.chrom, g.start, g.end])
+	};
+}
+
+async function parseQueryConditionWithGenes(db: D1Database, q: string): Promise<{ sql: string; args: unknown[] } | null> {
+	const groups = q
+		.trim()
+		.replace(/\s*-\s*/g, '-')
+		.replace(/:\s+/g, ':')
+		.split(/\s+/)
+		.map((t) => t.trim())
+		.filter(Boolean);
+	if (!groups.length) return null;
+
+	const andConds: { sql: string; args: unknown[] }[] = [];
+	for (const group of groups) {
+		const orConds = (
+			await Promise.all(
+				group
+					.split('|')
+					.map((t) => t.trim())
+					.filter(Boolean)
+					.map((t) => conditionForQueryToken(db, t))
+			)
+		).filter((t): t is { sql: string; args: unknown[] } => t !== null);
+		if (!orConds.length) return { sql: '0', args: [] };
+		if (orConds.length === 1) andConds.push(orConds[0]);
+		else andConds.push({ sql: '(' + orConds.map((c) => c.sql).join(' OR ') + ')', args: orConds.flatMap((c) => c.args) });
+	}
+
+	if (andConds.length === 1) return andConds[0];
+	return { sql: '(' + andConds.map((c) => c.sql).join(' AND ') + ')', args: andConds.flatMap((c) => c.args) };
+}
+
 function chromToCode(raw: string): number | null {
 	let c = raw.toUpperCase();
 	if (c === 'M') c = 'MT';
@@ -129,10 +242,19 @@ export async function searchVariants(
 	const args: unknown[] = [];
 	// free-text query — supports compound `a|b|c` (OR of rsID / VRS / locus / range)
 	if (params.q && params.q.trim()) {
-		const cond = parseQueryCondition(params.q);
+		const cond = await parseQueryConditionWithGenes(db, params.q);
 		if (cond) {
 			where.push(cond.sql);
 			args.push(...cond.args);
+		}
+	}
+	if (params.gene && params.gene.trim()) {
+		const geneIntervals = await genesForSymbols(db, [params.gene]);
+		if (geneIntervals.length) {
+			where.push('(' + geneIntervals.map(() => '(v.chrom=? AND v.pos>=? AND v.pos<=?)').join(' OR ') + ')');
+			args.push(...geneIntervals.flatMap((g) => [g.chrom, g.start, g.end]));
+		} else {
+			where.push('0');
 		}
 	}
 	// structured params (direct API use)
@@ -154,9 +276,10 @@ export async function searchVariants(
 	}
 
 	// af/count-range fragment reused inside each frequency EXISTS clause.
-	// When scoped to a biobank set, require the alt allele to be actually OBSERVED
-	// (ac>0) — don't surface variants the tenant genotyped but never saw.
-	const range: string[] = biobankIds.length > 0 ? ['f.ac > 0'] : [];
+	// Always require the alt allele to be actually OBSERVED (ac>0): never surface
+	// phantom monomorphic rows the harmonizer emitted for unobserved alt alleles
+	// (those carry only hom_ref counts and aren't real variants).
+	const range: string[] = ['f.ac > 0'];
 	const rangeArgs: unknown[] = [];
 	const cohortIds = params.cohorts ?? [];
 	if (cohortIds.length) {
@@ -241,6 +364,13 @@ export async function searchVariants(
 		WHERE f.variant_id IN (${placeholders}) ${fbiobank} ${fcohort}
 		ORDER BY f.af DESC`;
 	const frows = await db.prepare(freqSql).bind(...ids, ...biobankIds, ...cohortIds).all<any>();
+	const growSql = `
+		SELECT v.id variant_id, g.ensembl_id, g.symbol, g.gene_type, g.start, g.end, g.strand
+		FROM variants v
+		JOIN genes g ON g.chrom=v.chrom AND v.pos BETWEEN g.start AND g.end
+		WHERE v.id IN (${placeholders})
+		ORDER BY g.symbol`;
+	const grows = await db.prepare(growSql).bind(...ids).all<any>();
 
 	const byVariant = new Map<number, FreqCell[]>();
 	for (const f of frows.results) {
@@ -262,6 +392,19 @@ export async function searchVariants(
 		arr.push(cell);
 		byVariant.set(f.variant_id, arr);
 	}
+	const genesByVariant = new Map<number, GeneHit[]>();
+	for (const g of grows.results) {
+		const arr = genesByVariant.get(g.variant_id) ?? [];
+		arr.push({
+			ensemblId: g.ensembl_id,
+			symbol: g.symbol,
+			geneType: g.gene_type,
+			start: g.start,
+			end: g.end,
+			strand: g.strand
+		});
+		genesByVariant.set(g.variant_id, arr);
+	}
 
 	const rows: VariantRow[] = vrows.results.map((v) => ({
 		id: v.id,
@@ -274,6 +417,7 @@ export async function searchVariants(
 		vrsDigest: v.vrs_digest,
 		posHg19: v.pos_hg19,
 		lifted: v.lifted,
+		genes: genesByVariant.get(v.id) ?? [],
 		frequencies: byVariant.get(v.id) ?? []
 	}));
 	return { rows, total };
@@ -285,7 +429,7 @@ export async function getVariant(db: D1Database, id: number): Promise<VariantRow
 	const frows = await db
 		.prepare(
 			`SELECT f.cohort_id, c.label cohort_label, c.biobank_id, b.slug biobank_slug,
-			        p.name population, p.country_code, f.af, f.ac, f.an, f.n_homo, f.n_hetero
+			        p.name population, p.country_code, f.af, f.ac, f.an, f.n_homo, f.n_hetero, f.n_homo_ref
 			 FROM frequencies f
 			 JOIN cohorts c ON c.id=f.cohort_id
 			 JOIN populations p ON p.id=c.population_id
@@ -294,6 +438,7 @@ export async function getVariant(db: D1Database, id: number): Promise<VariantRow
 		)
 		.bind(id)
 		.all<any>();
+	const [withGenes] = await attachGenesToRows(db, [{ id: v.id }]);
 	return {
 		id: v.id,
 		chrom: v.chrom,
@@ -305,6 +450,7 @@ export async function getVariant(db: D1Database, id: number): Promise<VariantRow
 		vrsDigest: v.vrs_digest,
 		posHg19: v.pos_hg19,
 		lifted: v.lifted,
+		genes: withGenes.genes,
 		frequencies: frows.results.map((f) => ({
 			cohortId: f.cohort_id,
 			cohortLabel: f.cohort_label,
@@ -416,6 +562,19 @@ export async function tenantStats(db: D1Database, scopeSlug: string | null): Pro
 		.bind(...args)
 		.first<any>();
 	return { variants: r?.variants ?? 0, common: r?.common ?? 0, lowFreq: r?.lowFreq ?? 0, rare: r?.rare ?? 0 };
+}
+
+// Precomputed stats cache (seeder writes `home:<scope>` / `explore:<scope>`).
+// Resilient: if the table is missing or unseeded, return null so callers fall
+// back to live computation instead of 500-ing.
+export async function getStats(db: D1Database, key: string): Promise<any | null> {
+	try {
+		const r = await db.prepare('SELECT value FROM stats WHERE key=?').bind(key).first<{ value: string }>();
+		if (!r) return null;
+		return JSON.parse(r.value);
+	} catch {
+		return null;
+	}
 }
 
 // Datasets (tenant-owned, JSON metadata). Counts are baked into the metadata at
