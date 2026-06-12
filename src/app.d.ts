@@ -3,6 +3,12 @@
 import type { Tenant } from '$lib/tenants';
 
 declare global {
+	interface Window {
+		rybbit?: {
+			event?: (eventName: string, properties?: Record<string, unknown>) => void;
+		};
+	}
+
 	namespace App {
 		// interface Error {}
 		interface Locals {

@@ -120,11 +120,12 @@ function buildStats(bids: number[]) {
 	return { home, explore: { total, rows } };
 }
 
-// remote biobanks: 1=carigenetics, 2=bipmed (NO pgp). global excludes pgp via bids=[1,2].
+// remote biobanks: 1=carigenetics, 2=bipmed, 3=pgp-harvard (all now seeded).
 const scopes = [
-	{ key: 'global', bids: [1, 2] },
+	{ key: 'global', bids: [1, 2, 3] },
 	{ key: 'carigenetics', bids: [1] },
-	{ key: 'bipmed', bids: [2] }
+	{ key: 'bipmed', bids: [2] },
+	{ key: 'pgp-harvard', bids: [3] }
 ];
 
 const sqlEsc = (s: string) => s.replace(/'/g, "''");

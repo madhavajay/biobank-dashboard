@@ -5,9 +5,11 @@
 	let { data } = $props();
 	const tenant = $derived(data.tenant);
 	const L = $derived($lang);
+	const isCarigenetics = $derived(tenant.slug === 'carigenetics');
+	const isPgp = $derived(tenant.slug === 'pgp-harvard');
 
 	// coverage ramp (matches the original BIPMed atlas legend)
-	const RAMP = [
+	const DEFAULT_RAMP = [
 		{ max: 0, color: '#f3f8f8', label: () => tr(L, 'noSamples') },
 		{ max: 100, color: '#dff2f1', label: () => '(0, 100]' },
 		{ max: 200, color: '#b8e4e5', label: () => '(100, 200]' },
@@ -16,9 +18,31 @@
 		{ max: 500, color: '#337f98', label: () => '(400, 500]' },
 		{ max: Infinity, color: '#1e3850', label: () => '(500, 700]' }
 	];
+	const CARIBBEAN_RAMP = [
+		{ max: 0, color: '#f3f4f6', label: () => tr(L, 'noSamples') },
+		{ max: 100, color: '#d9f99d', label: () => '(0, 100]' },
+		{ max: 200, color: '#86efac', label: () => '(100, 200]' },
+		{ max: 300, color: '#22c55e', label: () => '(200, 300]' },
+		{ max: 400, color: '#06b6d4', label: () => '(300, 400]' },
+		{ max: 500, color: '#2563eb', label: () => '(400, 500]' },
+		{ max: Infinity, color: '#581c87', label: () => '(500, 700]' }
+	];
+	const PGP_RAMP = [
+		{ max: 0, color: '#faf3f2', label: () => tr(L, 'noSamples') },
+		{ max: 100, color: '#fbe0db', label: () => '(0, 100]' },
+		{ max: 200, color: '#f6b6aa', label: () => '(100, 200]' },
+		{ max: 300, color: '#ec8775', label: () => '(200, 300]' },
+		{ max: 400, color: '#d9533e', label: () => '(300, 400]' },
+		{ max: 500, color: '#b0301f', label: () => '(400, 500]' },
+		{ max: Infinity, color: '#7a1c12', label: () => '(500, 700]' }
+	];
+	const RAMP = $derived(isCarigenetics ? CARIBBEAN_RAMP : isPgp ? PGP_RAMP : DEFAULT_RAMP);
 	const colorFor = (n: number) => RAMP.find((r) => n <= r.max)!.color;
 
 	const pins = $derived(data.populations.map((p: any) => ({ ...p, color: colorFor(p.sampleCount) })));
+	const mainMapPins = $derived(isCarigenetics ? pins.filter((p: any) => p.name !== 'Bermuda') : pins);
+	const bermudaPins = $derived(isCarigenetics ? pins.filter((p: any) => p.name === 'Bermuda') : []);
+	let mapHover = $state<any | null>(null);
 
 	const countries = $derived([...new Set(data.populations.map((p: any) => p.country))]);
 	const region = $derived(
@@ -56,13 +80,13 @@
 <div class="grid gap-6 lg:grid-cols-[1.35fr_1fr]">
 	<!-- LEFT: big map -->
 	<section class="card-surface flex flex-col p-5">
-		<div class="mb-3 flex items-start justify-between gap-4">
+		<div class="mb-4 flex items-start justify-between gap-4 sm:mb-5">
 			<div>
 				<p class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{tr(L, 'stateAtlas')}</p>
 				<h2 class="text-2xl font-bold tracking-tight">{tr(L, 'byCoverage', { region })}</h2>
 			</div>
 		</div>
-		<div class="mb-3">
+		<div class="mb-4 sm:mb-5">
 			<p class="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{tr(L, 'legend')}</p>
 			<div class="flex h-2.5 w-full overflow-hidden rounded-full">
 				{#each RAMP as r}<span class="flex-1" style={`background:${r.color}`}></span>{/each}
@@ -73,8 +97,34 @@
 				{/each}
 			</div>
 		</div>
-		<div class="min-h-[420px] flex-1">
-			<GeoMap {pins} center={tenant.map.center} zoom={tenant.map.zoom} />
+		<div class="relative min-h-[420px] flex-1">
+			<GeoMap pins={mainMapPins} center={tenant.map.center} zoom={tenant.map.zoom} showMatchedDots={isCarigenetics} showDots={!isCarigenetics} showLabels={isCarigenetics} labelScale={isCarigenetics ? 0.42 : 1} markerScale={isCarigenetics ? 0.08 : undefined} fit={isCarigenetics ? 'slice' : 'meet'} source={isCarigenetics ? '/caribbean.geo.json' : '/world.geo.json'} tooltipPlacement={isCarigenetics ? 'open-water' : 'top-left'} showTooltip={!isCarigenetics} onhover={(p) => (mapHover = p)} />
+			{#if isCarigenetics && bermudaPins.length}
+				<div class="absolute right-3 top-3 h-32 w-44 overflow-hidden rounded-md border bg-card/95 p-1.5 shadow-lg backdrop-blur">
+					<div
+						class="absolute left-2 top-2 z-10 cursor-pointer rounded border bg-card/90 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+						style={`border-color:${bermudaPins[0].color}`}
+						role="button"
+						tabindex="0"
+						onmouseenter={() => (mapHover = bermudaPins[0])}
+						onmouseleave={() => (mapHover = null)}
+						onfocus={() => (mapHover = bermudaPins[0])}
+						onblur={() => (mapHover = null)}
+					>
+						Bermuda <span class="font-extrabold" style={`color:${bermudaPins[0].color}`}>{fmt(bermudaPins[0].sampleCount)}</span>
+					</div>
+					<GeoMap pins={bermudaPins} center={[32.31915, -64.76696]} zoom={1100} showMatchedDots showDots={false} source="/bermuda.geo.json" framed={false} showTooltip={false} onhover={(p) => (mapHover = p)} />
+				</div>
+			{/if}
+			{#if isCarigenetics && mapHover}
+				<div class="pointer-events-none absolute left-[27%] top-[70%] z-20 -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-popover/95 px-3 py-2 text-xs shadow-lg backdrop-blur">
+					<div class="font-semibold text-popover-foreground">{mapHover.name}</div>
+					<div class="mt-1 flex gap-3 text-popover-foreground">
+						<span>{fmt(mapHover.sampleCount)} samples</span>
+						<span>{fmt(mapHover.variantCount)} variants</span>
+					</div>
+				</div>
+			{/if}
 		</div>
 	</section>
 
@@ -112,7 +162,18 @@
 					<span class="text-[11px] font-semibold uppercase tracking-wide" style="color:#3a55a8">{tr(L, 'populations')}</span>
 					<span class="text-2xl font-extrabold" style="color:#22325f">{fmt(data.totals.populations)}</span>
 				</div>
-				<div class="mt-2 truncate text-xs" style="color:#41538f">{countries.join(', ')}</div>
+				{#if isCarigenetics}
+					<div class="mt-2 grid gap-1 text-xs" style="color:#41538f">
+						{#each pins as p}
+							<div class="flex items-center justify-between gap-3">
+								<span class="truncate">{p.name}</span>
+								<strong class="shrink-0 tabular-nums">{fmt(p.sampleCount)}</strong>
+							</div>
+						{/each}
+					</div>
+				{:else}
+					<div class="mt-2 truncate text-xs" style="color:#41538f">{countries.join(', ')}</div>
+				{/if}
 			</div>
 			<!-- variants -->
 			<div class="rounded-xl p-4 text-white" style="background:#1e3850">

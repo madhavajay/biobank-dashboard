@@ -1,5 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { biobanksOverview, showGenotypeCounts } from '$lib/server/db/queries';
+import { explorerDisplay, hasExplorerConfig } from '$lib/explorer';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals, platform, url }) => {
@@ -15,6 +16,7 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		options: biobanks.map((b) => ({ slug: b.slug, name: b.name })),
 		populations,
 		q: url.searchParams.get('q') ?? '',
-		showGenotypeCounts: await showGenotypeCounts(db, locals.tenant.scope)
+		showGenotypeCounts: await showGenotypeCounts(db, locals.tenant.scope),
+		display: hasExplorerConfig(locals.tenant.slug) ? explorerDisplay(locals.tenant.slug) : undefined
 	};
 };

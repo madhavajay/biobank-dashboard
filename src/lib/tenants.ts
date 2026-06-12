@@ -57,7 +57,7 @@ export const TENANTS: Tenant[] = [
 		logoEmoji: '🌴',
 		logoImg: '/tenants/carigenetics/logo.png',
 		scope: 'carigenetics',
-		map: { center: [21, -66], zoom: 5.5 },
+		map: { center: [17.9, -68.5], zoom: 12 },
 		theme: {
 			primary: 'oklch(0.68 0.13 215)',
 			primaryFg: 'oklch(0.99 0 0)',
@@ -65,7 +65,7 @@ export const TENANTS: Tenant[] = [
 			ring: 'oklch(0.68 0.13 215)',
 			brandFrom: 'oklch(0.72 0.13 210)',
 			brandTo: 'oklch(0.66 0.15 250)',
-			mapLand: 'oklch(0.92 0.03 200)',
+			mapLand: 'oklch(0.94 0 0)',
 			mapPin: 'oklch(0.62 0.16 215)'
 		}
 	},

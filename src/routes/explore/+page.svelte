@@ -18,4 +18,5 @@
 	populations={data.populations}
 	initialQuery={data.q}
 	showGenotypeCounts={data.showGenotypeCounts}
+	display={data.display}
 />

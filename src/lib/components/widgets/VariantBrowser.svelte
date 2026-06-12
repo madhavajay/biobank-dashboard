@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { replaceState } from '$app/navigation';
 	import { lang, tr } from '$lib/i18n';
+	import { DEFAULTS, type ExplorerDisplay } from '$lib/explorer';
 	let {
 		forceTenant = '',
 		title = '',
@@ -10,7 +11,8 @@
 		examples = ['BRCA1', 'rs2465136', '1:1000000-1100000', 'chr7', 'ga4gh:VA.3W84-kCDOBIiXcaOdX8XvHqgcoTx7u2a'],
 		initialQuery = '',
 		showGenotypeCounts = true,
-		populations = []
+		populations = [],
+		display = undefined
 	}: {
 		forceTenant?: string;
 		title?: string;
@@ -21,7 +23,19 @@
 		initialQuery?: string;
 		showGenotypeCounts?: boolean;
 		populations?: { cohortId: number; name: string }[];
+		display?: ExplorerDisplay;
 	} = $props();
+
+	// resolved per-tenant column visibility (falls back to auto behaviour when no config passed)
+	const cfg = $derived(display ?? DEFAULTS);
+	const showGeno = $derived(display ? cfg.genotypes : showGenotypeCounts);
+	const showGene = $derived(cfg.gene);
+	const showVrs = $derived(cfg.vrs);
+	const barMax = $derived(cfg.barMax);
+	const acAnSplit = $derived(cfg.acAnSplit);
+	const vrsExpand = $derived(cfg.vrsExpand);
+	const showGnomad = $derived(cfg.gnomad);
+	const gnomadUrl = (r: VRow) => `https://gnomad.broadinstitute.org/variant/${r.chromName}-${r.pos}-${r.ref}-${r.alt}?dataset=gnomad_r4`;
 
 	// initial state read from the page URL (so a pasted/bookmarked link reproduces the view)
 	const sp0 = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
@@ -34,9 +48,7 @@
 	const selectedCohortIds = $derived(populations.filter((p) => selectedPops[p.cohortId]).map((p) => p.cohortId));
 	const showPopFilter = $derived(populations.length > 1);
 	function togglePop(id: number) {
-		const next = { ...selectedPops, [id]: !selectedPops[id] };
-		if (!Object.values(next).some(Boolean)) return; // keep at least one
-		selectedPops = next;
+		selectedPops = { ...selectedPops, [id]: !selectedPops[id] };
 		offset = 0;
 	}
 
@@ -50,9 +62,7 @@
 	const showFilter = $derived(!scoped && options.length > 1);
 
 	function toggleBank(slug: string) {
-		const next = { ...selected, [slug]: !selected[slug] };
-		if (!Object.values(next).some(Boolean)) return; // keep at least one
-		selected = next;
+		selected = { ...selected, [slug]: !selected[slug] };
 		offset = 0;
 	}
 	function setMatch(m: 'any' | 'all') {
@@ -327,13 +337,16 @@
 	// shared grid template for the population rows + their header (so they align).
 	// The last visible column is max-content so it collapses to its text width.
 	const multiPop = $derived(visibleRows.some((r) => r.frequencies.length > 1));
+	// Max AF (max across populations) is redundant for a single-population tenant — it just equals Freq.
+	const showMaxAf = $derived(display ? cfg.maxAf : !scoped || populations.length > 1);
+	const colCount = $derived(3 + (showGene ? 1 : 0) + (showMaxAf ? 1 : 0) + (showVrs ? 1 : 0) + (showGnomad ? 1 : 0));
 	const popTmpl = $derived(
 		[
 			multiPop ? 'minmax(5rem,7rem)' : null,
-			'5rem', // bar
+			vrsExpand ? barMax : `minmax(5rem,${barMax})`, // bar: fixed when VRS absorbs slack, else stretches to fill
 			'4rem', // freq
-			showGenotypeCounts ? '4.5rem' : 'max-content', // ac/an
-			...(showGenotypeCounts ? ['2.75rem', '4.75rem', '4.75rem'] : []) // het, hom_alt, hom_ref
+			...(acAnSplit ? ['2.75rem', '3.5rem'] : [showGeno ? '4.5rem' : 'max-content']), // ac/an (split: separate right-aligned cols)
+			...(showGeno ? ['2rem', '3rem', '3rem'] : []) // het, hom_alt, hom_ref
 		]
 			.filter(Boolean)
 			.join(' ')
@@ -470,22 +483,28 @@
 				<tr>
 					<th class="px-3 py-2 font-medium"><button onclick={() => setSort('variant')} title="Genomic location on the GRCh38 assembly. Chromosome:position, then reference›alternate allele. Click to sort by position." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">{tr($lang, 'colVariant')} <span class="normal-case text-[9px] text-muted-foreground/70">GRCh38</span> <span class="text-[9px]">{ind('variant')}</span></button></th>
 					<th class="px-3 py-2 font-medium"><button onclick={() => setSort('rsid')} title="dbSNP Reference SNP cluster ID (rsID). Links out to NCBI dbSNP. Click to sort." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">rsID <span class="text-[9px]">{ind('rsid')}</span></button></th>
-					<th class="px-3 py-2 font-medium"><span title="Gene(s) whose transcribed region overlaps this position (Ensembl)." class="cursor-help">Gene</span></th>
+					{#if showGene}<th class="px-3 py-2 font-medium"><span title="Gene(s) whose transcribed region overlaps this position (Ensembl)." class="cursor-help">Gene</span></th>{/if}
 					<th class="px-3 py-2 font-medium">
-						<div class="grid items-center gap-x-3 uppercase" style={`grid-template-columns:${popTmpl}`}>
+						<div class="grid items-center gap-x-2 uppercase" style={`grid-template-columns:${popTmpl}`}>
 							{#if multiPop}<span class="cursor-help text-left" title="Cohort / population in which the allele frequencies on this row were measured.">{tr($lang, 'colPopulation')}</span>{/if}
 							<span></span>
 							<button onclick={() => setSort('maxaf')} title="Alternate allele frequency in this population = allele count ÷ allele number (AC ÷ AN). Click to sort." class="inline-flex cursor-help items-center justify-end gap-1 uppercase hover:text-foreground">Freq <span class="text-[9px]">{ind('maxaf')}</span></button>
-							<span class="cursor-help text-right" title="Allele count / allele number. Observed alternate alleles ÷ total alleles genotyped in this population.">AC/AN</span>
-							{#if showGenotypeCounts}
-								<span class="cursor-help text-right" title="HET: heterozygous individuals (one copy of the alternate allele).">HET</span>
-								<span class="cursor-help text-right" title="HOM_ALT: homozygous-alternate individuals (two copies of the alternate allele).">HOM_ALT</span>
-								<span class="cursor-help text-right" title="HOM_REF: homozygous-reference individuals (no copies of the alternate allele).">HOM_REF</span>
+							{#if acAnSplit}
+								<span class="cursor-help text-right" title="Allele count: observed alternate alleles.">AC</span>
+								<span class="cursor-help text-right" title="Allele number: total alleles genotyped.">AN</span>
+							{:else}
+								<span class="cursor-help text-right" title="Allele count / allele number. Observed alternate alleles ÷ total alleles genotyped in this population.">AC/AN</span>
+							{/if}
+							{#if showGeno}
+								<span class="cursor-help text-right text-[9px] tracking-tight" title="HET: heterozygous individuals (one copy of the alternate allele).">HET</span>
+								<span class="cursor-help text-right text-[9px] tracking-tight" title="HOM_ALT: homozygous-alternate individuals (two copies of the alternate allele).">HOM_ALT</span>
+								<span class="cursor-help text-right text-[9px] tracking-tight" title="HOM_REF: homozygous-reference individuals (no copies of the alternate allele).">HOM_REF</span>
 							{/if}
 						</div>
 					</th>
-					<th class="whitespace-nowrap px-3 py-2 text-right font-medium"><button onclick={() => setSort('maxaf')} title="Highest alternate allele frequency across all populations shown for this variant. Click to sort." class="inline-flex cursor-help items-center gap-1 whitespace-nowrap uppercase hover:text-foreground">Max AF <span class="text-[9px]">{ind('maxaf')}</span></button></th>
-					<th class="px-3 py-2 font-medium"><button onclick={() => setSort('vrs')} title="GA4GH VRS computed allele identifier (ga4gh:VA.…): a global, sequence-derived variant ID. Click a cell to copy the full ID." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">VRS <span class="text-[9px]">{ind('vrs')}</span></button></th>
+					{#if showMaxAf}<th class="whitespace-nowrap px-3 py-2 text-right font-medium"><button onclick={() => setSort('maxaf')} title="Highest alternate allele frequency across all populations shown for this variant. Click to sort." class="inline-flex cursor-help items-center gap-1 whitespace-nowrap uppercase hover:text-foreground">Max AF <span class="text-[9px]">{ind('maxaf')}</span></button></th>{/if}
+					{#if showVrs}<th class={`px-3 py-2 font-medium ${vrsExpand ? 'w-full' : ''}`}><button onclick={() => setSort('vrs')} title="GA4GH VRS computed allele identifier (ga4gh:VA.…): a global, sequence-derived variant ID. Click a cell to copy the full ID." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">VRS <span class="text-[9px]">{ind('vrs')}</span></button></th>{/if}
+					{#if showGnomad}<th class="py-2 pl-0 pr-4"><span class="sr-only">gnomAD</span></th>{/if}
 				</tr>
 			</thead>
 			<tbody>
@@ -500,15 +519,17 @@
 								<a class="text-primary hover:underline" href={`https://www.ncbi.nlm.nih.gov/snp/rs${r.rsid}`} target="_blank" rel="noreferrer">rs{r.rsid}</a>
 							{:else}<span class="text-muted-foreground">—</span>{/if}
 						</td>
-						<td class="max-w-36 px-3 py-2">
-							{#if geneLabel(r)}
-								<span class="block truncate text-xs font-medium" title={r.genes?.map((g) => `${g.symbol} (${g.geneType}, ${g.ensemblId})`).join('\n')}>{geneLabel(r)}</span>
-							{:else}
-								<span class="text-muted-foreground">—</span>
-							{/if}
-						</td>
+						{#if showGene}
+							<td class="max-w-36 px-3 py-2">
+								{#if geneLabel(r)}
+									<span class="block truncate text-xs font-medium" title={r.genes?.map((g) => `${g.symbol} (${g.geneType}, ${g.ensemblId})`).join('\n')}>{geneLabel(r)}</span>
+								{:else}
+									<span class="text-muted-foreground">—</span>
+								{/if}
+							</td>
+						{/if}
 						<td class="px-3 py-2">
-							<div class="grid items-center gap-x-3 gap-y-1" style={`grid-template-columns:${popTmpl}`}>
+							<div class="grid items-center gap-x-2 gap-y-1" style={`grid-template-columns:${popTmpl}`}>
 								{#each r.frequencies as f}
 									{#if multiPop}
 										<span class="truncate text-xs text-muted-foreground" title={f.population}>{f.population}</span>
@@ -517,8 +538,13 @@
 										<span class="af-fill block h-full rounded-full" style={`width:${Math.min(100, f.af * 100)}%`}></span>
 									</span>
 									<span class="text-right font-mono text-[11px] tabular-nums">{fmtAf(f.af)}</span>
-									<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title="allele count / allele number">{f.ac}/{f.an}</span>
-									{#if showGenotypeCounts}
+									{#if acAnSplit}
+										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title="allele count">{f.ac}</span>
+										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title="allele number">{f.an}</span>
+									{:else}
+										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title="allele count / allele number">{f.ac}/{f.an}</span>
+									{/if}
+									{#if showGeno}
 										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title="heterozygous">{f.nHetero ?? '—'}</span>
 										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title="homozygous alt">{f.nHomo ?? '—'}</span>
 										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title="homozygous ref">{f.nHomoRef ?? '—'}</span>
@@ -526,22 +552,31 @@
 								{/each}
 							</div>
 						</td>
-						<td class="px-3 py-2 text-right font-mono text-xs">{fmtAf(maxAf(r))}</td>
-						<td class="px-3 py-2">
-							{#if r.vrsDigest}
-								<button
-									onclick={() => copyVrs(r.vrsDigest!)}
-									class="rounded border px-1.5 py-0.5 font-mono text-[10px] hover:bg-muted"
-									title={`ga4gh:VA.${r.vrsDigest} · click to copy`}
-								>
-									{copied === r.vrsDigest ? 'copied!' : `VA.${r.vrsDigest.slice(0, 6)}…`}
-								</button>
-							{:else}<span class="text-muted-foreground">—</span>{/if}
-						</td>
+						{#if showMaxAf}<td class="px-3 py-2 text-right font-mono text-xs">{fmtAf(maxAf(r))}</td>{/if}
+						{#if showVrs}
+							<td class={`px-3 py-2 ${vrsExpand ? 'w-full max-w-0' : ''}`}>
+								{#if r.vrsDigest}
+									<button
+										onclick={() => copyVrs(r.vrsDigest!)}
+										class={`rounded border px-1.5 py-0.5 font-mono text-[10px] hover:bg-muted ${vrsExpand ? 'block w-full truncate text-left' : ''}`}
+										title={`ga4gh:VA.${r.vrsDigest} · click to copy`}
+									>
+										{copied === r.vrsDigest ? 'copied!' : vrsExpand ? `VA.${r.vrsDigest}` : `VA.${r.vrsDigest.slice(0, 6)}…`}
+									</button>
+								{:else}<span class="text-muted-foreground">—</span>{/if}
+							</td>
+						{/if}
+						{#if showGnomad}
+							<td class="py-2 pl-0 pr-4 text-right">
+								<a href={gnomadUrl(r)} target="_blank" rel="noopener" title={`View ${r.chromName}-${r.pos}-${r.ref}-${r.alt} on gnomAD (r4)`} class="inline-flex items-center">
+									<img src="/icons/gnomad.png" alt="gnomAD" class="size-4 opacity-70 transition-opacity hover:opacity-100" />
+								</a>
+							</td>
+						{/if}
 					</tr>
 				{/each}
 				{#if !visibleRows.length && !loading}
-					<tr><td colspan="6" class="px-3 py-10 text-center text-muted-foreground">{tr($lang, 'noVariants')}</td></tr>
+					<tr><td colspan={colCount} class="px-3 py-10 text-center text-muted-foreground">{tr($lang, 'noVariants')}</td></tr>
 				{/if}
 			</tbody>
 		</table>

@@ -16,7 +16,46 @@
 	});
 
 	const flags = $derived((tenant.langs ?? []).map((c: string) => LANGS.find((l) => l.code === c)!).filter(Boolean));
+
+	$effect(() => {
+		if (!data.analytics) return;
+
+		const href = page.url.href;
+		const properties = {
+			tenant_slug: data.analytics.tenantSlug,
+			tenant_name: data.analytics.tenantName,
+			tenant_scope: data.analytics.tenantScope ?? 'global',
+			real_hostname: data.analytics.hostname,
+			analytics_site_domain: data.analytics.siteDomain,
+			pathname: page.url.pathname,
+			querystring: page.url.search,
+			href
+		};
+
+		let attempts = 0;
+		const timer = window.setInterval(() => {
+			if (window.rybbit?.event) {
+				window.rybbit.event('tenant_pageview', properties);
+				window.clearInterval(timer);
+			} else if (++attempts >= 20) {
+				window.clearInterval(timer);
+			}
+		}, 250);
+
+		return () => window.clearInterval(timer);
+	});
 </script>
+
+<svelte:head>
+	{#if data.analytics}
+		<script
+			src={data.analytics.scriptSrc}
+			data-site-id={data.analytics.siteId}
+			data-tag={data.analytics.tag}
+			defer
+		></script>
+	{/if}
+</svelte:head>
 
 <div style={data.themeStyle} class="flex min-h-screen flex-col">
 	<header class="sticky top-0 z-30 border-b bg-background/85 backdrop-blur">

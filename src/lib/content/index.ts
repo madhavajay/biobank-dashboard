@@ -48,7 +48,7 @@ export interface TenantContent {
 	contact?: ContactConfig;
 }
 
-const REGISTRY: Record<string, TenantContent> = { bipmed };
+const REGISTRY: Record<string, TenantContent> = { bipmed: bipmed as TenantContent };
 
 export function tenantContent(slug: string): TenantContent | null {
 	return REGISTRY[slug] ?? null;

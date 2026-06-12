@@ -6,7 +6,8 @@
 	const templates: Record<string, any> = {
 		biovault: BioVaultHome,
 		carigenetics: AtlasHome,
-		bipmed: AtlasHome
+		bipmed: AtlasHome,
+		'pgp-harvard': AtlasHome
 	};
 	const Template = $derived(templates[data.tenant.slug] ?? BioVaultHome);
 </script>
