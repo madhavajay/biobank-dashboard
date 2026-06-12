@@ -1,0 +1,79 @@
+{
+	"about": {
+		"intro": {
+			"en": "BIPMed, the Brazilian Initiative on Precision Medicine, is an initiative connected to five Research, Innovation and Dissemination Centers supported by FAPESP.",
+			"pt": "O BIPMed, Iniciativa Brasileira de Medicina de Precisão, é uma iniciativa ligada a cinco Centros de Pesquisa, Inovação e Difusão apoiados pela FAPESP."
+		},
+		"paragraphs": {
+			"en": [
+				"The project focuses on precision medicine, translational research, genomic medicine, personalized medicine, and the responsible sharing of genomic and clinical data. BIPMed is built around a software platform aligned with Global Alliance for Genomics and Health (GA4GH) guidelines, intended to provide public access to genomic and phenotypic data for clinicians and scientists.",
+				"BIPMed is the Brazilian Country Node of the Human Variome Project. Its database design follows Human Genome Variation Society (HGVS) recommendations and GA4GH principles for the responsible sharing of genomic and clinical information."
+			],
+			"pt": [
+				"O projeto foca em medicina de precisão, pesquisa translacional, medicina genômica, medicina personalizada e no compartilhamento responsável de dados genômicos e clínicos. O BIPMed é construído sobre uma plataforma de software alinhada às diretrizes da Global Alliance for Genomics and Health (GA4GH), com o objetivo de oferecer acesso público a dados genômicos e fenotípicos para clínicos e cientistas.",
+				"O BIPMed é o Nó Nacional Brasileiro do Human Variome Project. O desenho de seu banco de dados segue as recomendações da Human Genome Variation Society (HGVS) e os princípios da GA4GH para o compartilhamento responsável de informações genômicas e clínicas."
+			]
+		},
+		"centers": [
+			{ "name": "Brazilian Research Institute for Neuroscience and Neurotechnology (BRAINN)", "coordinator": "Dr. Fernando Cendes", "url": "https://www.brainn.org.br/", "logo": "/tenants/bipmed/about-logos/brainn-logo.webp" },
+			{ "name": "Center for Computational Science and Engineering (CCES)", "coordinator": "Dr. Munir Skaf", "url": "https://cces.unicamp.br/", "logo": "/tenants/bipmed/about-logos/cces-logo.webp" },
+			{ "name": "Center for Research in Cell Therapy (CTC)", "coordinator": "Dr. Marco Antonio Zago", "url": "https://ctcusp.org/", "logo": "/tenants/bipmed/about-logos/ctc-logo.webp" },
+			{ "name": "Center for Research on Inflammatory Diseases (CRID)", "coordinator": "Dr. Fernando Queiroz Cunha", "url": "http://crid.fmrp.usp.br/", "logo": "/tenants/bipmed/about-logos/crid-logo.webp" },
+			{ "name": "Obesity and Comorbidities Research Center (OCRC)", "coordinator": "Dr. Licio Augusto Velloso", "url": "https://www.ocrc.org.br/", "logo": "/tenants/bipmed/about-logos/ocrc-logo.webp" }
+		],
+		"references": [
+			{ "label": "FAPESP", "url": "https://www.fapesp.br" },
+			{ "label": "GA4GH", "url": "https://www.genomicsandhealth.org/" },
+			{ "label": "Human Variome Project", "url": "https://www.humanvariomeproject.org/" },
+			{ "label": "Human Genome Variation Society", "url": "https://www.hgvs.org/" }
+		]
+	},
+	"team": {
+		"intro": {
+			"en": "An interdisciplinary founders team working across bioinformatics, statistics, chemistry, pharmacology, molecular biology, neuroscience, and human disease.",
+			"pt": "Uma equipe fundadora interdisciplinar atuando em bioinformática, estatística, química, farmacologia, biologia molecular, neurociência e doenças humanas."
+		},
+		"groups": [
+			{
+				"name": { "en": "BIPMed Steering Committee", "pt": "Comitê Diretor do BIPMed" },
+				"members": [
+					{ "name": "Iscia Lopes-Cendes", "degrees": "M.D., Ph.D.", "role": { "en": "Professor, University of Campinas, Brazil", "pt": "Professora, Universidade de Campinas, Brasil" }, "photo": "/tenants/bipmed/team/iscia-lopes-cendes.webp", "linkedin": "https://www.linkedin.com/in/iscia-lopes-cendes-a2a60492/" },
+					{ "name": "Claudia P. Medeiros", "degrees": "Ph.D.", "role": { "en": "Professor, University of Campinas, Brazil", "pt": "Professora, Universidade de Campinas, Brasil" }, "photo": "/tenants/bipmed/team/claudia-p-medeiros.webp", "linkedin": null },
+					{ "name": "Benilton S. Carvalho", "degrees": "Ph.D.", "role": { "en": "Professor, University of Campinas, Brazil", "pt": "Professor, Universidade de Campinas, Brasil" }, "photo": "/tenants/bipmed/team/benilton-s-carvalho.webp", "linkedin": "https://www.linkedin.com/in/benilton/" },
+					{ "name": "Munir Skaf", "degrees": "Ph.D.", "role": { "en": "Professor, University of Campinas, Brazil", "pt": "Professor, Universidade de Campinas, Brasil" }, "photo": "/tenants/bipmed/team/munir-skaf.webp", "linkedin": "https://www.linkedin.com/in/munir-skaf-aba46529/" },
+					{ "name": "Wilson Silva Junior", "degrees": "Ph.D.", "role": { "en": "Associate Professor, University of Campinas, Brazil", "pt": "Professor Associado, Universidade de Campinas, Brasil" }, "photo": "/tenants/bipmed/team/wilson-silva-junior.webp", "linkedin": null },
+					{ "name": "Joseane Morari", "degrees": "Ph.D.", "role": { "en": "Associate Researcher, University of Campinas, Brazil", "pt": "Pesquisadora Associada, Universidade de Campinas, Brasil" }, "photo": "/tenants/bipmed/team/joseane-morari.webp", "linkedin": null }
+				]
+			},
+			{
+				"name": { "en": "Human Variome Project Steering Committee", "pt": "Comitê Diretor do Human Variome Project" },
+				"members": [
+					{ "name": "Iscia Lopes-Cendes", "degrees": "M.D., Ph.D.", "role": { "en": "Professor, University of Campinas, Brazil", "pt": "Professora, Universidade de Campinas, Brasil" }, "photo": "/tenants/bipmed/team/iscia-lopes-cendes.webp", "linkedin": "https://www.linkedin.com/in/iscia-lopes-cendes-a2a60492/" },
+					{ "name": "Vera G. S. Lopes", "degrees": "M.D., Ph.D.", "role": { "en": "Professor, University of Campinas, Brazil", "pt": "Professora, Universidade de Campinas, Brasil" }, "photo": "/tenants/bipmed/team/vera-g-s-lopes.webp", "linkedin": "https://www.linkedin.com/in/vera-lopes-6b51a3142/" },
+					{ "name": "Roberto Giugliani", "degrees": "M.D., Ph.D.", "role": { "en": "Professor, University of Rio Grande do Sul, Brazil", "pt": "Professor, Universidade do Rio Grande do Sul, Brasil" }, "photo": "/tenants/bipmed/team/roberto-giugliani.webp", "linkedin": "https://www.linkedin.com/in/profrobertogiugliani/" },
+					{ "name": "Wilson S. Junior", "degrees": "Ph.D.", "role": { "en": "Associate Professor, University of Campinas, Brazil", "pt": "Professor Associado, Universidade de Campinas, Brasil" }, "photo": "/tenants/bipmed/team/wilson-silva-junior.webp", "linkedin": null }
+				]
+			},
+			{
+				"name": { "en": "Project Manager", "pt": "Gerente de Projeto" },
+				"members": [
+					{ "name": "Thais C. de Oliveira", "degrees": "Ph.D.", "role": { "en": "Postdoctoral Researcher", "pt": "Pesquisadora de Pós-doutorado" }, "photo": "/tenants/bipmed/team/thais-c-de-oliveira.webp", "linkedin": "https://www.linkedin.com/in/thaiscrippa/" }
+				]
+			}
+		]
+	},
+	"contact": {
+		"intro": {
+			"en": "Have a question about the BIPMed platform or data? Send us a message.",
+			"pt": "Tem alguma dúvida sobre a plataforma ou os dados do BIPMed? Envie-nos uma mensagem."
+		},
+		"endpoint": null,
+		"fields": [
+			{ "name": "name", "type": "text", "required": true, "label": { "en": "Full Name", "pt": "Nome completo" } },
+			{ "name": "email", "type": "email", "required": true, "label": { "en": "Email", "pt": "Email" } },
+			{ "name": "phone", "type": "tel", "required": false, "label": { "en": "Phone", "pt": "Telefone" } },
+			{ "name": "social", "type": "text", "required": false, "label": { "en": "Social media", "pt": "Redes sociais" } },
+			{ "name": "message", "type": "textarea", "required": true, "label": { "en": "Your Message", "pt": "Sua mensagem" } }
+		]
+	}
+}

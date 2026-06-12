@@ -1,9 +1,19 @@
 // See https://svelte.dev/docs/kit/types#app.d.ts
 // for information about these interfaces
+import type { Tenant } from '$lib/tenants';
+
 declare global {
+	interface Window {
+		rybbit?: {
+			event?: (eventName: string, properties?: Record<string, unknown>) => void;
+		};
+	}
+
 	namespace App {
 		// interface Error {}
-		// interface Locals {}
+		interface Locals {
+			tenant: Tenant;
+		}
 		// interface PageData {}
 		// interface PageState {}
 		interface Platform {

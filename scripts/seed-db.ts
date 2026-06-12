@@ -1,218 +1,95 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+// Build a seed.sql from normalized NDJSON + registry and load it into local D1.
+// Usage: bun scripts/seed-db.ts [--remote] [--local]
+
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { createSeedData } from '../src/lib/server/db/seed.ts';
+import { BIOBANKS, POPULATIONS, COHORTS, DATASETS, COHORT_DATASET } from './harmonize/lib/registry';
 
-const rowsPerInsert = 100;
-const args = new Set(process.argv.slice(2));
-const remote = args.has('--remote');
-const local = args.has('--local');
+const ROOT = join(import.meta.dir, '..');
+const NORM = join(ROOT, 'data/normalized');
+const remote = process.argv.includes('--remote');
 
-if (remote === local) {
-	console.error('Usage: bun scripts/seed-db.ts --remote | --local');
-	process.exit(1);
+const q = (s: string) => `'${String(s).replace(/'/g, "''")}'`;
+const n = (v: number | null | undefined) => (v === null || v === undefined ? 'NULL' : String(v));
+
+function readNdjson(path: string): any[] {
+	if (!existsSync(path)) return [];
+	return readFileSync(path, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 }
 
-const escapeSql = (value: unknown) => {
-	if (value === null || value === undefined) return 'NULL';
-	if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL';
-	return `'${String(value).replaceAll("'", "''")}'`;
-};
-
-const chunk = <T>(items: T[], size: number) => {
-	const chunks: T[][] = [];
-	for (let index = 0; index < items.length; index += size) {
-		chunks.push(items.slice(index, index + size));
+const variants = [
+	...readNdjson(join(NORM, 'carigenetics/variants.ndjson')),
+	...readNdjson(join(NORM, 'bipmed/variants.ndjson'))
+];
+const rawFreqs = [
+	...readNdjson(join(NORM, 'carigenetics/frequencies.ndjson')),
+	...readNdjson(join(NORM, 'bipmed/frequencies.ndjson'))
+];
+const freqByKey = new Map<string, any>();
+let duplicateFreqs = 0;
+for (const f of rawFreqs) {
+	const key = `${f.variant_id}:${f.cohort_id}`;
+	const prev = freqByKey.get(key);
+	if (!prev) {
+		freqByKey.set(key, f);
+		continue;
 	}
-	return chunks;
-};
+	duplicateFreqs++;
+	// Keep the row with the larger allele number when harmonization maps two
+	// source records onto the same canonical variant/cohort key.
+	if ((f.an ?? 0) > (prev.an ?? 0)) freqByKey.set(key, f);
+}
+const freqs = [...freqByKey.values()];
+if (duplicateFreqs) console.warn(`deduped ${duplicateFreqs} duplicate frequency rows`);
 
-const toInsertSql = (table: string, columns: string[], rows: Array<Record<string, unknown>>) =>
-	chunk(rows, rowsPerInsert)
-		.map((group) => {
-			const values = group
-				.map((row) => `(${columns.map((column) => escapeSql(row[column])).join(', ')})`)
-				.join(',\n');
-			return `INSERT INTO ${table} (${columns.join(', ')}) VALUES\n${values};`;
-		})
-		.join('\n\n');
+const maxAn = new Map<number, number>();
+for (const f of freqs) maxAn.set(f.cohort_id, Math.max(maxAn.get(f.cohort_id) ?? 0, f.an));
 
-const data = createSeedData();
+const sql: string[] = ['PRAGMA foreign_keys=OFF;'];
+for (const t of ['frequencies', 'variants', 'cohorts', 'datasets', 'populations', 'biobanks']) sql.push(`DELETE FROM ${t};`);
 
-const sql = [
-	'DELETE FROM variant_subjects;',
-	'DELETE FROM variant_consequences;',
-	'DELETE FROM state_annotations;',
-	'DELETE FROM variants;',
-	'DELETE FROM states;',
-	toInsertSql(
-		'states',
-		[
-			'code',
-			'name',
-			'region',
-			'samples',
-			'area_km2',
-			'population',
-			'population_male',
-			'population_female',
-			'individuals',
-			'individuals_male',
-			'individuals_female',
-			'wgs_samples',
-			'snp_samples',
-			'single_cell_samples',
-			'volume_gb',
-			'fastq_gb',
-			'bam_gb',
-			'vcf_gb',
-			'genes',
-			'protein_coding',
-			'lnc_rna',
-			'processed_pseudogene',
-			'unprocessed_pseudogene',
-			'other_genes',
-			'variants',
-			'common_variants',
-			'low_frequency_variants',
-			'rare_variants',
-			'other_variants'
-		],
-		data.states.map((row) => ({
-			code: row.code,
-			name: row.name,
-			region: row.region,
-			samples: row.samples,
-			area_km2: row.areaKm2,
-			population: row.population,
-			population_male: row.populationMale,
-			population_female: row.populationFemale,
-			individuals: row.individuals,
-			individuals_male: row.individualsMale,
-			individuals_female: row.individualsFemale,
-			wgs_samples: row.wgsSamples,
-			snp_samples: row.snpSamples,
-			single_cell_samples: row.singleCellSamples,
-			volume_gb: row.volumeGb,
-			fastq_gb: row.fastqGb,
-			bam_gb: row.bamGb,
-			vcf_gb: row.vcfGb,
-			genes: row.genes,
-			protein_coding: row.proteinCoding,
-			lnc_rna: row.lncRna,
-			processed_pseudogene: row.processedPseudogene,
-			unprocessed_pseudogene: row.unprocessedPseudogene,
-			other_genes: row.otherGenes,
-			variants: row.variants,
-			common_variants: row.commonVariants,
-			low_frequency_variants: row.lowFrequencyVariants,
-			rare_variants: row.rareVariants,
-			other_variants: row.otherVariants
-		}))
-	),
-	toInsertSql(
-		'state_annotations',
-		['state_code', 'rank', 'annotation'],
-		data.stateAnnotations.map((row) => ({
-			state_code: row.stateCode,
-			rank: row.rank,
-			annotation: row.annotation
-		}))
-	),
-	toInsertSql(
-		'variants',
-		[
-			'id',
-			'project',
-			'state_code',
-			'chromosome',
-			'position',
-			'ref',
-			'alt',
-			'dna_change',
-			'variant_class',
-			'consequence',
-			'allele_frequency',
-			'ac',
-			'an',
-			'gene_count',
-			'impact',
-			'dbsnp',
-			'genotype_quality',
-			'gene',
-			'subject_count',
-			'tag',
-			'functional_impact_gene',
-			'functional_impact_vep',
-			'heterozygote',
-			'homozygote_alternative',
-			'homozygote_reference',
-			'homozygote_other'
-		],
-		data.variants.map((row) => ({
-			id: row.id,
-			project: row.project,
-			state_code: row.stateCode,
-			chromosome: row.chromosome,
-			position: row.position,
-			ref: row.ref,
-			alt: row.alt,
-			dna_change: row.dnaChange,
-			variant_class: row.variantClass,
-			consequence: row.consequence,
-			allele_frequency: row.alleleFrequency,
-			ac: row.ac,
-			an: row.an,
-			gene_count: row.geneCount,
-			impact: row.impact,
-			dbsnp: row.dbSnp,
-			genotype_quality: row.genotypeQuality,
-			gene: row.gene,
-			subject_count: row.subjectCount,
-			tag: row.tag,
-			functional_impact_gene: row.functionalImpactGene,
-			functional_impact_vep: row.functionalImpactVep,
-			heterozygote: row.heterozygote,
-			homozygote_alternative: row.homozygoteAlternative,
-			homozygote_reference: row.homozygoteReference,
-			homozygote_other: row.homozygoteOther
-		}))
-	),
-	toInsertSql(
-		'variant_consequences',
-		['variant_id', 'gene', 'ensembl_gene', 'consequence', 'impact', 'canonical', 'strand', 'transcript'],
-		data.variantConsequences.map((row) => ({
-			variant_id: row.variantId,
-			gene: row.gene,
-			ensembl_gene: row.ensemblGene,
-			consequence: row.consequence,
-			impact: row.impact,
-			canonical: row.canonical,
-			strand: row.strand,
-			transcript: row.transcript
-		}))
-	),
-	toInsertSql(
-		'variant_subjects',
-		['variant_id', 'subject_id', 'ethnicity', 'state', 'center', 'project'],
-		data.variantSubjects.map((row) => ({
-			variant_id: row.variantId,
-			subject_id: row.subjectId,
-			ethnicity: row.ethnicity,
-			state: row.state,
-			center: row.center,
-			project: row.project
-		}))
-	)
-].join('\n\n');
+for (const b of BIOBANKS)
+	sql.push(`INSERT INTO biobanks (id,slug,name,description,website) VALUES (${b.id},${q(b.slug)},${q(b.name)},${q(b.description)},${q(b.website)});`);
+for (const p of POPULATIONS)
+	sql.push(`INSERT INTO populations (id,biobank_id,name,country,country_code,admin_level,lat,lon) VALUES (${p.id},${p.biobankId},${q(p.name)},${q(p.country)},${q(p.countryCode)},${q(p.adminLevel)},${p.lat},${p.lon});`);
+for (const d of DATASETS) {
+	const cohortIds = COHORTS.filter((c) => COHORT_DATASET[c.id] === d.id).map((c) => c.id);
+	const participants = COHORTS.filter((c) => cohortIds.includes(c.id)).reduce(
+		(s, c) => s + (c.sampleCount || Math.ceil((maxAn.get(c.id) ?? 0) / 2)),
+		0
+	);
+	const variantIds = new Set(freqs.filter((f) => cohortIds.includes(f.cohort_id)).map((f) => f.variant_id));
+	sql.push(
+		`INSERT INTO datasets (id,biobank_id,slug,metadata) VALUES (${d.id},${d.biobankId},${q(d.slug)},${q(JSON.stringify({ ...d.metadata, participants, variants: variantIds.size }))});`
+	);
+}
+for (const c of COHORTS) {
+	const sc = c.sampleCount || Math.ceil((maxAn.get(c.id) ?? 0) / 2);
+	sql.push(
+		`INSERT INTO cohorts (id,biobank_id,population_id,dataset_id,label,assay,release,sample_count) VALUES (${c.id},${c.biobankId},${c.populationId},${n(COHORT_DATASET[c.id])},${q(c.label)},${q(c.assay)},${q(c.release)},${sc});`
+	);
+}
 
-const tempDir = mkdtempSync(join(tmpdir(), 'biobank-d1-seed-'));
-const sqlPath = join(tempDir, 'seed.sql');
-writeFileSync(sqlPath, sql);
+function batchInsert(head: string, rows: string[]) {
+	const B = 500;
+	for (let i = 0; i < rows.length; i += B) sql.push(head + rows.slice(i, i + B).join(',') + ';');
+}
 
-execFileSync(
-	'bunx',
-	['wrangler', 'd1', 'execute', 'DB', local ? '--local' : '--remote', '--file', sqlPath],
-	{ stdio: 'inherit' }
+batchInsert(
+	'INSERT INTO variants (id,chrom,pos,ref,alt,rsid,vrs_digest,pos_hg19,lifted) VALUES ',
+	variants.map((v) => `(${v.id},${v.chrom},${v.pos},${q(v.ref)},${q(v.alt)},${n(v.rsid)},${v.vrs_digest ? q(v.vrs_digest) : 'NULL'},${n(v.pos_hg19)},${v.lifted})`)
 );
+batchInsert(
+	'INSERT INTO frequencies (variant_id,cohort_id,biobank_id,ac,an,af,n_homo,n_hetero,n_homo_ref) VALUES ',
+	freqs.map((f) => `(${f.variant_id},${f.cohort_id},${f.biobank_id},${f.ac},${f.an},${f.af},${n(f.n_homo)},${n(f.n_hetero)},${n(f.n_homo_ref)})`)
+);
+
+const out = join(NORM, 'seed.sql');
+writeFileSync(out, sql.join('\n'));
+console.log(`seed.sql: ${variants.length} variants, ${freqs.length} frequencies, ${sql.length} statements`);
+
+execFileSync('bunx', ['wrangler', 'd1', 'execute', 'DB', remote ? '--remote' : '--local', '--file', out], {
+	cwd: ROOT,
+	stdio: 'inherit'
+});

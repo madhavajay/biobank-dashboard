@@ -1,91 +1,104 @@
-import { integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { integer, real, sqliteTable, text, primaryKey, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
-export const states = sqliteTable('states', {
-	code: text('code').primaryKey(),
+export const biobanks = sqliteTable('biobanks', {
+	id: integer('id').primaryKey(),
+	slug: text('slug').notNull(),
 	name: text('name').notNull(),
-	region: text('region').notNull(),
-	samples: integer('samples').notNull(),
-	areaKm2: real('area_km2').notNull(),
-	population: integer('population').notNull(),
-	populationMale: integer('population_male').notNull(),
-	populationFemale: integer('population_female').notNull(),
-	individuals: integer('individuals').notNull(),
-	individualsMale: integer('individuals_male').notNull(),
-	individualsFemale: integer('individuals_female').notNull(),
-	wgsSamples: integer('wgs_samples').notNull(),
-	snpSamples: integer('snp_samples').notNull(),
-	singleCellSamples: integer('single_cell_samples').notNull(),
-	volumeGb: integer('volume_gb').notNull(),
-	fastqGb: integer('fastq_gb').notNull(),
-	bamGb: integer('bam_gb').notNull(),
-	vcfGb: integer('vcf_gb').notNull(),
-	genes: integer('genes').notNull(),
-	proteinCoding: integer('protein_coding').notNull(),
-	lncRna: integer('lnc_rna').notNull(),
-	processedPseudogene: integer('processed_pseudogene').notNull(),
-	unprocessedPseudogene: integer('unprocessed_pseudogene').notNull(),
-	otherGenes: integer('other_genes').notNull(),
-	variants: integer('variants').notNull(),
-	commonVariants: integer('common_variants').notNull(),
-	lowFrequencyVariants: integer('low_frequency_variants').notNull(),
-	rareVariants: integer('rare_variants').notNull(),
-	otherVariants: integer('other_variants').notNull()
+	description: text('description').notNull().default(''),
+	website: text('website').notNull().default('')
 });
 
-export const variants = sqliteTable('variants', {
-	id: text('id').primaryKey(),
-	project: text('project').notNull(),
-	stateCode: text('state_code').notNull(),
-	chromosome: text('chromosome').notNull(),
-	position: integer('position').notNull(),
-	ref: text('ref').notNull(),
-	alt: text('alt').notNull(),
-	dnaChange: text('dna_change').notNull(),
-	variantClass: text('variant_class').notNull(),
-	consequence: text('consequence').notNull(),
-	alleleFrequency: real('allele_frequency').notNull(),
-	ac: integer('ac').notNull(),
-	an: integer('an').notNull(),
-	geneCount: integer('gene_count').notNull(),
-	impact: text('impact').notNull(),
-	dbSnp: text('dbsnp').notNull(),
-	genotypeQuality: integer('genotype_quality').notNull(),
-	gene: text('gene').notNull(),
-	subjectCount: integer('subject_count').notNull(),
-	tag: text('tag').notNull(),
-	functionalImpactGene: text('functional_impact_gene').notNull(),
-	functionalImpactVep: text('functional_impact_vep').notNull(),
-	heterozygote: integer('heterozygote').notNull(),
-	homozygoteAlternative: integer('homozygote_alternative').notNull(),
-	homozygoteReference: integer('homozygote_reference').notNull(),
-	homozygoteOther: integer('homozygote_other').notNull()
+export const populations = sqliteTable('populations', {
+	id: integer('id').primaryKey(),
+	biobankId: integer('biobank_id').notNull(),
+	name: text('name').notNull(),
+	country: text('country').notNull(),
+	countryCode: text('country_code').notNull(),
+	adminLevel: text('admin_level').notNull().default('country'),
+	lat: real('lat').notNull(),
+	lon: real('lon').notNull()
 });
 
-export const variantConsequences = sqliteTable('variant_consequences', {
-	id: integer('id').primaryKey({ autoIncrement: true }),
-	variantId: text('variant_id').notNull(),
-	gene: text('gene').notNull(),
-	ensemblGene: text('ensembl_gene').notNull(),
-	consequence: text('consequence').notNull(),
-	impact: text('impact').notNull(),
-	canonical: text('canonical').notNull(),
-	strand: text('strand').notNull(),
-	transcript: text('transcript').notNull()
+export const cohorts = sqliteTable('cohorts', {
+	id: integer('id').primaryKey(),
+	biobankId: integer('biobank_id').notNull(),
+	populationId: integer('population_id').notNull(),
+	datasetId: integer('dataset_id'),
+	label: text('label').notNull(),
+	assay: text('assay').notNull().default('unknown'),
+	release: text('release').notNull().default(''),
+	sampleCount: integer('sample_count').notNull().default(0)
 });
 
-export const variantSubjects = sqliteTable('variant_subjects', {
-	id: integer('id').primaryKey({ autoIncrement: true }),
-	variantId: text('variant_id').notNull(),
-	subjectId: text('subject_id').notNull(),
-	ethnicity: text('ethnicity').notNull(),
-	state: text('state').notNull(),
-	center: text('center').notNull(),
-	project: text('project').notNull()
+// A dataset = a tenant-owned collection of cohorts, with free-form JSON metadata
+// (title, description, assay, build, capability flags like showGenotypeCounts, …).
+// Its variants are those with a frequency in any of its cohorts.
+export const datasets = sqliteTable('datasets', {
+	id: integer('id').primaryKey(),
+	biobankId: integer('biobank_id').notNull(),
+	slug: text('slug').notNull(),
+	metadata: text('metadata').notNull().default('{}')
 });
 
-export const stateAnnotations = sqliteTable('state_annotations', {
-	id: integer('id').primaryKey({ autoIncrement: true }),
-	stateCode: text('state_code').notNull(),
-	rank: integer('rank').notNull(),
-	annotation: text('annotation').notNull()
+// Precomputed JSON stats cache (home payload + default explore page per scope),
+// regenerated by the seeder so hot pages don't run live aggregations.
+export const stats = sqliteTable('stats', {
+	key: text('key').primaryKey(),
+	value: text('value').notNull()
 });
+
+export const variants = sqliteTable(
+	'variants',
+	{
+		id: integer('id').primaryKey(),
+		chrom: integer('chrom').notNull(),
+		pos: integer('pos').notNull(),
+		ref: text('ref').notNull(),
+		alt: text('alt').notNull(),
+		rsid: integer('rsid'),
+		vrsDigest: text('vrs_digest'),
+		posHg19: integer('pos_hg19'),
+		lifted: integer('lifted').notNull().default(0)
+	},
+	(t) => [
+		uniqueIndex('variants_locus_idx').on(t.chrom, t.pos, t.ref, t.alt),
+		index('variants_rsid_idx').on(t.rsid),
+		index('variants_chrom_pos_idx').on(t.chrom, t.pos)
+	]
+);
+
+export const genes = sqliteTable(
+	'genes',
+	{
+		id: integer('id').primaryKey(),
+		ensemblId: text('ensembl_id').notNull(),
+		symbol: text('symbol').notNull(),
+		symbolNorm: text('symbol_norm').notNull(),
+		chrom: integer('chrom').notNull(),
+		start: integer('start').notNull(),
+		end: integer('end').notNull(),
+		strand: text('strand').notNull(),
+		geneType: text('gene_type').notNull()
+	},
+	(t) => [index('genes_symbol_norm_idx').on(t.symbolNorm), index('genes_region_idx').on(t.chrom, t.start, t.end)]
+);
+
+export const frequencies = sqliteTable(
+	'frequencies',
+	{
+		variantId: integer('variant_id').notNull(),
+		cohortId: integer('cohort_id').notNull(),
+		biobankId: integer('biobank_id').notNull(),
+		ac: integer('ac').notNull(),
+		an: integer('an').notNull(),
+		af: real('af').notNull(),
+		nHomo: integer('n_homo'),
+		nHetero: integer('n_hetero'),
+		nHomoRef: integer('n_homo_ref')
+	},
+	(t) => [
+		primaryKey({ columns: [t.variantId, t.cohortId] }),
+		index('frequencies_cohort_idx').on(t.cohortId),
+		index('frequencies_biobank_idx').on(t.biobankId)
+	]
+);
