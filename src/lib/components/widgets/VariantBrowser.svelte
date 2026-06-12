@@ -1,7 +1,10 @@
 <script lang="ts">
 	import { replaceState } from '$app/navigation';
+	import { page } from '$app/state';
+	import SearchIcon from '@lucide/svelte/icons/search';
 	import { lang, tr } from '$lib/i18n';
 	import { DEFAULTS, type ExplorerDisplay } from '$lib/explorer';
+	import { publicVariantPathToken } from '$lib/variant-id';
 	let {
 		forceTenant = '',
 		title = '',
@@ -35,7 +38,12 @@
 	const acAnSplit = $derived(cfg.acAnSplit);
 	const vrsExpand = $derived(cfg.vrsExpand);
 	const showGnomad = $derived(cfg.gnomad);
+	const variantDetailIcon = $derived(cfg.variantDetailIcon);
+	const geneWidthOverride = $derived(cfg.geneColWidth);
+	const frequencyWidthOverride = $derived(cfg.frequencyColWidth);
+	const variantWidthOverride = $derived(cfg.variantColWidth);
 	const gnomadUrl = (r: VRow) => `https://gnomad.broadinstitute.org/variant/${r.chromName}-${r.pos}-${r.ref}-${r.alt}?dataset=gnomad_r4`;
+	const variantHref = (r: VRow) => `/explore/variant/${publicVariantPathToken(r)}${forceTenant ? `?tenant=${forceTenant}` : ''}`;
 
 	// initial state read from the page URL (so a pasted/bookmarked link reproduces the view)
 	const sp0 = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
@@ -105,6 +113,15 @@
 		rows?: VRow[];
 		total?: number;
 	}
+	interface PageTenant {
+		slug?: string;
+		name?: string;
+		scope?: string | null;
+	}
+	interface PageAnalytics {
+		hostname?: string;
+		siteDomain?: string;
+	}
 
 	let q = $state(sp0.get('q') ?? initialQuery); // bound to the text input
 	let gene = $state(sp0.get('gene') ?? '');
@@ -121,6 +138,7 @@
 	let rows = $state<VRow[]>([]);
 	let total = $state(0);
 	let loading = $state(false);
+	let lastTrackedQueryKey = '';
 
 	const tenantQ = $derived(forceTenant ? `&tenant=${forceTenant}` : '');
 	let pageSize = $state(Number(sp0.get('pageSize')) || 50);
@@ -166,6 +184,93 @@
 		return p.toString() + tenantQ + extra;
 	}
 
+	const tenantData = $derived((page.data.tenant ?? {}) as PageTenant);
+	const analyticsData = $derived((page.data.analytics ?? null) as PageAnalytics | null);
+
+	function analyticsTenantSlug() {
+		return tenantData.slug ?? forceTenant ?? 'unknown';
+	}
+
+	function analyticsTenantName() {
+		return tenantData.name ?? tenantData.slug ?? forceTenant ?? 'unknown';
+	}
+
+	function sendAnalyticsEvent(eventName: string, properties: Record<string, unknown>) {
+		if (!analyticsData) return;
+
+		let attempts = 0;
+		const send = () => {
+			if (window.rybbit?.event) {
+				window.rybbit.event(eventName, properties);
+			} else if (++attempts < 20) {
+				window.setTimeout(send, 250);
+			}
+		};
+		send();
+	}
+
+	function trackVariantQuery(params: string, response: VariantResponse) {
+		if (!analyticsData) return;
+
+		const parsed = new URLSearchParams(params);
+		const queryText = parsed.get('q') ?? '';
+		const geneText = parsed.get('gene') ?? '';
+		const eventKey = [
+			analyticsTenantSlug(),
+			queryText,
+			geneText,
+			parsed.get('afMin') ?? '',
+			parsed.get('afMax') ?? '',
+			parsed.get('acMin') ?? '',
+			parsed.get('acMax') ?? '',
+			parsed.get('cohorts') ?? '',
+			parsed.get('biobanks') ?? '',
+			parsed.get('match') ?? '',
+			parsed.get('sort') ?? '',
+			parsed.get('dir') ?? '',
+			parsed.get('limit') ?? '',
+			parsed.get('offset') ?? ''
+		].join('|');
+
+		if (eventKey === lastTrackedQueryKey) return;
+		lastTrackedQueryKey = eventKey;
+
+		sendAnalyticsEvent('variant_query', {
+			tenant_slug: analyticsTenantSlug(),
+			tenant_name: analyticsTenantName(),
+			tenant_scope: tenantData.scope ?? 'global',
+			real_hostname: analyticsData.hostname ?? window.location.hostname,
+			pathname: window.location.pathname,
+			query_text: queryText,
+			gene: geneText,
+			af_min: parsed.get('afMin') ?? '',
+			af_max: parsed.get('afMax') ?? '',
+			ac_min: parsed.get('acMin') ?? '',
+			ac_max: parsed.get('acMax') ?? '',
+			cohorts: parsed.get('cohorts') ?? '',
+			biobanks: parsed.get('biobanks') ?? '',
+			match_mode: parsed.get('match') ?? 'any',
+			sort: parsed.get('sort') ?? '',
+			sort_dir: parsed.get('dir') ?? '',
+			limit: Number(parsed.get('limit') ?? pageSize),
+			offset: Number(parsed.get('offset') ?? offset),
+			page: Math.floor(Number(parsed.get('offset') ?? offset) / Number(parsed.get('limit') ?? pageSize)) + 1,
+			result_count: response.rows?.length ?? 0,
+			total_results: response.total ?? 0,
+			has_search_text: Boolean(queryText || geneText),
+			has_filters: Boolean(
+				parsed.get('afMin') ||
+					parsed.get('afMax') ||
+					parsed.get('acMin') ||
+					parsed.get('acMax') ||
+					parsed.get('cohorts') ||
+					parsed.get('biobanks') ||
+					parsed.get('match')
+			),
+			api_querystring: params
+		});
+	}
+
 	// mirror the current query into the page URL so it's copy-paste / bookmark-able
 	function syncUrl() {
 		const sp = new URLSearchParams();
@@ -208,10 +313,12 @@
 		}
 		loading = true;
 		try {
-			const res = (await fetch(`/api/variants?${buildParams()}`).then((r) => r.json())) as VariantResponse;
+			const params = buildParams();
+			const res = (await fetch(`/api/variants?${params}`).then((r) => r.json())) as VariantResponse;
 			if (my !== seq) return; // a newer request superseded this one
 			rows = res.rows ?? [];
 			total = res.total ?? 0;
+			trackVariantQuery(params, res);
 		} finally {
 			if (my === seq) loading = false;
 		}
@@ -351,6 +458,22 @@
 			.filter(Boolean)
 			.join(' ')
 	);
+	const frequencyColWidth = $derived(
+		frequencyWidthOverride ??
+			(multiPop
+				? acAnSplit
+					? '25rem'
+					: showGeno
+						? '30rem'
+						: '18rem'
+				: acAnSplit
+					? '16rem'
+					: showGeno
+						? '22rem'
+						: '12rem')
+	);
+	const geneColWidth = $derived(geneWidthOverride ?? '8rem');
+	const variantColWidth = $derived(variantWidthOverride ?? '10rem');
 	const fmtAf = (af: number) => (af >= 0.0001 || af === 0 ? af.toFixed(4) : af.toExponential(1));
 	const maxAf = (r: VRow) => (r.frequencies.length ? Math.max(...r.frequencies.map((f) => f.af)) : 0);
 	const geneLabel = (r: VRow) => (r.genes?.length ? [...new Set(r.genes.map((g) => g.symbol))].join(', ') : '');
@@ -478,10 +601,21 @@
 	<div class="mb-3">{@render pager()}</div>
 
 	<div class="relative overflow-x-auto rounded-md border">
-		<table class="w-full text-sm">
+		<table class={`w-full text-sm ${vrsExpand ? 'table-fixed' : ''}`}>
+			{#if vrsExpand}
+				<colgroup>
+					<col style={`width:${variantColWidth}`} />
+					<col class="w-24" />
+					{#if showGene}<col style={`width:${geneColWidth}`} />{/if}
+					<col style={`width:${frequencyColWidth}`} />
+					{#if showMaxAf}<col class="w-20" />{/if}
+					{#if showVrs}<col />{/if}
+					{#if showGnomad}<col class="w-9" />{/if}
+				</colgroup>
+			{/if}
 			<thead class="bg-muted/60 text-left text-xs uppercase tracking-wide text-muted-foreground">
 				<tr>
-					<th class="px-3 py-2 font-medium"><button onclick={() => setSort('variant')} title="Genomic location on the GRCh38 assembly. Chromosome:position, then reference›alternate allele. Click to sort by position." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">{tr($lang, 'colVariant')} <span class="normal-case text-[9px] text-muted-foreground/70">GRCh38</span> <span class="text-[9px]">{ind('variant')}</span></button></th>
+					<th class={`py-2 pr-3 font-medium ${variantDetailIcon ? 'pl-7' : 'pl-3'}`}><button onclick={() => setSort('variant')} title="Genomic location on the GRCh38 assembly. Chromosome:position, then reference›alternate allele. Click to sort by position." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">{tr($lang, 'colVariant')} <span class="normal-case text-[9px] text-muted-foreground/70">GRCh38</span> <span class="text-[9px]">{ind('variant')}</span></button></th>
 					<th class="px-3 py-2 font-medium"><button onclick={() => setSort('rsid')} title="dbSNP Reference SNP cluster ID (rsID). Links out to NCBI dbSNP. Click to sort." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">rsID <span class="text-[9px]">{ind('rsid')}</span></button></th>
 					{#if showGene}<th class="px-3 py-2 font-medium"><span title="Gene(s) whose transcribed region overlaps this position (Ensembl)." class="cursor-help">Gene</span></th>{/if}
 					<th class="px-3 py-2 font-medium">
@@ -503,16 +637,27 @@
 						</div>
 					</th>
 					{#if showMaxAf}<th class="whitespace-nowrap px-3 py-2 text-right font-medium"><button onclick={() => setSort('maxaf')} title="Highest alternate allele frequency across all populations shown for this variant. Click to sort." class="inline-flex cursor-help items-center gap-1 whitespace-nowrap uppercase hover:text-foreground">Max AF <span class="text-[9px]">{ind('maxaf')}</span></button></th>{/if}
-					{#if showVrs}<th class={`px-3 py-2 font-medium ${vrsExpand ? 'w-full' : ''}`}><button onclick={() => setSort('vrs')} title="GA4GH VRS computed allele identifier (ga4gh:VA.…): a global, sequence-derived variant ID. Click a cell to copy the full ID." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">VRS <span class="text-[9px]">{ind('vrs')}</span></button></th>{/if}
-					{#if showGnomad}<th class="py-2 pl-0 pr-4"><span class="sr-only">gnomAD</span></th>{/if}
+					{#if showVrs}
+						<th class={`min-w-0 py-2 font-medium ${vrsExpand ? 'w-full overflow-hidden px-0' : 'px-3'}`}>
+							<div class={vrsExpand ? 'vrs-collapse-content' : ''}>
+								<button onclick={() => setSort('vrs')} title="GA4GH VRS computed allele identifier (ga4gh:VA.…): a global, sequence-derived variant ID. Click a cell to copy the full ID." class="inline-flex min-w-0 max-w-full cursor-help items-center gap-1 truncate uppercase hover:text-foreground">VRS <span class="text-[9px]">{ind('vrs')}</span></button>
+							</div>
+						</th>
+					{/if}
+					{#if showGnomad}<th class="w-9 py-2 pl-0 pr-4"><span class="sr-only">gnomAD</span></th>{/if}
 				</tr>
 			</thead>
 			<tbody>
 				{#each visibleRows as r (r.id)}
 					<tr class="border-t hover:bg-muted/40">
-						<td class="whitespace-nowrap px-3 py-2 font-mono text-xs">
-							<span class="font-semibold">chr{r.chromName}:{r.pos.toLocaleString()}</span>
-							<span class="text-muted-foreground">{r.ref}›{r.alt}</span>
+						<td class={`relative whitespace-nowrap py-2 pr-3 font-mono text-xs ${variantDetailIcon ? 'pl-7' : 'pl-3'}`}>
+							<a href={variantHref(r)} title="View variant details" class="group inline-flex items-baseline gap-1 rounded-sm text-primary hover:underline focus:outline-none focus:ring-2 focus:ring-ring">
+								{#if variantDetailIcon}
+									<SearchIcon class="absolute left-2 top-1/2 size-3.5 -translate-y-1/2 opacity-70" aria-hidden="true" />
+								{/if}
+								<span class="font-semibold">chr{r.chromName}-{r.pos}</span>
+								<span class="text-muted-foreground group-hover:text-primary">-{r.ref}-{r.alt}</span>
+							</a>
 						</td>
 						<td class="whitespace-nowrap px-3 py-2">
 							{#if r.rsid}
@@ -520,7 +665,7 @@
 							{:else}<span class="text-muted-foreground">—</span>{/if}
 						</td>
 						{#if showGene}
-							<td class="max-w-36 px-3 py-2">
+							<td class={`px-3 py-2 ${vrsExpand ? 'min-w-0' : 'max-w-36'}`}>
 								{#if geneLabel(r)}
 									<span class="block truncate text-xs font-medium" title={r.genes?.map((g) => `${g.symbol} (${g.geneType}, ${g.ensemblId})`).join('\n')}>{geneLabel(r)}</span>
 								{:else}
@@ -554,20 +699,22 @@
 						</td>
 						{#if showMaxAf}<td class="px-3 py-2 text-right font-mono text-xs">{fmtAf(maxAf(r))}</td>{/if}
 						{#if showVrs}
-							<td class={`px-3 py-2 ${vrsExpand ? 'w-full max-w-0' : ''}`}>
+							<td class={`min-w-0 py-2 ${vrsExpand ? 'w-full max-w-0 overflow-hidden px-0' : 'px-3'}`}>
 								{#if r.vrsDigest}
-									<button
-										onclick={() => copyVrs(r.vrsDigest!)}
-										class={`rounded border px-1.5 py-0.5 font-mono text-[10px] hover:bg-muted ${vrsExpand ? 'block w-full truncate text-left' : ''}`}
-										title={`ga4gh:VA.${r.vrsDigest} · click to copy`}
-									>
-										{copied === r.vrsDigest ? 'copied!' : vrsExpand ? `VA.${r.vrsDigest}` : `VA.${r.vrsDigest.slice(0, 6)}…`}
-									</button>
+									<div class={vrsExpand ? 'vrs-collapse-content' : ''}>
+										<button
+											onclick={() => copyVrs(r.vrsDigest!)}
+											class={`box-border min-w-0 max-w-full rounded border px-1.5 py-0.5 font-mono text-[10px] hover:bg-muted ${vrsExpand ? 'inline-block truncate text-left align-middle' : ''}`}
+											title={`ga4gh:VA.${r.vrsDigest} · click to copy`}
+										>
+											{copied === r.vrsDigest ? 'copied!' : vrsExpand ? `VA.${r.vrsDigest}` : `VA.${r.vrsDigest.slice(0, 6)}…`}
+										</button>
+									</div>
 								{:else}<span class="text-muted-foreground">—</span>{/if}
 							</td>
 						{/if}
 						{#if showGnomad}
-							<td class="py-2 pl-0 pr-4 text-right">
+							<td class="w-9 py-2 pl-0 pr-4 text-right">
 								<a href={gnomadUrl(r)} target="_blank" rel="noopener" title={`View ${r.chromName}-${r.pos}-${r.ref}-${r.alt} on gnomAD (r4)`} class="inline-flex items-center">
 									<img src="/icons/gnomad.png" alt="gnomAD" class="size-4 opacity-70 transition-opacity hover:opacity-100" />
 								</a>
@@ -601,3 +748,13 @@
 		</div>
 	</div>
 {/snippet}
+
+<style>
+	.vrs-collapse-content {
+		display: block;
+		width: 100%;
+		min-width: 0;
+		max-width: 100%;
+		overflow: hidden;
+	}
+</style>

@@ -1,0 +1,9 @@
+{
+	"name": "clinpgx-utils",
+	"version": "0.1.0",
+	"type": "module",
+	"description": "Small browser client for ClinPGx reference-object and clinical annotation lookups.",
+	"exports": {
+		".": "./js/clinpgx.mjs"
+	}
+}

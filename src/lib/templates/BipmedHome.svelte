@@ -2,10 +2,12 @@
 	import GeoMap from '$lib/components/widgets/GeoMap.svelte';
 	import VariantBrowser from '$lib/components/widgets/VariantBrowser.svelte';
 	import Stat from '$lib/components/widgets/Stat.svelte';
+	import { explorerDisplay } from '$lib/explorer';
 
 	let { data } = $props();
 	const tenant = $derived(data.tenant);
 	const bank = $derived(data.biobanks[0]);
+	const display = explorerDisplay('bipmed');
 	const pins = $derived((bank?.populations ?? []).map((p: any) => ({ ...p, biobankSlug: bank.slug, biobankName: bank.name })));
 </script>
 
@@ -42,4 +44,4 @@
 	</p>
 </div>
 
-<VariantBrowser forceTenant={data.forceTenant} scoped title="BIPMed variant browser" subtitle="Pesquise por rsID, região ou posição (GRCh38)." />
+<VariantBrowser forceTenant={data.forceTenant} scoped title="BIPMed variant browser" subtitle="Pesquise por rsID, região ou posição (GRCh38)." {display} />

@@ -1,0 +1,7 @@
+{
+	"name": "gnomad-utils",
+	"version": "0.0.1",
+	"type": "module",
+	"private": true,
+	"description": "Small browser client for gnomAD variant frequency lookups."
+}

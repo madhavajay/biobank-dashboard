@@ -1,5 +1,6 @@
 // Engine query layer — runs directly on the D1 binding for predictable analytics.
 import { CODE_CHROM, REFGET_SQ } from './chroms';
+import { publicVariantId } from '$lib/variant-id';
 
 export interface FreqCell {
 	cohortId: number;
@@ -86,6 +87,11 @@ function parseTerm(raw: string): { sql: string; args: unknown[] } | null {
 	if (m) return { sql: 'v.rsid=?', args: [Number(m[1])] };
 	m = /^(?:ga4gh:VA\.)?([A-Za-z0-9_-]{32})$/.exec(s);
 	if (m) return { sql: 'v.vrs_digest=?', args: [m[1]] };
+	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:](\d+)-([A-Za-z]+)-([A-Za-z]+)$/i.exec(s);
+	if (m) {
+		const c = chromToCode(m[1]);
+		if (c) return { sql: '(v.chrom=? AND v.pos=? AND v.ref=? AND v.alt=?)', args: [c, Number(m[2]), m[3].toUpperCase(), m[4].toUpperCase()] };
+	}
 	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:]\s?(\d+)\s*-\s*(\d+)$/i.exec(s); // range
 	if (m) {
 		const c = chromToCode(m[1]);
@@ -466,6 +472,54 @@ export async function getVariant(db: D1Database, id: number): Promise<VariantRow
 			nHomoRef: f.n_homo_ref
 		}))
 	};
+}
+
+function scopedVariantExistsSql(scopeSlug: string | null): { sql: string; args: unknown[] } {
+	if (!scopeSlug) return { sql: '', args: [] };
+	return {
+		sql: `AND EXISTS (
+			SELECT 1
+			FROM frequencies f
+			JOIN biobanks b ON b.id=f.biobank_id
+			WHERE f.variant_id=v.id AND b.slug=?
+		)`,
+		args: [scopeSlug]
+	};
+}
+
+async function getVariantBySql(db: D1Database, whereSql: string, args: unknown[], scopeSlug: string | null) {
+	const scoped = scopedVariantExistsSql(scopeSlug);
+	const row = await db
+		.prepare(`SELECT v.id FROM variants v WHERE ${whereSql} ${scoped.sql} ORDER BY v.chrom, v.pos, v.id LIMIT 1`)
+		.bind(...args, ...scoped.args)
+		.first<{ id: number }>();
+	return row ? getVariant(db, row.id) : null;
+}
+
+export function canonicalVariantId(v: VariantRow): string {
+	return publicVariantId(v);
+}
+
+export async function resolveVariantIdentifier(db: D1Database, raw: string, scopeSlug: string | null): Promise<VariantRow | null> {
+	const token = decodeURIComponent(raw).trim();
+	if (!token) return null;
+
+	if (/^\d+$/.test(token)) return getVariant(db, Number(token));
+
+	let m = /^rs(\d+)$/i.exec(token);
+	if (m) return getVariantBySql(db, 'v.rsid=?', [Number(m[1])], scopeSlug);
+
+	m = /^(?:ga4gh:VA\.)?([A-Za-z0-9_-]{32})$/.exec(token);
+	if (m) return getVariantBySql(db, 'v.vrs_digest=?', [m[1]], scopeSlug);
+
+	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:](\d+)-([A-Za-z]+)-([A-Za-z]+)$/i.exec(token.replace(/,/g, ''));
+	if (m) {
+		const chrom = chromToCode(m[1]);
+		if (!chrom) return null;
+		return getVariantBySql(db, 'v.chrom=? AND v.pos=? AND v.ref=? AND v.alt=?', [chrom, Number(m[2]), m[3].toUpperCase(), m[4].toUpperCase()], scopeSlug);
+	}
+
+	return null;
 }
 
 export interface BiobankOverview {
