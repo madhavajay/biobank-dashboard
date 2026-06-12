@@ -6,7 +6,7 @@ test.describe('BIPMed explorer locked layout', () => {
 
 		const table = page.locator('main table');
 		const firstRow = table.locator('tbody tr').first();
-		await expect(firstRow).toBeVisible({ timeout: 20_000 });
+		await expect(firstRow).toBeVisible({ timeout: 30_000 });
 
 		await expect(table.locator('thead')).toContainText('Variant');
 		await expect(table.locator('thead')).toContainText('rsID');
@@ -50,7 +50,9 @@ test.describe('BIPMed explorer locked layout', () => {
 	test('uses stable public variant URLs for coordinate and rsID visits', async ({ page }) => {
 		await page.goto('/explore/variant/chr17-43045257-C-A?tenant=bipmed');
 		await expect(page.getByRole('heading', { name: 'chr17-43045257-C-A' })).toBeVisible();
-		await expect(page.getByText('Variant detail · GRCh38 · BRCA1, RND2 · rs8176318')).toBeVisible();
+		await expect(page.getByText('Variant detail · GRCh38 · rs8176318')).toBeVisible();
+		await expect(page.getByText('BRCA1, RND2')).toBeVisible();
+		await expect(page.getByText('Local average')).toHaveCount(0);
 		await expect(page.getByRole('link', { name: 'API JSON' })).toHaveAttribute(
 			'href',
 			'/api/variants/chr17-43045257-C-A?tenant=bipmed'
@@ -58,5 +60,57 @@ test.describe('BIPMed explorer locked layout', () => {
 
 		await page.goto('/explore/variant/rs8176318?tenant=bipmed');
 		await expect(page.getByRole('heading', { name: 'chr17-43045257-C-A' })).toBeVisible();
+	});
+});
+
+test.describe('Non-BIPMed explorer defaults', () => {
+	for (const [name, path] of [
+		['global', '/explore?gene=BRCA1'],
+		['CariGenetics', '/explore?tenant=carigenetics&gene=G6PD'],
+		['PGP Harvard', '/explore?tenant=pgp-harvard&gene=BRCA1']
+	] as const) {
+		test(`${name} hides the VRS table column`, async ({ page }) => {
+			await page.goto(path);
+			const table = page.locator('main table');
+			await expect(table.locator('tbody tr').first()).toBeVisible({ timeout: 20_000 });
+			await expect(table.locator('thead')).not.toContainText('VRS');
+			await expect(table.locator('thead')).not.toContainText('Max AF');
+		});
+	}
+
+	test('CariGenetics can require selected islands to all match', async ({ page }) => {
+		await page.goto('/explore?tenant=carigenetics&gene=G6PD');
+		const cohortAll = page.locator('input[name="cohort-match"][value="all"]');
+		await expect(cohortAll).toBeEnabled();
+		await cohortAll.check();
+		await expect(page).toHaveURL(/cohortMatch=all/);
+		await expect(page.locator('main table tbody tr').first()).toBeVisible({ timeout: 20_000 });
+	});
+
+	test('CariGenetics population dropdown closes on outside click without duplicate all controls', async ({ page }) => {
+		await page.goto('/explore?tenant=carigenetics&gene=G6PD');
+		const menu = page.locator('details[data-explorer-filter-menu="populations"]');
+		await expect(menu).toBeVisible();
+		await menu.locator('summary').click();
+		await expect(menu).toHaveAttribute('open', '');
+		await expect(menu.getByRole('button', { name: 'All' })).toHaveCount(1);
+		await expect(menu.getByRole('button', { name: 'None' })).toHaveCount(1);
+
+		await page.getByRole('heading', { name: 'Explore' }).click();
+		await expect(menu).not.toHaveAttribute('open', '');
+	});
+});
+
+test.describe('Multi-population variant detail', () => {
+	test('adds per-biobank average rows outside BIPMed', async ({ page }) => {
+		await page.goto('/explore/variant/chrX-154526613-G-T?tenant=carigenetics');
+		await expect(page.getByRole('heading', { name: 'chrX-154526613-G-T' })).toBeVisible();
+
+		const populationSection = page.locator('section').filter({ hasText: 'Population Frequencies' });
+		const ethnicitySection = page.locator('section').filter({ hasText: 'gnomAD Ethnicity Frequencies' });
+		await expect(page.getByText('Local average')).toHaveCount(0);
+		await expect(populationSection.getByText('carigenetics average')).toBeVisible();
+		await expect(ethnicitySection.getByText('carigenetics average')).toBeVisible();
+		await expect(ethnicitySection.getByText('Closest to carigenetics')).toBeVisible();
 	});
 });

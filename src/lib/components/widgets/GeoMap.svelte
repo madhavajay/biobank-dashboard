@@ -30,6 +30,7 @@
 		showLabels = false,
 		labelScale = 1,
 		markerScale,
+		hideDotsFor = [],
 		fit = 'meet',
 		source = '/world.geo.json',
 		framed = true,
@@ -46,6 +47,7 @@
 		showLabels?: boolean;
 		labelScale?: number;
 		markerScale?: number;
+		hideDotsFor?: string[];
 		fit?: 'meet' | 'slice';
 		source?: string;
 		framed?: boolean;
@@ -77,7 +79,11 @@
 
 	const pinByFeature = $derived(new Map(pins.map((p) => [featureName(p.country), p])));
 	const pinsAsDots = $derived(
-		showDots ? (showMatchedDots ? pins : pins.filter((p) => !features.some((f) => f.name === featureName(p.country)))) : []
+		showDots
+			? (showMatchedDots ? pins : pins.filter((p) => !features.some((f) => f.name === featureName(p.country)))).filter(
+					(p) => !hideDotsFor.includes(p.biobankSlug) && !hideDotsFor.includes(String(p.cohortId)) && !hideDotsFor.includes(p.name)
+				)
+			: []
 	);
 
 	onMount(async () => {

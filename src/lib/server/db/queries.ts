@@ -68,6 +68,7 @@ export interface SearchParams {
 	acMax?: number;
 	vrs?: string;
 	cohorts?: number[]; // restrict to these cohort/population ids (display + existence)
+	cohortMatch?: 'any' | 'all';
 	limit?: number;
 	offset?: number;
 	// biobank filter: which biobanks to require, and whether a variant must appear
@@ -243,6 +244,8 @@ export async function searchVariants(
 	const requested = scopeSlug ? [scopeSlug] : params.biobanks ?? [];
 	const biobankIds = requested.length ? await biobankIdsForSlugs(db, requested) : [];
 	const match = params.match === 'all' ? 'all' : 'any';
+	const cohortIds = params.cohorts ?? [];
+	const cohortMatch = params.cohortMatch === 'all' ? 'all' : 'any';
 
 	const where: string[] = [];
 	const args: unknown[] = [];
@@ -285,30 +288,40 @@ export async function searchVariants(
 	// Always require the alt allele to be actually OBSERVED (ac>0): never surface
 	// phantom monomorphic rows the harmonizer emitted for unobserved alt alleles
 	// (those carry only hom_ref counts and aren't real variants).
-	const range: string[] = ['f.ac > 0'];
-	const rangeArgs: unknown[] = [];
-	const cohortIds = params.cohorts ?? [];
-	if (cohortIds.length) {
+	const baseRange: string[] = ['f.ac > 0'];
+	const baseRangeArgs: unknown[] = [];
+	const range: string[] = [...baseRange];
+	const rangeArgs: unknown[] = [...baseRangeArgs];
+	if (cohortIds.length && cohortMatch !== 'all') {
 		range.push(`f.cohort_id IN (${cohortIds.map(() => '?').join(',')})`);
 		rangeArgs.push(...cohortIds);
 	}
 	if (params.afMin != null) {
+		baseRange.push('f.af>=?');
+		baseRangeArgs.push(params.afMin);
 		range.push('f.af>=?');
 		rangeArgs.push(params.afMin);
 	}
 	if (params.afMax != null) {
+		baseRange.push('f.af<=?');
+		baseRangeArgs.push(params.afMax);
 		range.push('f.af<=?');
 		rangeArgs.push(params.afMax);
 	}
 	if (params.acMin != null) {
+		baseRange.push('f.ac>=?');
+		baseRangeArgs.push(params.acMin);
 		range.push('f.ac>=?');
 		rangeArgs.push(params.acMin);
 	}
 	if (params.acMax != null) {
+		baseRange.push('f.ac<=?');
+		baseRangeArgs.push(params.acMax);
 		range.push('f.ac<=?');
 		rangeArgs.push(params.acMax);
 	}
 	const rangeSql = range.length ? ' AND ' + range.join(' AND ') : '';
+	const baseRangeSql = baseRange.length ? ' AND ' + baseRange.join(' AND ') : '';
 
 	if (biobankIds.length === 0) {
 		if (range.length) {
@@ -326,6 +339,12 @@ export async function searchVariants(
 		const ph = biobankIds.map(() => '?').join(',');
 		where.push(`EXISTS (SELECT 1 FROM frequencies f WHERE f.variant_id=v.id AND f.biobank_id IN (${ph})${rangeSql})`);
 		args.push(...biobankIds, ...rangeArgs);
+	}
+	if (cohortIds.length && cohortMatch === 'all') {
+		for (const cid of cohortIds) {
+			where.push(`EXISTS (SELECT 1 FROM frequencies f WHERE f.variant_id=v.id AND f.cohort_id=?${baseRangeSql})`);
+			args.push(cid, ...baseRangeArgs);
+		}
 	}
 
 	const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';

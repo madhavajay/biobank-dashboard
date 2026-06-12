@@ -62,7 +62,13 @@
 		<div class="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-3">
 			<a href={link('/')} class="flex items-center gap-2.5">
 				{#if tenant.logoImg}
-					<img src={tenant.logoImg} alt={tenant.name} class="h-12 w-auto max-w-56 object-contain" />
+					<img src={tenant.logoImg} alt={tenant.name} class={tenant.slug === 'biovault' ? 'size-9 rounded-lg object-contain' : 'h-12 w-auto max-w-56 object-contain'} />
+					{#if tenant.slug === 'biovault'}
+						<span class="flex flex-col leading-tight">
+							<span class="text-sm font-bold">{tenant.name}</span>
+							<span class="text-[11px] text-muted-foreground">{tenant.product}</span>
+						</span>
+					{/if}
 				{:else}
 					<span class="brand-gradient grid size-9 place-items-center rounded-xl text-lg shadow-sm">{tenant.logoEmoji}</span>
 					<span class="flex flex-col leading-tight">

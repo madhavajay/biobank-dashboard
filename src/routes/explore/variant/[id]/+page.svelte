@@ -47,7 +47,9 @@
 		ac: number;
 		an: number;
 		icon?: string;
-		marker?: 'source' | 'closest';
+		marker?: 'source' | 'localAverage';
+		markerTone?: number;
+		closestFor?: Array<{ source: string; label: string; tone: number }>;
 		comparison?: {
 			direction: 'up' | 'down';
 			baselineAf: number;
@@ -65,6 +67,7 @@
 		nHomo: number | null;
 		nHomoRef: number | null;
 		icon?: string;
+		marker?: 'localAverage';
 		comparison?: {
 			direction: 'up' | 'down';
 			baselineAf: number;
@@ -121,6 +124,7 @@
 	const externalLookupCacheTtlMs = 1000 * 60 * 60 * 24 * 7;
 	const externalLookupStaleTtlMs = 1000 * 60 * 60 * 24 * 90;
 	const primaryFrequency = $derived(v.frequencies[0] ?? null);
+	const hasMultipleLocalPopulations = $derived(v.frequencies.length > 1);
 
 	const fmtAf = (af: number) => (af >= 0.0001 || af === 0 ? af.toFixed(6) : af.toExponential(2));
 	const fmt = (n: number | null | undefined) => (n == null ? '-' : n.toLocaleString());
@@ -335,6 +339,46 @@
 			icon: '/icons/gnomad.png'
 		};
 	});
+	const localAverageFrequencies = $derived.by(() => {
+		if (!hasMultipleLocalPopulations) return [];
+		const grouped = new Map<string, typeof v.frequencies>();
+		for (const f of v.frequencies) {
+			const group = grouped.get(f.biobankSlug) ?? [];
+			group.push(f);
+			grouped.set(f.biobankSlug, group);
+		}
+		return [...grouped.entries()]
+			.filter(([, freqs]) => freqs.length > 1)
+			.map(([slug, freqs]) => {
+				const ac = freqs.reduce((sum, f) => sum + f.ac, 0);
+				const an = freqs.reduce((sum, f) => sum + f.an, 0);
+				const nHetero = freqs.reduce((sum, f) => sum + (f.nHetero ?? 0), 0);
+				const nHomo = freqs.reduce((sum, f) => sum + (f.nHomo ?? 0), 0);
+				const nHomoRef = freqs.reduce((sum, f) => sum + (f.nHomoRef ?? 0), 0);
+				const af = an ? ac / an : 0;
+				const difference = gnomadTotalFrequency ? af - gnomadTotalFrequency.af : 0;
+				return {
+					source: slug,
+					label: `${slug} average`,
+					detail: `${freqs.length} populations · weighted by AN`,
+					af,
+					ac,
+					an,
+					nHetero,
+					nHomo,
+					nHomoRef,
+					marker: 'localAverage' as const,
+					comparison:
+						gnomadTotalFrequency && Math.abs(difference) > 1e-12
+							? {
+									direction: difference > 0 ? 'up' : 'down',
+									baselineAf: gnomadTotalFrequency.af,
+									baselineLabel: 'gnomAD Total'
+								}
+							: undefined
+				} satisfies PopulationFrequencyRow;
+			});
+	});
 	const populationFrequencyRows = $derived.by(() => {
 		const rows: PopulationFrequencyRow[] = v.frequencies.map((f) => ({
 			source: f.biobankSlug,
@@ -347,12 +391,13 @@
 			nHomo: f.nHomo,
 			nHomoRef: f.nHomoRef
 		}));
+		rows.push(...localAverageFrequencies);
 		if (gnomadTotalFrequency) {
 			const difference = primaryFrequency ? gnomadTotalFrequency.af - primaryFrequency.af : 0;
 			rows.push({
 				...gnomadTotalFrequency,
 				comparison:
-					primaryFrequency && Math.abs(difference) > 1e-12
+					!localAverageFrequencies.length && primaryFrequency && Math.abs(difference) > 1e-12
 						? {
 								direction: difference > 0 ? 'up' : 'down',
 								baselineAf: primaryFrequency.af,
@@ -363,6 +408,15 @@
 		}
 		return rows;
 	});
+	const highestPopulationFrequencyAf = $derived(
+		hasMultipleLocalPopulations && populationFrequencyRows.length > 1 ? Math.max(...populationFrequencyRows.map((row) => row.af)) : null
+	);
+	const populationRowClass = (row: PopulationFrequencyRow) =>
+		['border-t', row.marker === 'localAverage' ? 'bg-sky-50/80 dark:bg-sky-950/30' : ''].filter(Boolean).join(' ');
+	const populationAfClass = (row: PopulationFrequencyRow) =>
+		highestPopulationFrequencyAf !== null && row.af === highestPopulationFrequencyAf
+			? 'inline-flex rounded-full border border-primary/25 bg-primary/10 px-1.5 py-0.5 font-semibold text-primary'
+			: '';
 	const sortedPopulationFrequencyRows = $derived.by(() => {
 		const sortCol = populationSortCol;
 		if (!sortCol) return populationFrequencyRows;
@@ -386,28 +440,38 @@
 			an: f.an,
 			marker: 'source'
 		}));
-			const gnomadByAncestry = new Map<string, { ac: number; an: number; sources: Set<string> }>();
-			for (const pop of gnomadPopulations) {
-				if (!gnomadAncestryPopulationIds.has(pop.id)) continue;
-				const current = gnomadByAncestry.get(pop.id) ?? { ac: 0, an: 0, sources: new Set<string>() };
-				current.ac += pop.ac;
-				current.an += pop.an;
-				current.sources.add(pop.sequencingType);
-				gnomadByAncestry.set(pop.id, current);
-			}
-			const gnomadRows: AncestryFrequencyRow[] = [];
-			for (const [id, value] of gnomadByAncestry) {
-				const baseline = localComparatorForAncestry(id);
-				const gnomadAf = value.an ? value.ac / value.an : 0;
-				const difference = baseline ? gnomadAf - baseline.af : 0;
-				gnomadRows.push({
-					source: 'gnomAD',
-					label: gnomadPopulationLabel(id),
-					detail: value.sources.size ? [...value.sources].join(' + ') : id,
-					af: gnomadAf,
-					ac: value.ac,
-					an: value.an,
-					icon: '/icons/gnomad.png',
+		const localAverages: AncestryFrequencyRow[] = localAverageFrequencies.map((avg, index) => ({
+			source: avg.source,
+			label: avg.label,
+			detail: avg.detail,
+			af: avg.af,
+			ac: avg.ac,
+			an: avg.an,
+			marker: 'localAverage',
+			markerTone: index
+		}));
+		const gnomadByAncestry = new Map<string, { ac: number; an: number; sources: Set<string> }>();
+		for (const pop of gnomadPopulations) {
+			if (!gnomadAncestryPopulationIds.has(pop.id)) continue;
+			const current = gnomadByAncestry.get(pop.id) ?? { ac: 0, an: 0, sources: new Set<string>() };
+			current.ac += pop.ac;
+			current.an += pop.an;
+			current.sources.add(pop.sequencingType);
+			gnomadByAncestry.set(pop.id, current);
+		}
+		const gnomadRows: AncestryFrequencyRow[] = [];
+		for (const [id, value] of gnomadByAncestry) {
+			const baseline = hasMultipleLocalPopulations ? null : localComparatorForAncestry(id);
+			const gnomadAf = value.an ? value.ac / value.an : 0;
+			const difference = baseline ? gnomadAf - baseline.af : 0;
+			gnomadRows.push({
+				source: 'gnomAD',
+				label: gnomadPopulationLabel(id),
+				detail: value.sources.size ? [...value.sources].join(' + ') : id,
+				af: gnomadAf,
+				ac: value.ac,
+				an: value.an,
+				icon: '/icons/gnomad.png',
 				comparison:
 					baseline && Math.abs(difference) > 1e-12
 						? {
@@ -418,11 +482,28 @@
 						: undefined
 			});
 		}
-		if (primaryFrequency && gnomadRows.length) {
-			const closest = gnomadRows.reduce((best, row) =>
-				Math.abs(row.af - primaryFrequency.af) < Math.abs(best.af - primaryFrequency.af) ? row : best
-			);
-			closest.marker = 'closest';
+		if (gnomadRows.length) {
+			for (const avg of localAverages) {
+				const closest = gnomadRows.reduce((best, row) =>
+					Math.abs(row.af - avg.af) < Math.abs(best.af - avg.af) ? row : best
+				);
+				const difference = avg.af - closest.af;
+				const tone = avg.markerTone ?? 0;
+				avg.comparison =
+					Math.abs(difference) > 1e-12
+						? {
+								direction: difference > 0 ? 'up' : 'down',
+								baselineAf: closest.af,
+								baselineLabel: `closest gnomAD ${closest.label}`
+							}
+						: undefined;
+				closest.closestFor = [...(closest.closestFor ?? []), { source: avg.source, label: avg.label, tone }];
+			}
+		}
+		rows.push(...localAverages);
+		if (!localAverages.length && primaryFrequency && gnomadRows.length) {
+			const closest = gnomadRows.reduce((best, row) => (Math.abs(row.af - primaryFrequency.af) < Math.abs(best.af - primaryFrequency.af) ? row : best));
+			closest.closestFor = [{ source: 'gnomAD', label: 'Closest gnomAD', tone: 0 }];
 		}
 		rows.push(...gnomadRows);
 		return rows;
@@ -438,19 +519,39 @@
 		});
 	});
 	const ancestrySortIndicator = (col: AncestryMetricSortCol) => (ancestrySortCol === col ? (ancestrySortDir === 'asc' ? '▲' : '▼') : '↕');
+	function ancestryToneRowClass(tone: number) {
+		return [
+			'bg-amber-50/90 dark:bg-amber-950/30',
+			'bg-emerald-50/90 dark:bg-emerald-950/30',
+			'bg-violet-50/90 dark:bg-violet-950/30',
+			'bg-cyan-50/90 dark:bg-cyan-950/30'
+		][tone % 4];
+	}
+	function ancestryToneChipClass(tone: number) {
+		return [
+			'rounded border border-amber-200 bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200',
+			'rounded border border-emerald-200 bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200',
+			'rounded border border-violet-200 bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium text-violet-800 dark:border-violet-800 dark:bg-violet-950 dark:text-violet-200',
+			'rounded border border-cyan-200 bg-cyan-100 px-1.5 py-0.5 text-[10px] font-medium text-cyan-800 dark:border-cyan-800 dark:bg-cyan-950 dark:text-cyan-200'
+		][tone % 4];
+	}
 	const ancestryRowClass = (row: AncestryFrequencyRow) =>
 		[
 			'border-t',
 			row.marker === 'source' ? 'bg-sky-50/80 dark:bg-sky-950/30' : '',
-			row.marker === 'closest' ? 'bg-amber-50/90 dark:bg-amber-950/30' : ''
+			row.marker === 'localAverage' ? ancestryToneRowClass(row.markerTone ?? 0) : '',
+			row.closestFor?.length ? ancestryToneRowClass(row.closestFor[0].tone) : ''
 		]
 			.filter(Boolean)
 			.join(' ');
 	const ancestryMarkerClass = (row: AncestryFrequencyRow) =>
 		row.marker === 'source'
 			? 'rounded border border-sky-200 bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-800 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200'
-			: 'rounded border border-amber-200 bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200';
-	const ancestryMarkerLabel = (row: AncestryFrequencyRow) => (row.marker === 'source' ? 'Current biobank' : 'Closest gnomAD');
+			: row.marker === 'localAverage'
+				? ancestryToneChipClass(row.markerTone ?? 0)
+				: '';
+	const ancestryMarkerLabel = (row: AncestryFrequencyRow) =>
+		row.marker === 'source' ? 'Current biobank' : row.marker === 'localAverage' ? 'Biobank average' : '';
 
 	function setPopulationSort(col: PopulationMetricSortCol) {
 		if (populationSortCol === col) {
@@ -762,21 +863,23 @@
 	<title>{plainTitle} · {data.tenantName}</title>
 </svelte:head>
 
-<div class="mb-6 flex flex-wrap items-end justify-between gap-3">
-	<div>
+<div class="mb-6 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+	<div class="min-w-0 flex-1">
 		<a href="/explore{data.forceTenant ? `?tenant=${data.forceTenant}` : ''}" class="mb-2 inline-flex text-sm text-muted-foreground hover:text-primary hover:underline">
 			← {tr($lang, 'explore')}
 			</a>
 			<h1 class="font-mono text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1>
 			<p class="mt-1 text-sm text-muted-foreground">
-				Variant detail · GRCh38 ·
-				<span class="font-medium text-foreground">{geneSummary}</span>
+				Variant detail · GRCh38
 				{#if rsidSummary}
 					· <span class="font-mono font-medium text-foreground">{rsidSummary}</span>
 				{/if}
 			</p>
+			<p class="mt-1 max-w-4xl text-sm text-muted-foreground">
+				<span class="font-medium text-foreground">{geneSummary}</span>
+			</p>
 		</div>
-	<div class="flex flex-wrap gap-2 text-sm">
+	<div class="flex shrink-0 flex-wrap gap-2 text-sm lg:justify-end">
 		{#if v.rsid}
 			<a class="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 hover:bg-muted" href={`https://www.ncbi.nlm.nih.gov/snp/rs${v.rsid}`} target="_blank" rel="noreferrer">
 				<img src={dbsnpIconUrl} alt="" class="h-4 w-auto invert dark:invert-0" />
@@ -845,7 +948,7 @@
 					</thead>
 					<tbody>
 						{#each sortedPopulationFrequencyRows as row}
-							<tr class="border-t">
+							<tr class={populationRowClass(row)}>
 								<td class="whitespace-nowrap px-3 py-2 font-medium">
 									<span class="inline-flex items-center gap-1.5">
 										{#if row.icon}
@@ -865,7 +968,7 @@
 								</td>
 								<td class="px-3 py-2 text-right font-mono text-xs">
 									<span class="inline-flex items-center justify-end gap-1">
-										<span>{fmtAf(row.af)}</span>
+										<span class={populationAfClass(row)}>{fmtAf(row.af)}</span>
 										{#if row.comparison}
 											<span
 												class={row.comparison.direction === 'up' ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}
@@ -944,6 +1047,9 @@
 										{#if row.marker}
 											<span class={ancestryMarkerClass(row)}>{ancestryMarkerLabel(row)}</span>
 										{/if}
+										{#each row.closestFor ?? [] as closest}
+											<span class={ancestryToneChipClass(closest.tone)}>Closest to {closest.source}</span>
+										{/each}
 									</div>
 									<div class="text-xs text-muted-foreground">{row.detail}</div>
 								</td>

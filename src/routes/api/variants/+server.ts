@@ -3,7 +3,7 @@ import { searchVariants, getStats } from '$lib/server/db/queries';
 import type { RequestHandler } from './$types';
 
 // params that, if present, mean this is NOT the default first page → must hit the DB
-const FILTER_KEYS = ['q', 'gene', 'chrom', 'posMin', 'posMax', 'rsid', 'afMin', 'afMax', 'acMin', 'acMax', 'cohorts', 'biobanks', 'sort'];
+const FILTER_KEYS = ['q', 'gene', 'chrom', 'posMin', 'posMax', 'rsid', 'afMin', 'afMax', 'acMin', 'acMax', 'cohorts', 'cohortMatch', 'biobanks', 'sort'];
 
 export const GET: RequestHandler = async ({ url, locals, platform }) => {
 	const db = platform?.env?.DB;
@@ -12,6 +12,7 @@ export const GET: RequestHandler = async ({ url, locals, platform }) => {
 	const biobanksParam = url.searchParams.get('biobanks');
 	const biobanks = biobanksParam ? biobanksParam.split(',').filter(Boolean) : undefined;
 	const match = url.searchParams.get('match') === 'all' ? 'all' : 'any';
+	const cohortMatch = url.searchParams.get('cohortMatch') === 'all' ? 'all' : 'any';
 
 	// fast path: unfiltered first page → serve the precomputed `explore:<scope>` cache
 	const sp = url.searchParams;
@@ -41,6 +42,7 @@ export const GET: RequestHandler = async ({ url, locals, platform }) => {
 		cohorts: url.searchParams.get('cohorts')
 			? url.searchParams.get('cohorts')!.split(',').map(Number).filter((n) => !Number.isNaN(n))
 			: undefined,
+		cohortMatch,
 		limit: num('limit'),
 		offset: num('offset'),
 		biobanks,

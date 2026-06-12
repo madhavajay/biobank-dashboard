@@ -35,17 +35,18 @@ export const TENANTS: Tenant[] = [
 		product: 'BioVault Data',
 		tagline: 'A global window into population allele frequencies.',
 		logoEmoji: '🧬',
+		logoImg: '/tenants/biovault/logo.png',
 		scope: null,
-		map: { center: [7, -78], zoom: 2.15 },
+		map: { center: [8, -35], zoom: 1.75 },
 		theme: {
 			primary: 'oklch(0.696 0.17 162.48)',
 			primaryFg: 'oklch(0.99 0 0)',
-			accent: 'oklch(0.55 0.14 230)',
+			accent: 'oklch(0.48 0.14 175)',
 			ring: 'oklch(0.696 0.17 162.48)',
 			brandFrom: 'oklch(0.696 0.17 162.48)',
 			brandTo: 'oklch(0.48 0.14 175)',
-			mapLand: 'oklch(0.93 0.02 162)',
-			mapPin: 'oklch(0.55 0.17 162)'
+			mapLand: 'oklch(0.955 0.018 158)',
+			mapPin: 'oklch(0.60 0.14 175)'
 		}
 	},
 	{

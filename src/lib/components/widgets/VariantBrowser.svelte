@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { replaceState } from '$app/navigation';
 	import { page } from '$app/state';
+	import { onMount } from 'svelte';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import { lang, tr } from '$lib/i18n';
 	import { DEFAULTS, type ExplorerDisplay } from '$lib/explorer';
@@ -25,7 +26,7 @@
 		examples?: string[];
 		initialQuery?: string;
 		showGenotypeCounts?: boolean;
-		populations?: { cohortId: number; name: string }[];
+		populations?: { cohortId: number; name: string; biobankSlug?: string; biobankName?: string }[];
 		display?: ExplorerDisplay;
 	} = $props();
 
@@ -49,32 +50,68 @@
 	const sp0 = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
 	const sp0Cohorts = (sp0.get('cohorts') ?? '').split(',').filter(Boolean).map(Number);
 
-	// population (cohort) checkboxes — carigenetics-style multi-population tenants
-	let selectedPops = $state<Record<number, boolean>>(
-		Object.fromEntries(populations.map((p) => [p.cohortId, sp0Cohorts.length ? sp0Cohorts.includes(p.cohortId) : true]))
-	);
-	const selectedCohortIds = $derived(populations.filter((p) => selectedPops[p.cohortId]).map((p) => p.cohortId));
-	const showPopFilter = $derived(populations.length > 1);
-	function togglePop(id: number) {
-		selectedPops = { ...selectedPops, [id]: !selectedPops[id] };
-		offset = 0;
-	}
-
-
 	// biobank filter (global view only): which biobanks + ANY/ALL match
 	const sp0Banks = (sp0.get('biobanks') ?? '').split(',').filter(Boolean);
 	const initialSelected = () => Object.fromEntries(options.map((o) => [o.slug, sp0Banks.length ? sp0Banks.includes(o.slug) : true]));
 	let selected = $state<Record<string, boolean>>(initialSelected());
 	let matchMode = $state<'any' | 'all'>(sp0.get('match') === 'all' ? 'all' : 'any');
 	const selectedSlugs = $derived(options.filter((o) => selected[o.slug]).map((o) => o.slug));
+	const bankFilterSummary = $derived(selectedSlugs.length === options.length ? 'All' : `${selectedSlugs.length}/${options.length}`);
 	const showFilter = $derived(!scoped && options.length > 1);
 
 	function toggleBank(slug: string) {
 		selected = { ...selected, [slug]: !selected[slug] };
 		offset = 0;
 	}
+	function setAllBanks(enabled: boolean) {
+		selected = Object.fromEntries(options.map((o) => [o.slug, enabled]));
+		offset = 0;
+	}
 	function setMatch(m: 'any' | 'all') {
 		matchMode = m;
+		offset = 0;
+	}
+
+	// population (cohort) checkboxes — carigenetics-style multi-population tenants
+	let selectedPops = $state<Record<number, boolean>>(
+		Object.fromEntries(populations.map((p) => [p.cohortId, sp0Cohorts.length ? sp0Cohorts.includes(p.cohortId) : true]))
+	);
+	const showPopFilter = $derived(populations.length > 1);
+	let populationMatchMode = $state<'any' | 'all'>(sp0.get('cohortMatch') === 'all' ? 'all' : 'any');
+	const activePopulations = $derived(
+		populations.filter((p) => !showFilter || !p.biobankSlug || selected[p.biobankSlug] !== false)
+	);
+	const selectedFilterCohortIds = $derived(activePopulations.filter((p) => selectedPops[p.cohortId]).map((p) => p.cohortId));
+	const selectedPopCount = $derived(selectedFilterCohortIds.length);
+	const populationFilterSummary = $derived(selectedPopCount === activePopulations.length ? 'All' : `${selectedPopCount}/${activePopulations.length}`);
+	const populationsByBiobank = $derived.by(() => {
+		const groups = new Map<string, { slug: string; name: string; pops: typeof populations }>();
+		for (const pop of populations) {
+			const slug = pop.biobankSlug ?? 'population';
+			const name = pop.biobankName ?? tr($lang, 'populations');
+			const group = groups.get(slug) ?? { slug, name, pops: [] };
+			group.pops.push(pop);
+			groups.set(slug, group);
+		}
+		return [...groups.values()];
+	});
+	function togglePop(id: number) {
+		selectedPops = { ...selectedPops, [id]: !selectedPops[id] };
+		offset = 0;
+	}
+	function setAllPops(enabled: boolean) {
+		selectedPops = Object.fromEntries(populations.map((p) => [p.cohortId, enabled]));
+		offset = 0;
+	}
+	function setBankPops(slug: string, enabled: boolean) {
+		selectedPops = {
+			...selectedPops,
+			...Object.fromEntries(populations.filter((p) => (p.biobankSlug ?? 'population') === slug).map((p) => [p.cohortId, enabled]))
+		};
+		offset = 0;
+	}
+	function setPopulationMatch(m: 'any' | 'all') {
+		populationMatchMode = m;
 		offset = 0;
 	}
 
@@ -168,7 +205,10 @@
 		if (afMaxA) p.set('afMax', afMaxA);
 		if (acMinA) p.set('acMin', acMinA);
 		if (acMaxA) p.set('acMax', acMaxA);
-		if (showPopFilter && selectedCohortIds.length < populations.length) p.set('cohorts', selectedCohortIds.join(','));
+		if (showPopFilter && selectedFilterCohortIds.length && (populationMatchMode === 'all' || selectedFilterCohortIds.length < activePopulations.length)) {
+			p.set('cohorts', selectedFilterCohortIds.join(','));
+			if (populationMatchMode === 'all') p.set('cohortMatch', 'all');
+		}
 		p.set('limit', String(pageSize));
 		p.set('offset', String(offset));
 		if (sortCol) {
@@ -224,6 +264,7 @@
 			parsed.get('acMin') ?? '',
 			parsed.get('acMax') ?? '',
 			parsed.get('cohorts') ?? '',
+			parsed.get('cohortMatch') ?? '',
 			parsed.get('biobanks') ?? '',
 			parsed.get('match') ?? '',
 			parsed.get('sort') ?? '',
@@ -248,6 +289,7 @@
 			ac_min: parsed.get('acMin') ?? '',
 			ac_max: parsed.get('acMax') ?? '',
 			cohorts: parsed.get('cohorts') ?? '',
+			cohort_match_mode: parsed.get('cohortMatch') ?? 'any',
 			biobanks: parsed.get('biobanks') ?? '',
 			match_mode: parsed.get('match') ?? 'any',
 			sort: parsed.get('sort') ?? '',
@@ -264,6 +306,7 @@
 					parsed.get('acMin') ||
 					parsed.get('acMax') ||
 					parsed.get('cohorts') ||
+					parsed.get('cohortMatch') ||
 					parsed.get('biobanks') ||
 					parsed.get('match')
 			),
@@ -287,7 +330,10 @@
 		if (pageSize !== 50) sp.set('pageSize', String(pageSize));
 		const pg = Math.floor(offset / pageSize) + 1;
 		if (pg > 1) sp.set('page', String(pg));
-		if (showPopFilter && selectedCohortIds.length < populations.length) sp.set('cohorts', selectedCohortIds.join(','));
+		if (showPopFilter && selectedFilterCohortIds.length && (populationMatchMode === 'all' || selectedFilterCohortIds.length < activePopulations.length)) {
+			sp.set('cohorts', selectedFilterCohortIds.join(','));
+			if (populationMatchMode === 'all') sp.set('cohortMatch', 'all');
+		}
 		if (showFilter && selectedSlugs.length && (matchMode === 'all' || selectedSlugs.length < options.length)) {
 			sp.set('biobanks', selectedSlugs.join(','));
 			sp.set('match', matchMode);
@@ -305,7 +351,7 @@
 	async function load() {
 		const my = ++seq;
 		// an empty filter selection means "none" → no results (not "all")
-		if ((showFilter && selectedSlugs.length === 0) || (showPopFilter && selectedCohortIds.length === 0)) {
+		if ((showFilter && selectedSlugs.length === 0) || (showPopFilter && selectedFilterCohortIds.length === 0)) {
 			rows = [];
 			total = 0;
 			loading = false;
@@ -336,8 +382,9 @@
 		void offset;
 		void pageSize;
 		void matchMode;
+		void populationMatchMode;
 		void selectedSlugs;
-		void selectedCohortIds;
+		void selectedFilterCohortIds;
 		void showFilter;
 		void sortCol;
 		void sortDir;
@@ -421,7 +468,7 @@
 		if (!showFilter && !showPopFilter) return rows;
 
 		const slugSet = showFilter ? new Set(selectedSlugs) : null;
-		const cohortSet = showPopFilter ? new Set(selectedCohortIds) : null;
+		const cohortSet = showPopFilter ? new Set(selectedFilterCohortIds) : null;
 		return rows
 			.map((r) => {
 				const frequencies = r.frequencies.filter(
@@ -444,8 +491,7 @@
 	// shared grid template for the population rows + their header (so they align).
 	// The last visible column is max-content so it collapses to its text width.
 	const multiPop = $derived(visibleRows.some((r) => r.frequencies.length > 1));
-	// Max AF (max across populations) is redundant for a single-population tenant — it just equals Freq.
-	const showMaxAf = $derived(display ? cfg.maxAf : !scoped || populations.length > 1);
+	const showMaxAf = $derived(cfg.maxAf);
 	const colCount = $derived(3 + (showGene ? 1 : 0) + (showMaxAf ? 1 : 0) + (showVrs ? 1 : 0) + (showGnomad ? 1 : 0));
 	const popTmpl = $derived(
 		[
@@ -476,6 +522,11 @@
 	const variantColWidth = $derived(variantWidthOverride ?? '10rem');
 	const fmtAf = (af: number) => (af >= 0.0001 || af === 0 ? af.toFixed(4) : af.toExponential(1));
 	const maxAf = (r: VRow) => (r.frequencies.length ? Math.max(...r.frequencies.map((f) => f.af)) : 0);
+	const isHighestAf = (r: VRow, f: FreqCell) => r.frequencies.length > 1 && f.af === maxAf(r);
+	const afValueClass = (r: VRow, f: FreqCell) =>
+		isHighestAf(r, f)
+			? 'inline-flex justify-end rounded-full border border-primary/25 bg-primary/10 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-primary'
+			: 'font-mono text-[11px] tabular-nums';
 	const geneLabel = (r: VRow) => (r.genes?.length ? [...new Set(r.genes.map((g) => g.symbol))].join(', ') : '');
 	let copied = $state<string | null>(null);
 	function copyVrs(d: string) {
@@ -483,6 +534,28 @@
 		copied = d;
 		setTimeout(() => (copied = null), 1200);
 	}
+
+	onMount(() => {
+		const closeFilterMenus = (event: PointerEvent) => {
+			const target = event.target;
+			if (!(target instanceof Node)) return;
+			for (const details of document.querySelectorAll<HTMLDetailsElement>('details[data-explorer-filter-menu]')) {
+				if (!details.contains(target)) details.open = false;
+			}
+		};
+		const closeFilterMenusOnEscape = (event: KeyboardEvent) => {
+			if (event.key !== 'Escape') return;
+			for (const details of document.querySelectorAll<HTMLDetailsElement>('details[data-explorer-filter-menu]')) {
+				details.open = false;
+			}
+		};
+		document.addEventListener('pointerdown', closeFilterMenus, true);
+		document.addEventListener('keydown', closeFilterMenusOnEscape);
+		return () => {
+			document.removeEventListener('pointerdown', closeFilterMenus, true);
+			document.removeEventListener('keydown', closeFilterMenusOnEscape);
+		};
+	});
 </script>
 
 <section class="card-surface p-5 sm:p-6">
@@ -497,40 +570,114 @@
 	</div>
 
 	{#if showFilter}
-		<div class="mb-3 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
+		<div class="relative z-30 mb-3 flex flex-wrap items-start gap-x-5 gap-y-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
 			<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'biobanks')}</span>
-			<div class="flex flex-wrap gap-3">
-				{#each options as o}
-					<label class="flex cursor-pointer items-center gap-1.5">
-						<input type="checkbox" checked={selected[o.slug]} onchange={() => toggleBank(o.slug)} class="accent-[var(--primary)]" />
-						<span>{o.name}</span>
-					</label>
-				{/each}
-			</div>
+			<details class="relative" data-explorer-filter-menu="biobanks">
+				<summary class="flex cursor-pointer list-none items-center gap-2 rounded-md border bg-card px-2.5 py-1.5 text-xs font-medium hover:bg-muted">
+					<span>Biobanks</span>
+					<span class="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{bankFilterSummary}</span>
+				</summary>
+				<div class="absolute left-0 top-full z-[80] mt-2 w-72 rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
+					<div class="mb-2 flex items-center justify-between border-b pb-2">
+						<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Biobanks</span>
+						<div class="flex gap-1">
+							<button type="button" onclick={() => setAllBanks(true)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">All</button>
+							<button type="button" onclick={() => setAllBanks(false)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">None</button>
+						</div>
+					</div>
+					<div class="grid gap-1.5">
+						{#each options as o}
+							<label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-muted">
+								<input type="checkbox" checked={selected[o.slug]} onchange={() => toggleBank(o.slug)} class="accent-[var(--primary)]" />
+								<span class="min-w-0 truncate">{o.name}</span>
+							</label>
+						{/each}
+					</div>
+				</div>
+			</details>
 			<div class="flex items-center gap-3" class:opacity-40={selectedSlugs.length < 2}>
 				<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'match')}</span>
 				<label class="flex cursor-pointer items-center gap-1.5">
 					<input type="radio" name="match" checked={matchMode === 'any'} onchange={() => setMatch('any')} disabled={selectedSlugs.length < 2} class="accent-[var(--primary)]" />
-					<span>{tr($lang, 'either')}</span>
+					<span>Either biobank</span>
 				</label>
 				<label class="flex cursor-pointer items-center gap-1.5">
 					<input type="radio" name="match" checked={matchMode === 'all'} onchange={() => setMatch('all')} disabled={selectedSlugs.length < 2} class="accent-[var(--primary)]" />
-					<span>{tr($lang, 'matchAll')}</span>
+					<span>All selected biobanks</span>
 				</label>
 			</div>
 		</div>
 	{/if}
 
 	{#if showPopFilter}
-		<div class="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
+		<div class="relative z-20 mb-3 flex flex-wrap items-start gap-x-5 gap-y-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
 			<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'populations')}</span>
-			{#each populations as pop}
+			<details class="relative" data-explorer-filter-menu="populations">
+				<summary class="flex cursor-pointer list-none items-center gap-2 rounded-md border bg-card px-2.5 py-1.5 text-xs font-medium hover:bg-muted">
+					<span>Populations</span>
+					<span class="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{populationFilterSummary}</span>
+				</summary>
+				<div class="absolute left-0 top-full z-[70] mt-2 max-h-[28rem] w-80 overflow-y-auto rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
+					<div class="mb-2 flex items-center justify-between border-b pb-2">
+						<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Populations</span>
+						<div class="flex gap-1">
+							<button type="button" onclick={() => setAllPops(true)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">All</button>
+							<button type="button" onclick={() => setAllPops(false)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">None</button>
+						</div>
+					</div>
+					<div class="grid gap-2">
+						{#each populationsByBiobank as group}
+							<div class="rounded border bg-card/60 p-2" class:opacity-40={showFilter && selected[group.slug] === false}>
+								<div class="mb-1.5 flex items-center justify-between gap-2">
+									<span class="min-w-0 truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{group.name}</span>
+									{#if populationsByBiobank.length > 1}
+										<div class="flex shrink-0 gap-1">
+											<button type="button" onclick={() => setBankPops(group.slug, true)} class="rounded border px-1.5 py-0.5 text-[10px] hover:bg-muted">All</button>
+											<button type="button" onclick={() => setBankPops(group.slug, false)} class="rounded border px-1.5 py-0.5 text-[10px] hover:bg-muted">None</button>
+										</div>
+									{/if}
+								</div>
+								<div class="grid gap-1">
+									{#each group.pops as pop}
+										<label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1 hover:bg-muted">
+											<input type="checkbox" checked={selectedPops[pop.cohortId]} onchange={() => togglePop(pop.cohortId)} class="accent-[var(--primary)]" />
+											<span class="min-w-0 truncate">{pop.name}</span>
+										</label>
+									{/each}
+								</div>
+							</div>
+						{/each}
+					</div>
+				</div>
+			</details>
+			<div class="flex items-center gap-3" class:opacity-40={selectedFilterCohortIds.length < 2}>
+				<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'match')}</span>
 				<label class="flex cursor-pointer items-center gap-1.5">
-					<input type="checkbox" checked={selectedPops[pop.cohortId]} onchange={() => togglePop(pop.cohortId)} class="accent-[var(--primary)]" />
-					<span>{pop.name}</span>
-				</label>
-			{/each}
-		</div>
+					<input
+						type="radio"
+						name="cohort-match"
+						value="any"
+						checked={populationMatchMode === 'any'}
+						onchange={() => setPopulationMatch('any')}
+						disabled={selectedFilterCohortIds.length < 2}
+						class="accent-[var(--primary)]"
+						/>
+						<span>Either population</span>
+					</label>
+					<label class="flex cursor-pointer items-center gap-1.5">
+						<input
+						type="radio"
+						name="cohort-match"
+						value="all"
+						checked={populationMatchMode === 'all'}
+						onchange={() => setPopulationMatch('all')}
+						disabled={selectedFilterCohortIds.length < 2}
+						class="accent-[var(--primary)]"
+						/>
+						<span>All selected populations</span>
+					</label>
+				</div>
+			</div>
 	{/if}
 
 	{#if examples.length}
@@ -682,7 +829,9 @@
 									<span class="af-track h-2 cursor-help overflow-hidden rounded-full" title={`${f.population} · alt allele freq ${fmtAf(f.af)} · AC ${f.ac}/${f.an}`}>
 										<span class="af-fill block h-full rounded-full" style={`width:${Math.min(100, f.af * 100)}%`}></span>
 									</span>
-									<span class="text-right font-mono text-[11px] tabular-nums">{fmtAf(f.af)}</span>
+									<span class="text-right">
+										<span class={afValueClass(r, f)} title={isHighestAf(r, f) ? `Highest frequency shown for this variant: ${f.population}` : undefined}>{fmtAf(f.af)}</span>
+									</span>
 									{#if acAnSplit}
 										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title="allele count">{f.ac}</span>
 										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title="allele number">{f.an}</span>
