@@ -57,12 +57,19 @@ export const GET: RequestHandler = async ({ url, locals, platform }) => {
 		const byBank = new Map<string, { source: string; frequencies: any[] }>();
 		for (const f of v.frequencies) {
 			const g = byBank.get(f.biobankSlug) ?? { source: f.biobankSlug, frequencies: [] };
-			g.frequencies.push({
+			const frequency: any = {
 				population: f.population,
-				alleleFrequency: f.af,
-				alleleCount: f.ac,
-				alleleNumber: f.an
-			});
+				alleleNumber: f.an,
+				masked: f.acMasked
+			};
+			if (f.acMasked) {
+				frequency.alleleFrequencyUpperBound = f.afUpperBound;
+				frequency.alleleCountUpperBound = f.acUpperBound;
+			} else {
+				frequency.alleleFrequency = f.af;
+				frequency.alleleCount = f.ac;
+			}
+			g.frequencies.push(frequency);
 			byBank.set(f.biobankSlug, g);
 		}
 		return {

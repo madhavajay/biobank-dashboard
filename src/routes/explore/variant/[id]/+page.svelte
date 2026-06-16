@@ -43,9 +43,12 @@
 		source: string;
 		label: string;
 		detail: string;
-		af: number;
-		ac: number;
+		af: number | null;
+		ac: number | null;
 		an: number;
+		acMasked?: boolean;
+		acUpperBound?: number | null;
+		afUpperBound?: number | null;
 		icon?: string;
 		marker?: 'source' | 'localAverage';
 		markerTone?: number;
@@ -60,9 +63,13 @@
 		source: string;
 		label: string;
 		detail: string;
-		af: number;
-		ac: number;
+		af: number | null;
+		ac: number | null;
 		an: number;
+		acMasked?: boolean;
+		acUpperBound?: number | null;
+		afUpperBound?: number | null;
+		genotypeMasked?: boolean;
 		nHetero: number | null;
 		nHomo: number | null;
 		nHomoRef: number | null;
@@ -95,7 +102,7 @@
 	const clinvarSearchTerm = $derived(v.rsid ? `rs${v.rsid}` : `chr${v.chromName}:${v.pos} ${v.ref}>${v.alt}`);
 	const clinvarSearchUrl = $derived(`https://www.ncbi.nlm.nih.gov/clinvar/?term=${encodeURIComponent(clinvarSearchTerm)}`);
 	const clinpgxLevelInfoUrl = 'https://www.clinpgx.org/page/clinAnnLevels';
-	const maxAf = $derived(v.frequencies.length ? Math.max(...v.frequencies.map((f) => f.af)) : 0);
+	const maxAf = $derived(v.frequencies.length ? Math.max(...v.frequencies.map((f) => f.af ?? f.afUpperBound ?? 0)) : 0);
 	let copiedVrs = $state(false);
 	let clinvarRows = $state<ClinVarTableRow[]>([]);
 	let clinvarStatus = $state<'idle' | 'loading' | 'loaded' | 'error'>('idle');
@@ -123,11 +130,21 @@
 	const externalLookupCachePrefix = 'biobank-dashboard:variant-external:v3';
 	const externalLookupCacheTtlMs = 1000 * 60 * 60 * 24 * 7;
 	const externalLookupStaleTtlMs = 1000 * 60 * 60 * 24 * 90;
-	const primaryFrequency = $derived(v.frequencies[0] ?? null);
+	const exactLocalFrequencies = $derived(v.frequencies.filter((f) => !f.acMasked && f.af != null && f.ac != null));
+	const primaryFrequency = $derived(exactLocalFrequencies[0] ?? null);
 	const hasMultipleLocalPopulations = $derived(v.frequencies.length > 1);
 
 	const fmtAf = (af: number) => (af >= 0.0001 || af === 0 ? af.toFixed(6) : af.toExponential(2));
+	const fmtAfPercent = (af: number) => `${(af * 100).toFixed(2)}%`;
 	const fmt = (n: number | null | undefined) => (n == null ? '-' : n.toLocaleString());
+	const rowAfValue = (row: { af: number | null; afUpperBound?: number | null }) => row.af ?? row.afUpperBound ?? 0;
+	const rowAcValue = (row: { ac: number | null; acUpperBound?: number | null }) => row.ac ?? row.acUpperBound ?? 0;
+	const fmtMaskedAf = (row: { af: number | null; afUpperBound?: number | null; acMasked?: boolean }) =>
+		row.acMasked ? `<${fmtAf(row.afUpperBound ?? 0)}` : fmtAf(row.af ?? 0);
+	const fmtMaskedAc = (row: { ac: number | null; acUpperBound?: number | null; acMasked?: boolean }) =>
+		row.acMasked ? `<${row.acUpperBound ?? 5}` : fmt(row.ac);
+	const maskedFrequencyTitle = (row: { afUpperBound?: number | null; acUpperBound?: number | null }) =>
+		`Too low to report exact. AC <${row.acUpperBound ?? 5}; AF <${fmtAf(row.afUpperBound ?? 0)}.`;
 	const joinNames = (items: { name: string }[]) => (items.length ? items.map((item) => item.name).join(', ') : '-');
 	const truncateText = (value: string, length = 180) => (value.length > length ? `${value.slice(0, length - 1)}...` : value);
 	const normalizeComparator = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -211,6 +228,24 @@
 		}
 		return 'border-border bg-muted/50 text-muted-foreground';
 	};
+	const vepImpactClass = (impact: string | null | undefined) => {
+		if (impact === 'HIGH') {
+			return 'border-red-200 bg-red-50 text-red-700 dark:border-red-900/70 dark:bg-red-950/40 dark:text-red-300';
+		}
+		if (impact === 'MODERATE') {
+			return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/70 dark:bg-amber-950/40 dark:text-amber-300';
+		}
+		if (impact === 'LOW') {
+			return 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/70 dark:bg-emerald-950/40 dark:text-emerald-300';
+		}
+		if (impact === 'MODIFIER') {
+			return 'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900/70 dark:bg-sky-950/40 dark:text-sky-300';
+		}
+		return 'border-border bg-muted/50 text-muted-foreground';
+	};
+	const vepSummaryTitle = $derived(
+		[v.vepLabel ? `Worst: ${v.vepLabel}` : null, v.vepImpact ? `Category: ${v.vepImpact}` : null].filter(Boolean).join('\n')
+	);
 	const clinvarRowSignificanceRank = (row: ClinVarTableRow) => Math.max(...clinvarDisplaySignificanceParts(row.significance).map(clinvarSignificanceRank));
 	const afBarWidth = (af: number) => Math.min(100, Math.max(0, af * 100));
 	const gnomadPopulationLabel = (id: string) =>
@@ -237,11 +272,16 @@
 		if (data.forceTenant) sp.set('tenant', data.forceTenant);
 		return `/explore?${sp.toString()}`;
 	};
+	const explorerFilterHref = (key: 'vepConsequence' | 'vepImpact', value: string) => {
+		const sp = new URLSearchParams({ [key]: value });
+		if (data.forceTenant) sp.set('tenant', data.forceTenant);
+		return `/explore?${sp.toString()}`;
+	};
 	const localComparatorForAncestry = (id: string) => {
-		if (v.frequencies.length === 1) return v.frequencies[0];
+		if (exactLocalFrequencies.length === 1) return exactLocalFrequencies[0];
 		const ancestryLabel = normalizeComparator(gnomadPopulationLabel(id));
 		return (
-			v.frequencies.find((f) => normalizeComparator(f.population) === ancestryLabel || normalizeComparator(f.cohortLabel) === ancestryLabel) ??
+			exactLocalFrequencies.find((f) => normalizeComparator(f.population) === ancestryLabel || normalizeComparator(f.cohortLabel) === ancestryLabel) ??
 			null
 		);
 	};
@@ -341,8 +381,8 @@
 	});
 	const localAverageFrequencies = $derived.by(() => {
 		if (!hasMultipleLocalPopulations) return [];
-		const grouped = new Map<string, typeof v.frequencies>();
-		for (const f of v.frequencies) {
+		const grouped = new Map<string, typeof exactLocalFrequencies>();
+		for (const f of exactLocalFrequencies) {
 			const group = grouped.get(f.biobankSlug) ?? [];
 			group.push(f);
 			grouped.set(f.biobankSlug, group);
@@ -350,7 +390,7 @@
 		return [...grouped.entries()]
 			.filter(([, freqs]) => freqs.length > 1)
 			.map(([slug, freqs]) => {
-				const ac = freqs.reduce((sum, f) => sum + f.ac, 0);
+				const ac = freqs.reduce((sum, f) => sum + (f.ac ?? 0), 0);
 				const an = freqs.reduce((sum, f) => sum + f.an, 0);
 				const nHetero = freqs.reduce((sum, f) => sum + (f.nHetero ?? 0), 0);
 				const nHomo = freqs.reduce((sum, f) => sum + (f.nHomo ?? 0), 0);
@@ -387,20 +427,24 @@
 			af: f.af,
 			ac: f.ac,
 			an: f.an,
+			acMasked: f.acMasked,
+			acUpperBound: f.acUpperBound,
+			afUpperBound: f.afUpperBound,
+			genotypeMasked: f.genotypeMasked,
 			nHetero: f.nHetero,
 			nHomo: f.nHomo,
 			nHomoRef: f.nHomoRef
 		}));
 		rows.push(...localAverageFrequencies);
 		if (gnomadTotalFrequency) {
-			const difference = primaryFrequency ? gnomadTotalFrequency.af - primaryFrequency.af : 0;
+			const difference = primaryFrequency ? gnomadTotalFrequency.af - (primaryFrequency.af ?? 0) : 0;
 			rows.push({
 				...gnomadTotalFrequency,
 				comparison:
 					!localAverageFrequencies.length && primaryFrequency && Math.abs(difference) > 1e-12
 						? {
 								direction: difference > 0 ? 'up' : 'down',
-								baselineAf: primaryFrequency.af,
+								baselineAf: primaryFrequency.af ?? 0,
 								baselineLabel: `${primaryFrequency.biobankSlug} ${primaryFrequency.population}`
 							}
 						: undefined
@@ -409,12 +453,12 @@
 		return rows;
 	});
 	const highestPopulationFrequencyAf = $derived(
-		hasMultipleLocalPopulations && populationFrequencyRows.length > 1 ? Math.max(...populationFrequencyRows.map((row) => row.af)) : null
+		hasMultipleLocalPopulations && populationFrequencyRows.length > 1 ? Math.max(...populationFrequencyRows.map(rowAfValue)) : null
 	);
 	const populationRowClass = (row: PopulationFrequencyRow) =>
 		['border-t', row.marker === 'localAverage' ? 'bg-sky-50/80 dark:bg-sky-950/30' : ''].filter(Boolean).join(' ');
 	const populationAfClass = (row: PopulationFrequencyRow) =>
-		highestPopulationFrequencyAf !== null && row.af === highestPopulationFrequencyAf
+		highestPopulationFrequencyAf !== null && rowAfValue(row) === highestPopulationFrequencyAf
 			? 'inline-flex rounded-full border border-primary/25 bg-primary/10 px-1.5 py-0.5 font-semibold text-primary'
 			: '';
 	const sortedPopulationFrequencyRows = $derived.by(() => {
@@ -422,8 +466,8 @@
 		if (!sortCol) return populationFrequencyRows;
 		return [...populationFrequencyRows].sort((a, b) => {
 			const col: PopulationMetricSortCol = sortCol;
-			const aValue = a[col] ?? Number.NEGATIVE_INFINITY;
-			const bValue = b[col] ?? Number.NEGATIVE_INFINITY;
+			const aValue = col === 'af' ? rowAfValue(a) : col === 'ac' ? rowAcValue(a) : (a[col] ?? Number.NEGATIVE_INFINITY);
+			const bValue = col === 'af' ? rowAfValue(b) : col === 'ac' ? rowAcValue(b) : (b[col] ?? Number.NEGATIVE_INFINITY);
 			const diff = aValue - bValue;
 			if (diff !== 0) return populationSortDir === 'asc' ? diff : -diff;
 			return `${a.source} ${a.label}`.localeCompare(`${b.source} ${b.label}`);
@@ -438,6 +482,9 @@
 			af: f.af,
 			ac: f.ac,
 			an: f.an,
+			acMasked: f.acMasked,
+			acUpperBound: f.acUpperBound,
+			afUpperBound: f.afUpperBound,
 			marker: 'source'
 		}));
 		const localAverages: AncestryFrequencyRow[] = localAverageFrequencies.map((avg, index) => ({
@@ -463,7 +510,7 @@
 		for (const [id, value] of gnomadByAncestry) {
 			const baseline = hasMultipleLocalPopulations ? null : localComparatorForAncestry(id);
 			const gnomadAf = value.an ? value.ac / value.an : 0;
-			const difference = baseline ? gnomadAf - baseline.af : 0;
+			const difference = baseline ? gnomadAf - (baseline.af ?? 0) : 0;
 			gnomadRows.push({
 				source: 'gnomAD',
 				label: gnomadPopulationLabel(id),
@@ -476,7 +523,7 @@
 					baseline && Math.abs(difference) > 1e-12
 						? {
 								direction: difference > 0 ? 'up' : 'down',
-								baselineAf: baseline.af,
+								baselineAf: baseline.af ?? 0,
 								baselineLabel: `${baseline.biobankSlug} ${baseline.population}`
 							}
 						: undefined
@@ -484,16 +531,16 @@
 		}
 		if (gnomadRows.length) {
 			for (const avg of localAverages) {
-				const closest = gnomadRows.reduce((best, row) =>
-					Math.abs(row.af - avg.af) < Math.abs(best.af - avg.af) ? row : best
-				);
-				const difference = avg.af - closest.af;
+			const closest = gnomadRows.reduce((best, row) =>
+				Math.abs(rowAfValue(row) - rowAfValue(avg)) < Math.abs(rowAfValue(best) - rowAfValue(avg)) ? row : best
+			);
+			const difference = rowAfValue(avg) - rowAfValue(closest);
 				const tone = avg.markerTone ?? 0;
 				avg.comparison =
 					Math.abs(difference) > 1e-12
 						? {
 								direction: difference > 0 ? 'up' : 'down',
-								baselineAf: closest.af,
+									baselineAf: rowAfValue(closest),
 								baselineLabel: `closest gnomAD ${closest.label}`
 							}
 						: undefined;
@@ -502,7 +549,7 @@
 		}
 		rows.push(...localAverages);
 		if (!localAverages.length && primaryFrequency && gnomadRows.length) {
-			const closest = gnomadRows.reduce((best, row) => (Math.abs(row.af - primaryFrequency.af) < Math.abs(best.af - primaryFrequency.af) ? row : best));
+			const closest = gnomadRows.reduce((best, row) => (Math.abs(rowAfValue(row) - (primaryFrequency.af ?? 0)) < Math.abs(rowAfValue(best) - (primaryFrequency.af ?? 0)) ? row : best));
 			closest.closestFor = [{ source: 'gnomAD', label: 'Closest gnomAD', tone: 0 }];
 		}
 		rows.push(...gnomadRows);
@@ -513,7 +560,7 @@
 		if (!sortCol) return ancestryFrequencyRows;
 		return [...ancestryFrequencyRows].sort((a, b) => {
 			const col: AncestryMetricSortCol = sortCol;
-			const diff = a[col] - b[col];
+			const diff = (col === 'af' ? rowAfValue(a) : col === 'ac' ? rowAcValue(a) : a[col] ?? 0) - (col === 'af' ? rowAfValue(b) : col === 'ac' ? rowAcValue(b) : b[col] ?? 0);
 			if (diff !== 0) return ancestrySortDir === 'asc' ? diff : -diff;
 			return `${a.source} ${a.label}`.localeCompare(`${b.source} ${b.label}`);
 		});
@@ -863,49 +910,121 @@
 	<title>{plainTitle} · {data.tenantName}</title>
 </svelte:head>
 
-<div class="mb-6 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-	<div class="min-w-0 flex-1">
-		<a href="/explore{data.forceTenant ? `?tenant=${data.forceTenant}` : ''}" class="mb-2 inline-flex text-sm text-muted-foreground hover:text-primary hover:underline">
-			← {tr($lang, 'explore')}
-			</a>
-			<h1 class="font-mono text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1>
-			<p class="mt-1 text-sm text-muted-foreground">
-				Variant detail · GRCh38
-				{#if rsidSummary}
-					· <span class="font-mono font-medium text-foreground">{rsidSummary}</span>
-				{/if}
-			</p>
-			<p class="mt-1 max-w-4xl text-sm text-muted-foreground">
-				<span class="font-medium text-foreground">{geneSummary}</span>
-			</p>
-		</div>
-	<div class="flex shrink-0 flex-wrap gap-2 text-sm lg:justify-end">
+<div class="mb-4">
+	<a href="/explore{data.forceTenant ? `?tenant=${data.forceTenant}` : ''}" class="mb-2 inline-flex text-sm text-muted-foreground hover:text-primary hover:underline">
+		← {tr($lang, 'explore')}
+	</a>
+	<div class="flex flex-wrap items-center gap-2.5">
+		<h1 class="mr-2 max-w-full truncate font-mono text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1>
 		{#if v.rsid}
-			<a class="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 hover:bg-muted" href={`https://www.ncbi.nlm.nih.gov/snp/rs${v.rsid}`} target="_blank" rel="noreferrer">
+			<a class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted" href={`https://www.ncbi.nlm.nih.gov/snp/rs${v.rsid}`} target="_blank" rel="noreferrer">
 				<img src={dbsnpIconUrl} alt="" class="h-4 w-auto invert dark:invert-0" />
-				<span>dbSNP rs{v.rsid}</span>
+				<span>dbSNP</span>
 			</a>
 		{/if}
-		<a class="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 hover:bg-muted" href={gnomadUrl} target="_blank" rel="noopener">
+		<a class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted" href={gnomadUrl} target="_blank" rel="noopener">
 			<img src="/icons/gnomad.png" alt="" class="size-4 opacity-75" />
 			<span>gnomAD</span>
 		</a>
-		<a class="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 hover:bg-muted" href={clinvarSearchUrl} target="_blank" rel="noreferrer">
+		<a class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted" href={clinvarSearchUrl} target="_blank" rel="noreferrer">
 			<img src="/icons/clinvar.svg" alt="" class="h-4 w-auto" />
 			<span>ClinVar</span>
 		</a>
 		{#if v.rsid}
-			<a class="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 hover:bg-muted" href={clinpgxSearchHref(`rs${v.rsid}`)} target="_blank" rel="noreferrer">
+			<a class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted" href={clinpgxSearchHref(`rs${v.rsid}`)} target="_blank" rel="noreferrer">
 				<img src="/icons/clinpgx.svg" alt="" class="size-4" />
 				<span>ClinPGx</span>
 			</a>
 		{/if}
-		<a class="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 hover:bg-muted" href={apiUrl}>
+		<a class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted" href={apiUrl}>
 			<Code class="size-4" strokeWidth={1.8} />
-			<span>API JSON</span>
+			<span>API</span>
 		</a>
 	</div>
 </div>
+
+<section class="card-surface mb-5 overflow-hidden">
+	<div class="border-b px-4 py-3">
+		<h2 class="text-base font-semibold">Variant detail</h2>
+	</div>
+	<dl class="grid gap-0 text-sm sm:grid-cols-2 lg:grid-cols-4">
+		<div class="border-b border-border/70 px-4 py-3 lg:border-r">
+			<dt class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Assembly</dt>
+			<dd class="mt-1 font-medium">GRCh38</dd>
+		</div>
+		<div class="border-b border-border/70 px-4 py-3 lg:border-r">
+			<dt class="text-xs font-medium uppercase tracking-wide text-muted-foreground">rsID</dt>
+			<dd class="mt-1">
+				{#if rsidSummary}
+					<span class="font-mono font-medium">{rsidSummary}</span>
+				{:else}
+					<span class="text-muted-foreground">-</span>
+				{/if}
+			</dd>
+		</div>
+		<div class="border-b border-border/70 px-4 py-3 lg:col-span-2">
+			<dt class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Genes</dt>
+			<dd class="mt-1">
+				{#if geneSymbols.length}
+					<div class="flex flex-wrap gap-1">
+						{#each geneSymbols as symbol}
+							<a href={geneHref(symbol)} class="rounded border px-1.5 py-0.5 text-xs font-medium text-primary hover:bg-muted">{symbol}</a>
+						{/each}
+					</div>
+				{:else}
+					<span class="text-muted-foreground">{geneSummary}</span>
+				{/if}
+			</dd>
+		</div>
+		<div class="border-b border-border/70 px-4 py-3 lg:border-r lg:border-b-0">
+			<dt class="text-xs font-medium uppercase tracking-wide text-muted-foreground">HGVS consequence</dt>
+			<dd class="mt-1 min-w-0 font-mono text-sm">
+				{#if v.hgvsConsequence}
+					<span class="block truncate" title={v.hgvsConsequence}>{v.hgvsConsequence}</span>
+				{:else}
+					<span class="font-sans text-muted-foreground">-</span>
+				{/if}
+			</dd>
+		</div>
+		<div class="border-b border-border/70 px-4 py-3 lg:border-r lg:border-b-0">
+			<dt class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Worst VEP annotation</dt>
+			<dd class="mt-1 min-w-0">
+				{#if v.vepLabel}
+					<a
+						href={explorerFilterHref('vepConsequence', v.vepLabel)}
+						class={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-ring ${vepImpactClass(v.vepImpact)}`}
+						title={vepSummaryTitle}
+					>
+						<span class="min-w-0 truncate">{v.vepLabel}</span>
+						{#if v.vepHasMultipleConsequences}<span class="shrink-0 text-[10px] opacity-75">+</span>{/if}
+					</a>
+				{:else}
+					<span class="text-muted-foreground">-</span>
+				{/if}
+			</dd>
+		</div>
+		<div class="border-b border-border/70 px-4 py-3 lg:border-r lg:border-b-0">
+			<dt class="text-xs font-medium uppercase tracking-wide text-muted-foreground">VEP category</dt>
+			<dd class="mt-1">
+				{#if v.vepImpact}
+					<a
+						href={explorerFilterHref('vepImpact', v.vepImpact)}
+						class={`inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-ring ${vepImpactClass(v.vepImpact)}`}
+						title={`Find variants with VEP category: ${v.vepImpact}`}
+					>
+						{v.vepImpact}
+					</a>
+				{:else}
+					<span class="text-muted-foreground">-</span>
+				{/if}
+			</dd>
+		</div>
+		<div class="px-4 py-3">
+			<dt class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Multiple consequences</dt>
+			<dd class="mt-1 font-medium">{v.vepHasMultipleConsequences ? 'Yes' : 'No'}</dd>
+		</div>
+	</dl>
+</section>
 
 	<section class="card-surface mb-5 overflow-hidden">
 	<div class="border-b px-4 py-3">
@@ -962,13 +1081,13 @@
 									<div class="text-xs text-muted-foreground">{row.detail}</div>
 								</td>
 								<td class="min-w-28 px-3 py-2">
-									<span class="af-track block h-2 cursor-help overflow-hidden rounded-full" title={`${row.label} · alt allele freq ${fmtAf(row.af)} · AC ${row.ac}/${row.an}`}>
-										<span class="af-fill block h-full rounded-full" style={`width:${afBarWidth(row.af)}%`}></span>
+									<span class="af-track block h-2 cursor-help overflow-hidden rounded-full" title={row.acMasked ? `${row.label} · ${maskedFrequencyTitle(row)}` : `${row.label} · alt allele freq ${fmtAfPercent(row.af ?? 0)} · AC ${row.ac}/${row.an}`}>
+										<span class="af-fill block h-full rounded-full" class:opacity-60={row.acMasked} style={`width:${afBarWidth(rowAfValue(row))}%`}></span>
 									</span>
 								</td>
 								<td class="px-3 py-2 text-right font-mono text-xs">
 									<span class="inline-flex items-center justify-end gap-1">
-										<span class={populationAfClass(row)}>{fmtAf(row.af)}</span>
+										<span class={populationAfClass(row)} title={row.acMasked ? maskedFrequencyTitle(row) : undefined}>{fmtMaskedAf(row)}</span>
 										{#if row.comparison}
 											<span
 												class={row.comparison.direction === 'up' ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}
@@ -980,11 +1099,11 @@
 										{/if}
 									</span>
 								</td>
-								<td class="px-3 py-2 text-right font-mono text-xs">{fmt(row.ac)}</td>
+								<td class="px-3 py-2 text-right font-mono text-xs" title={row.acMasked ? maskedFrequencyTitle(row) : undefined}>{fmtMaskedAc(row)}</td>
 								<td class="px-3 py-2 text-right font-mono text-xs">{fmt(row.an)}</td>
-								<td class="px-3 py-2 text-right font-mono text-xs">{fmt(row.nHetero)}</td>
-								<td class="px-3 py-2 text-right font-mono text-xs">{fmt(row.nHomo)}</td>
-								<td class="px-3 py-2 text-right font-mono text-xs">{fmt(row.nHomoRef)}</td>
+								<td class="px-3 py-2 text-right font-mono text-xs" title={row.genotypeMasked ? 'Too low to report exact genotype counts.' : undefined}>{row.genotypeMasked ? 'low' : fmt(row.nHetero)}</td>
+								<td class="px-3 py-2 text-right font-mono text-xs" title={row.genotypeMasked ? 'Too low to report exact genotype counts.' : undefined}>{row.genotypeMasked ? 'low' : fmt(row.nHomo)}</td>
+								<td class="px-3 py-2 text-right font-mono text-xs" title={row.genotypeMasked ? 'Too low to report exact genotype counts.' : undefined}>{row.genotypeMasked ? 'low' : fmt(row.nHomoRef)}</td>
 							</tr>
 						{/each}
 					</tbody>
@@ -1052,15 +1171,15 @@
 										{/each}
 									</div>
 									<div class="text-xs text-muted-foreground">{row.detail}</div>
-								</td>
+							</td>
 							<td class="min-w-32 px-3 py-2">
-								<span class="af-track block h-2 cursor-help overflow-hidden rounded-full" title={`${row.label} · alt allele freq ${fmtAf(row.af)} · AC ${row.ac}/${row.an}`}>
-									<span class="af-fill block h-full rounded-full" style={`width:${afBarWidth(row.af)}%`}></span>
+								<span class="af-track block h-2 cursor-help overflow-hidden rounded-full" title={row.acMasked ? `${row.label} · ${maskedFrequencyTitle(row)}` : `${row.label} · alt allele freq ${fmtAfPercent(row.af ?? 0)} · AC ${row.ac}/${row.an}`}>
+									<span class="af-fill block h-full rounded-full" class:opacity-60={row.acMasked} style={`width:${afBarWidth(rowAfValue(row))}%`}></span>
 								</span>
 							</td>
 							<td class="px-3 py-2 text-right font-mono text-xs">
 								<span class="inline-flex items-center justify-end gap-1">
-									<span>{fmtAf(row.af)}</span>
+									<span title={row.acMasked ? maskedFrequencyTitle(row) : undefined}>{fmtMaskedAf(row)}</span>
 									{#if row.comparison}
 										<span
 											class={row.comparison.direction === 'up' ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}
@@ -1072,7 +1191,7 @@
 									{/if}
 								</span>
 							</td>
-							<td class="px-3 py-2 text-right font-mono text-xs">{fmt(row.ac)}</td>
+							<td class="px-3 py-2 text-right font-mono text-xs" title={row.acMasked ? maskedFrequencyTitle(row) : undefined}>{fmtMaskedAc(row)}</td>
 							<td class="px-3 py-2 text-right font-mono text-xs">{fmt(row.an)}</td>
 						</tr>
 					{/each}

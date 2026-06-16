@@ -32,6 +32,10 @@ export const load: PageServerLoad = async ({ locals, params, platform, url }) =>
 			vrsDigest: variant.vrsDigest,
 			posHg19: variant.posHg19,
 			lifted: variant.lifted,
+			vepLabel: variant.vepLabel,
+			vepImpact: variant.vepImpact,
+			hgvsConsequence: variant.hgvsConsequence,
+			vepHasMultipleConsequences: variant.vepHasMultipleConsequences,
 			genes: variant.genes,
 			frequencies
 		},

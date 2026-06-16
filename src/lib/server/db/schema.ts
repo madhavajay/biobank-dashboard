@@ -19,6 +19,24 @@ export const populations = sqliteTable('populations', {
 	lon: real('lon').notNull()
 });
 
+export const populationCountryMappings = sqliteTable(
+	'population_country_mappings',
+	{
+		id: integer('id').primaryKey(),
+		populationId: integer('population_id').notNull(),
+		country: text('country').notNull(),
+		countryCode: text('country_code').notNull(),
+		regionGroup: text('region_group').notNull().default(''),
+		subpopulationCode: text('subpopulation_code').notNull().default(''),
+		subpopulationName: text('subpopulation_name').notNull().default(''),
+		sampleCount: integer('sample_count').notNull().default(0)
+	},
+	(t) => [
+		index('population_country_mappings_population_idx').on(t.populationId),
+		index('population_country_mappings_country_idx').on(t.countryCode)
+	]
+);
+
 export const cohorts = sqliteTable('cohorts', {
 	id: integer('id').primaryKey(),
 	biobankId: integer('biobank_id').notNull(),
@@ -58,12 +76,19 @@ export const variants = sqliteTable(
 		rsid: integer('rsid'),
 		vrsDigest: text('vrs_digest'),
 		posHg19: integer('pos_hg19'),
-		lifted: integer('lifted').notNull().default(0)
+		lifted: integer('lifted').notNull().default(0),
+		vepLabel: text('vep_label'),
+		vepImpact: text('vep_impact'),
+		hgvsConsequence: text('hgvs_consequence'),
+		vepHasMultipleConsequences: integer('vep_has_multiple_consequences').notNull().default(0)
 	},
 	(t) => [
 		uniqueIndex('variants_locus_idx').on(t.chrom, t.pos, t.ref, t.alt),
 		index('variants_rsid_idx').on(t.rsid),
-		index('variants_chrom_pos_idx').on(t.chrom, t.pos)
+		index('variants_chrom_pos_idx').on(t.chrom, t.pos),
+		index('variants_vep_impact_locus_idx').on(t.vepImpact, t.chrom, t.pos, t.id),
+		index('variants_vep_label_locus_idx').on(t.vepLabel, t.chrom, t.pos, t.id),
+		index('variants_hgvs_consequence_idx').on(t.hgvsConsequence)
 	]
 );
 
@@ -94,7 +119,16 @@ export const frequencies = sqliteTable(
 		af: real('af').notNull(),
 		nHomo: integer('n_homo'),
 		nHetero: integer('n_hetero'),
-		nHomoRef: integer('n_homo_ref')
+		nHomoRef: integer('n_homo_ref'),
+		acMasked: integer('ac_masked').notNull().default(0),
+		publicAc: integer('public_ac'),
+		publicAf: real('public_af'),
+		acUpperBound: integer('ac_upper_bound'),
+		afUpperBound: real('af_upper_bound'),
+		genotypeMasked: integer('genotype_masked').notNull().default(0),
+		publicNHetero: integer('public_n_hetero'),
+		publicNHomo: integer('public_n_homo'),
+		publicNHomoRef: integer('public_n_homo_ref')
 	},
 	(t) => [
 		primaryKey({ columns: [t.variantId, t.cohortId] }),

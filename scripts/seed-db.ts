@@ -4,7 +4,8 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { BIOBANKS, POPULATIONS, COHORTS, DATASETS, COHORT_DATASET } from './harmonize/lib/registry';
+import { BIOBANKS, POPULATIONS, COHORTS, DATASETS, COHORT_DATASET, POPULATION_COUNTRY_MAPPINGS } from './harmonize/lib/registry';
+import { publicFrequencyValues } from '../src/lib/privacy';
 
 const ROOT = join(import.meta.dir, '..');
 const NORM = join(ROOT, 'data/normalized');
@@ -47,12 +48,16 @@ const maxAn = new Map<number, number>();
 for (const f of freqs) maxAn.set(f.cohort_id, Math.max(maxAn.get(f.cohort_id) ?? 0, f.an));
 
 const sql: string[] = ['PRAGMA foreign_keys=OFF;'];
-for (const t of ['frequencies', 'variants', 'cohorts', 'datasets', 'populations', 'biobanks']) sql.push(`DELETE FROM ${t};`);
+for (const t of ['frequencies', 'variants', 'population_country_mappings', 'cohorts', 'datasets', 'populations', 'biobanks']) sql.push(`DELETE FROM ${t};`);
 
 for (const b of BIOBANKS)
 	sql.push(`INSERT INTO biobanks (id,slug,name,description,website) VALUES (${b.id},${q(b.slug)},${q(b.name)},${q(b.description)},${q(b.website)});`);
 for (const p of POPULATIONS)
 	sql.push(`INSERT INTO populations (id,biobank_id,name,country,country_code,admin_level,lat,lon) VALUES (${p.id},${p.biobankId},${q(p.name)},${q(p.country)},${q(p.countryCode)},${q(p.adminLevel)},${p.lat},${p.lon});`);
+for (const m of POPULATION_COUNTRY_MAPPINGS)
+	sql.push(
+		`INSERT INTO population_country_mappings (id,population_id,country,country_code,region_group,subpopulation_code,subpopulation_name,sample_count) VALUES (${m.id},${m.populationId},${q(m.country)},${q(m.countryCode)},${q(m.regionGroup)},${q(m.subpopulationCode)},${q(m.subpopulationName)},${m.sampleCount});`
+	);
 for (const d of DATASETS) {
 	const cohortIds = COHORTS.filter((c) => COHORT_DATASET[c.id] === d.id).map((c) => c.id);
 	const participants = COHORTS.filter((c) => cohortIds.includes(c.id)).reduce(
@@ -81,8 +86,15 @@ batchInsert(
 	variants.map((v) => `(${v.id},${v.chrom},${v.pos},${q(v.ref)},${q(v.alt)},${n(v.rsid)},${v.vrs_digest ? q(v.vrs_digest) : 'NULL'},${n(v.pos_hg19)},${v.lifted})`)
 );
 batchInsert(
-	'INSERT INTO frequencies (variant_id,cohort_id,biobank_id,ac,an,af,n_homo,n_hetero,n_homo_ref) VALUES ',
-	freqs.map((f) => `(${f.variant_id},${f.cohort_id},${f.biobank_id},${f.ac},${f.an},${f.af},${n(f.n_homo)},${n(f.n_hetero)},${n(f.n_homo_ref)})`)
+	`INSERT INTO frequencies (
+		variant_id,cohort_id,biobank_id,ac,an,af,n_homo,n_hetero,n_homo_ref,
+		ac_masked,public_ac,public_af,ac_upper_bound,af_upper_bound,
+		genotype_masked,public_n_hetero,public_n_homo,public_n_homo_ref
+	) VALUES `,
+	freqs.map((f) => {
+		const p = publicFrequencyValues(f);
+		return `(${f.variant_id},${f.cohort_id},${f.biobank_id},${f.ac},${f.an},${f.af},${n(f.n_homo)},${n(f.n_hetero)},${n(f.n_homo_ref)},${p.acMasked ? 1 : 0},${n(p.publicAc)},${n(p.publicAf)},${n(p.acUpperBound)},${n(p.afUpperBound)},${p.genotypeMasked ? 1 : 0},${n(p.publicNHetero)},${n(p.publicNHomo)},${n(p.publicNHomoRef)})`;
+	})
 );
 
 const out = join(NORM, 'seed.sql');

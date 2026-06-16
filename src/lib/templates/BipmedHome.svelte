@@ -3,6 +3,7 @@
 	import VariantBrowser from '$lib/components/widgets/VariantBrowser.svelte';
 	import Stat from '$lib/components/widgets/Stat.svelte';
 	import { explorerDisplay } from '$lib/explorer';
+	import brazilStatesUrl from '$lib/data/brazil-states.geojson?url';
 
 	let { data } = $props();
 	const tenant = $derived(data.tenant);
@@ -22,10 +23,10 @@
 				Variantes da <span class="brand-text">população brasileira</span>
 			</h1>
 			<p class="mt-3 max-w-xl text-muted-foreground">{tenant.tagline} A reference of allele frequencies from Brazil, lifted to GRCh38 and harmonized into the same engine that powers every BioVault portal.</p>
-			<a href="/explore" class="brand-gradient mt-5 inline-block rounded-md px-4 py-2 text-sm font-semibold text-white shadow-sm">Explorar variantes</a>
+			<a href="/explore" class="brand-gradient mt-5 inline-block cursor-pointer rounded-md px-4 py-2 text-sm font-semibold text-white shadow-sm">Explorar variantes</a>
 		</div>
 	</div>
-	<GeoMap {pins} center={tenant.map.center} zoom={tenant.map.zoom} />
+	<GeoMap {pins} center={tenant.map.center} zoom={tenant.map.zoom} source={brazilStatesUrl} showDots={false} highlightAllFeatures />
 </section>
 
 <div class="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-4">

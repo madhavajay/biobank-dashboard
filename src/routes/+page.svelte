@@ -7,7 +7,8 @@
 		biovault: BioVaultHome,
 		carigenetics: AtlasHome,
 		bipmed: AtlasHome,
-		'pgp-harvard': AtlasHome
+		'pgp-harvard': AtlasHome,
+		'1kgp': AtlasHome
 	};
 	const Template = $derived(templates[data.tenant.slug] ?? BioVaultHome);
 </script>

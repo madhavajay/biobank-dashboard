@@ -1,5 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import { buildVrsAllele, resolveVariantIdentifier } from '$lib/server/db/queries';
+import { ALLELE_COUNT_REPORTING_THRESHOLD } from '$lib/privacy';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ locals, params, url, platform }) => {
@@ -10,5 +11,5 @@ export const GET: RequestHandler = async ({ locals, params, url, platform }) => 
 	if (url.searchParams.get('format') === 'vrs') {
 		return json(buildVrsAllele(v));
 	}
-	return json({ ...v, vrs: buildVrsAllele(v) });
+	return json({ ...v, alleleCountReportingThreshold: ALLELE_COUNT_REPORTING_THRESHOLD, vrs: buildVrsAllele(v) });
 };

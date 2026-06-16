@@ -32,7 +32,7 @@
 					</div>
 				{/each}
 			</div>
-			<a href="/explore" class="mt-5 inline-block rounded-md bg-white px-4 py-2 text-sm font-semibold text-foreground shadow-sm">Explore the data</a>
+			<a href="/explore" class="mt-5 inline-block cursor-pointer rounded-md bg-white px-4 py-2 text-sm font-semibold text-foreground shadow-sm">Explore the data</a>
 		</div>
 		<div class="min-h-[360px] rounded-[var(--radius)] bg-white/95 p-2 shadow-xl">
 			<GeoMap {pins} center={tenant.map.center} zoom={tenant.map.zoom} showMatchedDots showDots={false} showLabels labelScale={0.42} fit="slice" source="/caribbean.geo.json" onselect={(p) => (selected = `${p.cohortId}`)} />

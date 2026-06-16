@@ -34,8 +34,8 @@
 
 	const baseEndpoints = [
 		{ m: 'GET', p: '/api/biobanks', d: 'Biobanks, populations & sample counts (map source).' },
-		{ m: 'GET', p: '/api/variants', d: 'Search variants: q, gene, chrom, posMin/posMax, rsid, afMin/afMax, acMin/acMax, sort, dir, limit, offset.' },
-		{ m: 'GET', p: '/api/variants/:id', d: 'One variant across populations + its VRS allele.' },
+		{ m: 'GET', p: '/api/variants', d: 'Search variants: q, gene, chrom, posMin/posMax, rsid, afMin/afMax, acMin/acMax, sort, dir, limit, offset. AF/AC filters apply only to reportable values.' },
+		{ m: 'GET', p: '/api/variants/:id', d: 'One variant across populations + its VRS allele. Low-count AF/AC values are returned as upper bounds.' },
 		{ m: 'GET', p: '/api/beacon/g_variants', d: 'GA4GH Beacon v2: referenceName, start, referenceBases, alternateBases.' },
 		{ m: 'GET', p: '/api/vrs/:digest', d: 'GA4GH VRS Allele object by digest.' }
 	];

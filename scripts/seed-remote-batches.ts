@@ -4,8 +4,9 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { BIOBANKS, POPULATIONS, COHORTS, DATASETS, COHORT_DATASET } from './harmonize/lib/registry';
+import { BIOBANKS, POPULATIONS, COHORTS, DATASETS, COHORT_DATASET, POPULATION_COUNTRY_MAPPINGS } from './harmonize/lib/registry';
 import { eachLine } from './harmonize/lib/io';
+import { publicFrequencyValues } from '../src/lib/privacy';
 
 const ROOT = join(import.meta.dir, '..');
 const NORM = join(ROOT, 'data/normalized');
@@ -102,12 +103,17 @@ if (RESUME_FREQUENCIES_AFTER > 0) {
 		'PRAGMA foreign_keys=OFF;',
 		'DELETE FROM frequencies;',
 		'DELETE FROM variants;',
+		'DELETE FROM population_country_mappings;',
 		'DELETE FROM cohorts;',
 		'DELETE FROM datasets;',
 		'DELETE FROM populations;',
 		'DELETE FROM biobanks;',
 		...BIOBANKS.map((b) => `INSERT INTO biobanks (id,slug,name,description,website) VALUES (${b.id},${q(b.slug)},${q(b.name)},${q(b.description)},${q(b.website)});`),
 		...POPULATIONS.map((p) => `INSERT INTO populations (id,biobank_id,name,country,country_code,admin_level,lat,lon) VALUES (${p.id},${p.biobankId},${q(p.name)},${q(p.country)},${q(p.countryCode)},${q(p.adminLevel)},${p.lat},${p.lon});`),
+		...POPULATION_COUNTRY_MAPPINGS.map(
+			(m) =>
+				`INSERT INTO population_country_mappings (id,population_id,country,country_code,region_group,subpopulation_code,subpopulation_name,sample_count) VALUES (${m.id},${m.populationId},${q(m.country)},${q(m.countryCode)},${q(m.regionGroup)},${q(m.subpopulationCode)},${q(m.subpopulationName)},${m.sampleCount});`
+		),
 		...DATASETS.map((d) => `INSERT INTO datasets (id,biobank_id,slug,metadata) VALUES (${d.id},${d.biobankId},${q(d.slug)},${q(JSON.stringify(d.metadata))});`),
 		...COHORTS.map((c) => {
 			const sc = c.sampleCount || 0;
@@ -127,7 +133,11 @@ if (RESUME_FREQUENCIES_AFTER > 0) {
 await streamInsert(
 	'frequencies',
 	[join(NORM, 'carigenetics/frequencies.ndjson'), join(NORM, 'bipmed/frequencies.ndjson')],
-	['variant_id', 'cohort_id', 'biobank_id', 'ac', 'an', 'af', 'n_homo', 'n_hetero', 'n_homo_ref'],
+	[
+		'variant_id', 'cohort_id', 'biobank_id', 'ac', 'an', 'af', 'n_homo', 'n_hetero', 'n_homo_ref',
+		'ac_masked', 'public_ac', 'public_af', 'ac_upper_bound', 'af_upper_bound',
+		'genotype_masked', 'public_n_hetero', 'public_n_homo', 'public_n_homo_ref'
+	],
 	(f) => {
 		const key = `${f.variant_id}:${f.cohort_id}`;
 		if (seenFreq.has(key)) {
@@ -140,7 +150,8 @@ await streamInsert(
 		if (datasetId) datasetVariants.get(datasetId)?.add(f.variant_id);
 		uniqueFreqsSeen++;
 		if (uniqueFreqsSeen <= RESUME_FREQUENCIES_AFTER) return null;
-		return `(${f.variant_id},${f.cohort_id},${f.biobank_id},${f.ac},${f.an},${f.af},${n(f.n_homo)},${n(f.n_hetero)},${n(f.n_homo_ref)})`;
+		const p = publicFrequencyValues(f);
+		return `(${f.variant_id},${f.cohort_id},${f.biobank_id},${f.ac},${f.an},${f.af},${n(f.n_homo)},${n(f.n_hetero)},${n(f.n_homo_ref)},${p.acMasked ? 1 : 0},${n(p.publicAc)},${n(p.publicAf)},${n(p.acUpperBound)},${n(p.afUpperBound)},${p.genotypeMasked ? 1 : 0},${n(p.publicNHetero)},${n(p.publicNHomo)},${n(p.publicNHomoRef)})`;
 	},
 	'OR IGNORE'
 );
