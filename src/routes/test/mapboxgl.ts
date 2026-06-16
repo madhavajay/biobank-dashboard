@@ -1,8 +1,8 @@
-import mapboxgl from 'mapbox-gl';
-import { env } from '$env/dynamic/public';
+import mapboxgl from 'mapbox-gl'
 
-export const key = Symbol('mapbox');
+export const key = Symbol('mapbox')
 
-mapboxgl.accessToken = env.PUBLIC_MAPBOX_ACCESS_TOKEN ?? '';
+mapboxgl.accessToken =
+	'pk.eyJ1Ijoia2VlbGFuam9yZGFuIiwiYSI6ImNtcWd5cDM3ZTA0emUycHNnb3JucmgwdDkifQ.ycaW_8e4TyKhAy-aikzXbw'
 
-export { mapboxgl };
+export { mapboxgl }
