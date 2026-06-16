@@ -1,7 +1,7 @@
 // Build a seed.sql from normalized NDJSON + registry and load it into local D1.
 // Usage: bun scripts/seed-db.ts [--remote] [--local]
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { BIOBANKS, POPULATIONS, COHORTS, DATASETS, COHORT_DATASET, POPULATION_COUNTRY_MAPPINGS } from './harmonize/lib/registry';
@@ -10,6 +10,8 @@ import { publicFrequencyValues } from '../src/lib/privacy';
 const ROOT = join(import.meta.dir, '..');
 const NORM = join(ROOT, 'data/normalized');
 const remote = process.argv.includes('--remote');
+
+mkdirSync(NORM, { recursive: true });
 
 const q = (s: string) => `'${String(s).replace(/'/g, "''")}'`;
 const n = (v: number | null | undefined) => (v === null || v === undefined ? 'NULL' : String(v));
