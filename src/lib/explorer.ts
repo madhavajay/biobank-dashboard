@@ -8,6 +8,7 @@ export interface ExplorerDisplay {
 	population: boolean; // per-population label column (multi-population tenants)
 	genotypes: boolean; // HET / HOM_ALT / HOM_REF columns
 	maxAf: boolean; // Max AF column (redundant for a single population)
+	vep: boolean; // worst VEP consequence + HGVS column
 	vrs: boolean; // VRS column
 	barMax: string; // max width of the allele-frequency bar
 	geneColWidth?: string; // optional fixed/responsive width for the gene column
@@ -24,8 +25,9 @@ export const DEFAULTS: ExplorerDisplay = {
 	population: true,
 	genotypes: true,
 	maxAf: false,
+	vep: true,
 	vrs: false,
-	barMax: '13rem',
+	barMax: '4.5rem',
 	acAnSplit: false,
 	vrsExpand: false,
 	gnomad: false,
@@ -36,21 +38,22 @@ export const DEFAULTS: ExplorerDisplay = {
 const CONFIGS: Record<string, Partial<ExplorerDisplay>> = {
 	// BIPMed: single Brazilian cohort, genotype counts withheld for privacy.
 	// Short bar; AC/AN split into aligned columns so counts line up row-to-row;
-	// VRS expands to use the spare horizontal room.
+	// VEP replaces the older visible VRS column.
 	bipmed: {
 		gene: true,
 		population: false,
 		genotypes: false,
 		maxAf: false,
-		vrs: true,
-		barMax: '6rem',
-		geneColWidth: 'clamp(8rem, calc(8rem + (100vw - 60rem)), 13rem)',
-		frequencyColWidth: '19.25rem',
+		vep: true,
+		vrs: false,
+		barMax: '3.5rem',
+		geneColWidth: 'clamp(7rem, calc(7rem + (100vw - 60rem)), 11rem)',
+		frequencyColWidth: '15rem',
 		acAnSplit: true,
 		vrsExpand: true,
 		gnomad: false,
 		variantDetailIcon: true,
-		variantColWidth: '11rem'
+		variantColWidth: '10rem'
 	}
 };
 

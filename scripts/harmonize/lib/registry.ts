@@ -1,5 +1,6 @@
 // Source-of-truth registry for biobanks / populations / cohorts.
 // Seeded verbatim into D1; harmonizers map source files onto cohort ids.
+import { ONE_KGP_POPULATIONS, type OneKgpSuperPopulation } from './one-thousand-genomes';
 
 export interface Biobank {
 	id: number;
@@ -15,9 +16,20 @@ export interface Population {
 	name: string;
 	country: string;
 	countryCode: string; // ISO-3166-1 alpha-2
-	adminLevel: 'country' | 'state' | 'city';
+	adminLevel: 'country' | 'state' | 'city' | 'region' | 'superpopulation';
 	lat: number;
 	lon: number;
+}
+
+export interface PopulationCountryMapping {
+	id: number;
+	populationId: number;
+	country: string;
+	countryCode: string;
+	regionGroup: string;
+	subpopulationCode: string;
+	subpopulationName: string;
+	sampleCount: number;
 }
 
 export interface Cohort {
@@ -51,6 +63,13 @@ export const BIOBANKS: Biobank[] = [
 		name: 'PGP Harvard',
 		description: 'Harvard Personal Genome Project — United States.',
 		website: 'https://pgp.med.harvard.edu'
+	},
+	{
+		id: 4,
+		slug: '1kgp',
+		name: '1000 Genomes Project',
+		description: '1000 Genomes Project super-population allele frequencies for BioVault tracked loci.',
+		website: 'https://www.internationalgenome.org'
 	}
 ];
 
@@ -62,7 +81,12 @@ export const POPULATIONS: Population[] = [
 	{ id: 5, biobankId: 1, name: 'Saint Lucia', country: 'Saint Lucia', countryCode: 'LC', adminLevel: 'country', lat: 13.909, lon: -60.979 },
 	{ id: 6, biobankId: 1, name: 'Trinidad & Tobago', country: 'Trinidad and Tobago', countryCode: 'TT', adminLevel: 'country', lat: 10.692, lon: -61.222 },
 	{ id: 7, biobankId: 2, name: 'Brazil', country: 'Brazil', countryCode: 'BR', adminLevel: 'country', lat: -14.235, lon: -51.925 },
-	{ id: 8, biobankId: 3, name: 'USA', country: 'United States', countryCode: 'US', adminLevel: 'country', lat: 39.83, lon: -98.58 }
+	{ id: 8, biobankId: 3, name: 'USA', country: 'United States', countryCode: 'US', adminLevel: 'country', lat: 39.83, lon: -98.58 },
+	{ id: 9, biobankId: 4, name: 'AFR', country: 'Multiple countries', countryCode: 'XK', adminLevel: 'superpopulation', lat: 7, lon: 18 },
+	{ id: 10, biobankId: 4, name: 'AMR', country: 'Multiple countries', countryCode: 'XK', adminLevel: 'superpopulation', lat: 2, lon: -74 },
+	{ id: 11, biobankId: 4, name: 'EAS', country: 'Multiple countries', countryCode: 'XK', adminLevel: 'superpopulation', lat: 30, lon: 112 },
+	{ id: 12, biobankId: 4, name: 'EUR', country: 'Multiple countries', countryCode: 'XK', adminLevel: 'superpopulation', lat: 50, lon: 9 },
+	{ id: 13, biobankId: 4, name: 'SAS', country: 'Multiple countries', countryCode: 'XK', adminLevel: 'superpopulation', lat: 22, lon: 76 }
 ];
 
 export const COHORTS: Cohort[] = [
@@ -73,8 +97,48 @@ export const COHORTS: Cohort[] = [
 	{ id: 5, biobankId: 1, populationId: 5, label: 'Saint Lucia', assay: 'array', release: '2025', sampleCount: 0 },
 	{ id: 6, biobankId: 1, populationId: 6, label: 'Trinidad & Tobago', assay: 'array', release: '2025', sampleCount: 0 },
 	{ id: 7, biobankId: 2, populationId: 7, label: 'BIPMed SNP-array', assay: 'SNP-array', release: '2021', sampleCount: 203 },
-	{ id: 8, biobankId: 3, populationId: 8, label: 'PGP Harvard', assay: 'WGS', release: '2024', sampleCount: 463 }
+	{ id: 8, biobankId: 3, populationId: 8, label: 'PGP Harvard', assay: 'WGS', release: '2024', sampleCount: 463 },
+	{ id: 9, biobankId: 4, populationId: 9, label: '1000 Genomes AFR', assay: 'WGS', release: 'Phase 3', sampleCount: 0 },
+	{ id: 10, biobankId: 4, populationId: 10, label: '1000 Genomes AMR', assay: 'WGS', release: 'Phase 3', sampleCount: 0 },
+	{ id: 11, biobankId: 4, populationId: 11, label: '1000 Genomes EAS', assay: 'WGS', release: 'Phase 3', sampleCount: 0 },
+	{ id: 12, biobankId: 4, populationId: 12, label: '1000 Genomes EUR', assay: 'WGS', release: 'Phase 3', sampleCount: 0 },
+	{ id: 13, biobankId: 4, populationId: 13, label: '1000 Genomes SAS', assay: 'WGS', release: 'Phase 3', sampleCount: 0 }
 ];
+
+export const ONE_KGP_SUPERPOP_POPULATION_ID: Record<OneKgpSuperPopulation, number> = {
+	AFR: 9,
+	AMR: 10,
+	EAS: 11,
+	EUR: 12,
+	SAS: 13
+};
+
+export const ONE_KGP_SUPERPOP_COHORT_ID: Record<OneKgpSuperPopulation, number> = {
+	AFR: 9,
+	AMR: 10,
+	EAS: 11,
+	EUR: 12,
+	SAS: 13
+};
+
+export const ONE_KGP_SUPERPOP_DATASET_ID: Record<OneKgpSuperPopulation, number> = {
+	AFR: 4,
+	AMR: 5,
+	EAS: 6,
+	EUR: 7,
+	SAS: 8
+};
+
+export const POPULATION_COUNTRY_MAPPINGS: PopulationCountryMapping[] = ONE_KGP_POPULATIONS.map((p, i) => ({
+	id: i + 1,
+	populationId: ONE_KGP_SUPERPOP_POPULATION_ID[p.superPopulation],
+	country: p.collectionCountry,
+	countryCode: p.collectionCountryCode,
+	regionGroup: p.regionGroup,
+	subpopulationCode: p.code,
+	subpopulationName: p.name,
+	sampleCount: p.dnaSamples
+}));
 
 // carigenetics source file basename -> cohort id
 export const CARI_FILE_COHORT: Record<string, number> = {
@@ -140,6 +204,81 @@ export const DATASETS: Dataset[] = [
 			assay: 'WGS',
 			genomeBuild: 'GRCh38',
 			release: '2024',
+			showGenotypeCounts: true
+		}
+	},
+	{
+		id: 4,
+		biobankId: 4,
+		slug: '1kgp-afr',
+		cohortIds: [9],
+		metadata: {
+			title: '1KGP-AFR',
+			description: 'African super-population allele frequencies for BioVault tracked loci.',
+			assay: 'WGS',
+			genomeBuild: 'GRCh38',
+			release: 'Phase 3',
+			superPopulation: 'AFR',
+			showGenotypeCounts: true
+		}
+	},
+	{
+		id: 5,
+		biobankId: 4,
+		slug: '1kgp-amr',
+		cohortIds: [10],
+		metadata: {
+			title: '1KGP-AMR',
+			description: 'Admixed American super-population allele frequencies for BioVault tracked loci.',
+			assay: 'WGS',
+			genomeBuild: 'GRCh38',
+			release: 'Phase 3',
+			superPopulation: 'AMR',
+			showGenotypeCounts: true
+		}
+	},
+	{
+		id: 6,
+		biobankId: 4,
+		slug: '1kgp-eas',
+		cohortIds: [11],
+		metadata: {
+			title: '1KGP-EAS',
+			description: 'East Asian super-population allele frequencies for BioVault tracked loci.',
+			assay: 'WGS',
+			genomeBuild: 'GRCh38',
+			release: 'Phase 3',
+			superPopulation: 'EAS',
+			showGenotypeCounts: true
+		}
+	},
+	{
+		id: 7,
+		biobankId: 4,
+		slug: '1kgp-eur',
+		cohortIds: [12],
+		metadata: {
+			title: '1KGP-EUR',
+			description: 'European super-population allele frequencies for BioVault tracked loci.',
+			assay: 'WGS',
+			genomeBuild: 'GRCh38',
+			release: 'Phase 3',
+			superPopulation: 'EUR',
+			showGenotypeCounts: true
+		}
+	},
+	{
+		id: 8,
+		biobankId: 4,
+		slug: '1kgp-sas',
+		cohortIds: [13],
+		metadata: {
+			title: '1KGP-SAS',
+			description: 'South Asian super-population allele frequencies for BioVault tracked loci.',
+			assay: 'WGS',
+			genomeBuild: 'GRCh38',
+			release: 'Phase 3',
+			superPopulation: 'SAS',
 			showGenotypeCounts: true
 		}
 	}

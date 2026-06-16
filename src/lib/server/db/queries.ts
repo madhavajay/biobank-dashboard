@@ -1,6 +1,7 @@
 // Engine query layer — runs directly on the D1 binding for predictable analytics.
 import { CODE_CHROM, REFGET_SQ } from './chroms';
 import { publicVariantId } from '$lib/variant-id';
+import { ALLELE_COUNT_REPORTING_THRESHOLD, alleleFrequencyUpperBound, isAlleleCountMasked, isGenotypeMasked } from '$lib/privacy';
 
 export interface FreqCell {
 	cohortId: number;
@@ -9,9 +10,13 @@ export interface FreqCell {
 	countryCode: string;
 	biobankId: number;
 	biobankSlug: string;
-	af: number;
-	ac: number;
+	af: number | null;
+	ac: number | null;
 	an: number;
+	acMasked: boolean;
+	acUpperBound: number | null;
+	afUpperBound: number | null;
+	genotypeMasked: boolean;
 	nHomo: number | null;
 	nHetero: number | null;
 	nHomoRef: number | null;
@@ -28,6 +33,10 @@ export interface VariantRow {
 	vrsDigest: string | null;
 	posHg19: number | null;
 	lifted: number;
+	vepLabel: string | null;
+	vepImpact: string | null;
+	hgvsConsequence: string | null;
+	vepHasMultipleConsequences: boolean;
 	genes: GeneHit[];
 	frequencies: FreqCell[];
 }
@@ -66,6 +75,8 @@ export interface SearchParams {
 	afMax?: number;
 	acMin?: number;
 	acMax?: number;
+	vepImpacts?: string[];
+	vepConsequences?: string[];
 	vrs?: string;
 	cohorts?: number[]; // restrict to these cohort/population ids (display + existence)
 	cohortMatch?: 'any' | 'all';
@@ -75,8 +86,19 @@ export interface SearchParams {
 	// in ANY ('any') or ALL ('all') of them.
 	biobanks?: string[];
 	match?: 'any' | 'all';
-	sort?: 'variant' | 'rsid' | 'maxaf' | 'vrs';
+	sort?: 'variant' | 'rsid' | 'gene' | 'maxaf' | 'vrs';
 	dir?: 'asc' | 'desc';
+	skipTotal?: boolean;
+	totalOverride?: number;
+}
+
+const VALID_VEP_IMPACTS = new Set(['HIGH', 'MODERATE', 'LOW', 'MODIFIER']);
+
+function normalizeHgvsSearch(raw: string): string | null {
+	const s = raw.trim();
+	if (!s) return null;
+	const suffix = s.includes(':') ? s.slice(s.lastIndexOf(':') + 1) : s;
+	return /^(?:p|c|n|m|r)\.[A-Za-z0-9_*?>=<+\-[\]();]+$/i.test(suffix) ? suffix : null;
 }
 
 // A single search term -> a variant-matching SQL condition. Terms can be an rsID,
@@ -84,6 +106,8 @@ export interface SearchParams {
 function parseTerm(raw: string): { sql: string; args: unknown[] } | null {
 	const s = raw.trim().replace(/,/g, ''); // tolerate thousands separators: 44,903,787
 	if (!s) return null;
+	const hgvs = normalizeHgvsSearch(s);
+	if (hgvs) return { sql: 'v.hgvs_consequence=?', args: [hgvs] };
 	let m = /^rs(\d+)$/i.exec(s);
 	if (m) return { sql: 'v.rsid=?', args: [Number(m[1])] };
 	m = /^(?:ga4gh:VA\.)?([A-Za-z0-9_-]{32})$/.exec(s);
@@ -231,6 +255,67 @@ function chromToCode(raw: string): number | null {
 	return entry ? Number(entry[0]) : null;
 }
 
+function publicCellFromCached(f: any): FreqCell {
+	if ('acMasked' in f || 'afUpperBound' in f || f.publicAc !== undefined || f.public_ac !== undefined) {
+		const acMasked = Boolean(f.acMasked ?? f.ac_masked);
+		const genotypeMasked = Boolean(f.genotypeMasked ?? f.genotype_masked);
+		return {
+			...f,
+			af: acMasked ? null : (f.publicAf ?? f.public_af ?? f.af ?? null),
+			ac: acMasked ? null : (f.publicAc ?? f.public_ac ?? f.ac ?? null),
+			an: f.an,
+			acMasked,
+			acUpperBound: f.acUpperBound ?? f.ac_upper_bound ?? (acMasked ? ALLELE_COUNT_REPORTING_THRESHOLD : null),
+			afUpperBound: f.afUpperBound ?? f.af_upper_bound ?? (acMasked ? alleleFrequencyUpperBound(f.an) : null),
+			genotypeMasked,
+			nHomo: genotypeMasked ? null : (f.publicNHomo ?? f.public_n_homo ?? f.nHomo ?? null),
+			nHetero: genotypeMasked ? null : (f.publicNHetero ?? f.public_n_hetero ?? f.nHetero ?? null),
+			nHomoRef: genotypeMasked ? null : (f.publicNHomoRef ?? f.public_n_homo_ref ?? f.nHomoRef ?? null)
+		};
+	}
+
+	const acMasked = isAlleleCountMasked(f.ac);
+	const genotypeMasked = isGenotypeMasked(f.nHetero ?? f.n_hetero, f.nHomo ?? f.n_homo, f.nHomoRef ?? f.n_homo_ref);
+	return {
+		...f,
+		af: acMasked ? null : f.af,
+		ac: acMasked ? null : f.ac,
+		an: f.an,
+		acMasked,
+		acUpperBound: acMasked ? ALLELE_COUNT_REPORTING_THRESHOLD : null,
+		afUpperBound: acMasked ? alleleFrequencyUpperBound(f.an) : null,
+		genotypeMasked,
+		nHomo: genotypeMasked ? null : (f.nHomo ?? f.n_homo ?? null),
+		nHetero: genotypeMasked ? null : (f.nHetero ?? f.n_hetero ?? null),
+		nHomoRef: genotypeMasked ? null : (f.nHomoRef ?? f.n_homo_ref ?? null)
+	};
+}
+
+function freqCellFromDb(f: any): FreqCell {
+	return {
+		cohortId: f.cohort_id,
+		cohortLabel: f.cohort_label,
+		population: f.population,
+		countryCode: f.country_code,
+		biobankId: f.biobank_id,
+		biobankSlug: f.biobank_slug,
+		af: f.public_af,
+		ac: f.public_ac,
+		an: f.an,
+		acMasked: Boolean(f.ac_masked),
+		acUpperBound: f.ac_upper_bound,
+		afUpperBound: f.af_upper_bound,
+		genotypeMasked: Boolean(f.genotype_masked),
+		nHomo: f.public_n_homo,
+		nHetero: f.public_n_hetero,
+		nHomoRef: f.public_n_homo_ref
+	};
+}
+
+export function sanitizeVariantRowsForPublic<T extends { frequencies?: any[] }>(rows: T[]): T[] {
+	return rows.map((row) => ({ ...row, frequencies: (row.frequencies ?? []).map(publicCellFromCached) }));
+}
+
 export async function searchVariants(
 	db: D1Database,
 	scopeSlug: string | null,
@@ -243,9 +328,20 @@ export async function searchVariants(
 	// requested slugs (empty => all biobanks). `match` = ANY vs ALL of the set.
 	const requested = scopeSlug ? [scopeSlug] : params.biobanks ?? [];
 	const biobankIds = requested.length ? await biobankIdsForSlugs(db, requested) : [];
+	if (scopeSlug && !biobankIds.length) return { rows: [], total: 0 };
 	const match = params.match === 'all' ? 'all' : 'any';
 	const cohortIds = params.cohorts ?? [];
 	const cohortMatch = params.cohortMatch === 'all' ? 'all' : 'any';
+	const hasVariantSideFilter = Boolean(
+		params.q?.trim() ||
+			params.gene?.trim() ||
+			params.chrom ||
+			params.posMin != null ||
+			params.posMax != null ||
+			params.rsid != null ||
+			params.vepImpacts?.length ||
+			params.vepConsequences?.length
+	);
 
 	const where: string[] = [];
 	const args: unknown[] = [];
@@ -283,6 +379,16 @@ export async function searchVariants(
 		where.push('v.rsid=?');
 		args.push(params.rsid);
 	}
+	const vepImpacts = [...new Set((params.vepImpacts ?? []).map((v) => v.trim().toUpperCase()).filter((v) => VALID_VEP_IMPACTS.has(v)))];
+	if (vepImpacts.length) {
+		where.push(`v.vep_impact IN (${vepImpacts.map(() => '?').join(',')})`);
+		args.push(...vepImpacts);
+	}
+	const vepConsequences = [...new Set((params.vepConsequences ?? []).map((v) => v.trim()).filter(Boolean))];
+	if (vepConsequences.length) {
+		where.push(`v.vep_label IN (${vepConsequences.map(() => '?').join(',')})`);
+		args.push(...vepConsequences);
+	}
 
 	// af/count-range fragment reused inside each frequency EXISTS clause.
 	// Always require the alt allele to be actually OBSERVED (ac>0): never surface
@@ -292,36 +398,77 @@ export async function searchVariants(
 	const baseRangeArgs: unknown[] = [];
 	const range: string[] = [...baseRange];
 	const rangeArgs: unknown[] = [...baseRangeArgs];
+	const hasFrequencyRange = params.afMin != null || params.afMax != null || params.acMin != null || params.acMax != null;
+	if (hasFrequencyRange) {
+		baseRange.push('f.public_ac IS NOT NULL');
+		range.push('f.public_ac IS NOT NULL');
+	}
 	if (cohortIds.length && cohortMatch !== 'all') {
 		range.push(`f.cohort_id IN (${cohortIds.map(() => '?').join(',')})`);
 		rangeArgs.push(...cohortIds);
 	}
 	if (params.afMin != null) {
-		baseRange.push('f.af>=?');
+		baseRange.push('f.public_af>=?');
 		baseRangeArgs.push(params.afMin);
-		range.push('f.af>=?');
+		range.push('f.public_af>=?');
 		rangeArgs.push(params.afMin);
 	}
 	if (params.afMax != null) {
-		baseRange.push('f.af<=?');
+		baseRange.push('f.public_af<=?');
 		baseRangeArgs.push(params.afMax);
-		range.push('f.af<=?');
+		range.push('f.public_af<=?');
 		rangeArgs.push(params.afMax);
 	}
 	if (params.acMin != null) {
-		baseRange.push('f.ac>=?');
+		baseRange.push('f.public_ac>=?');
 		baseRangeArgs.push(params.acMin);
-		range.push('f.ac>=?');
+		range.push('f.public_ac>=?');
 		rangeArgs.push(params.acMin);
 	}
 	if (params.acMax != null) {
-		baseRange.push('f.ac<=?');
+		baseRange.push('f.public_ac<=?');
 		baseRangeArgs.push(params.acMax);
-		range.push('f.ac<=?');
+		range.push('f.public_ac<=?');
 		rangeArgs.push(params.acMax);
 	}
 	const rangeSql = range.length ? ' AND ' + range.join(' AND ') : '';
 	const baseRangeSql = baseRange.length ? ' AND ' + baseRange.join(' AND ') : '';
+
+	function frequencyTotalSql(): { sql: string; args: unknown[] } | null {
+		if (hasVariantSideFilter) return null;
+		const sets: { sql: string; args: unknown[] }[] = [];
+		const baseWhere = [...baseRange];
+		const baseArgs = [...baseRangeArgs];
+		if (biobankIds.length) {
+			baseWhere.push(`f.biobank_id IN (${biobankIds.map(() => '?').join(',')})`);
+			baseArgs.push(...biobankIds);
+		}
+		if (cohortIds.length && cohortMatch !== 'all') {
+			baseWhere.push(`f.cohort_id IN (${cohortIds.map(() => '?').join(',')})`);
+			baseArgs.push(...cohortIds);
+		}
+		const having = biobankIds.length && match === 'all' ? ' HAVING COUNT(DISTINCT f.biobank_id)=?' : '';
+		const havingArgs = having ? [biobankIds.length] : [];
+		const needsBaseSet = biobankIds.length > 0 || cohortMatch !== 'all' || cohortIds.length === 0;
+		if (needsBaseSet) {
+			sets.push({
+				sql: `SELECT f.variant_id FROM frequencies f WHERE ${baseWhere.join(' AND ')} GROUP BY f.variant_id${having}`,
+				args: [...baseArgs, ...havingArgs]
+			});
+		}
+		if (cohortIds.length && cohortMatch === 'all') {
+			for (const cohortId of cohortIds) {
+				sets.push({
+					sql: `SELECT f.variant_id FROM frequencies f WHERE f.cohort_id=?${baseRangeSql}`,
+					args: [cohortId, ...baseRangeArgs]
+				});
+			}
+		}
+		return {
+			sql: `SELECT COUNT(*) n FROM (${sets.map((set) => set.sql).join(' INTERSECT ')})`,
+			args: sets.flatMap((set) => set.args)
+		};
+	}
 
 	if (biobankIds.length === 0) {
 		if (range.length) {
@@ -355,23 +502,53 @@ export async function searchVariants(
 	let orderExpr: string;
 	if (params.sort === 'rsid') orderExpr = `v.rsid ${dir}`;
 	else if (params.sort === 'vrs') orderExpr = `v.vrs_digest ${dir}`;
+	else if (params.sort === 'gene') {
+		const geneExpr = `(SELECT MIN(g.symbol_norm) FROM genes g WHERE g.chrom=v.chrom AND v.pos BETWEEN g.start AND g.end)`;
+		orderExpr = `CASE WHEN ${geneExpr} IS NULL THEN 1 ELSE 0 END ASC, ${geneExpr} ${dir}`;
+	}
 	else if (params.sort === 'maxaf') {
 		const bf = biobankIds.length ? `AND f3.biobank_id IN (${biobankIds.map(() => '?').join(',')})` : '';
-		orderExpr = `(SELECT MAX(f3.af) FROM frequencies f3 WHERE f3.variant_id=v.id ${bf}) ${dir}`;
+		orderExpr = `(SELECT MAX(f3.public_af) FROM frequencies f3 WHERE f3.variant_id=v.id ${bf}) ${dir}`;
 		if (biobankIds.length) orderArgs.push(...biobankIds);
 	} else orderExpr = `v.chrom ${dir}, v.pos ${dir}`;
 	const orderSql = `ORDER BY ${orderExpr}, v.chrom, v.pos`;
 
-	const totalRow = await db
-		.prepare(`SELECT COUNT(*) n FROM variants v ${whereSql}`)
-		.bind(...args)
-		.first<{ n: number }>();
-	const total = totalRow?.n ?? 0;
+	let total = params.totalOverride ?? 0;
+	if (!params.skipTotal && params.totalOverride == null) {
+		const frequencyTotal = frequencyTotalSql();
+		const totalRow = frequencyTotal
+			? await db.prepare(frequencyTotal.sql).bind(...frequencyTotal.args).first<{ n: number }>()
+			: await db
+					.prepare(`SELECT COUNT(*) n FROM variants v ${whereSql}`)
+					.bind(...args)
+					.first<{ n: number }>();
+		total = totalRow?.n ?? 0;
+	}
 
-	const vrows = await db
-		.prepare(`SELECT * FROM variants v ${whereSql} ${orderSql} LIMIT ? OFFSET ?`)
-		.bind(...args, ...orderArgs, limit, offset)
-		.all<any>();
+	const vrows =
+		params.sort === 'gene'
+			? await db
+					.prepare(
+						`WITH gene_hits AS (
+							SELECT v.id, MIN(g.symbol_norm) gene_sort
+							FROM genes g
+							JOIN variants v INDEXED BY variants_chrom_pos_idx ON v.chrom=g.chrom AND v.pos BETWEEN g.start AND g.end
+							${whereSql}
+							GROUP BY v.id
+							ORDER BY gene_sort ${dir}, v.chrom, v.pos
+							LIMIT ? OFFSET ?
+						)
+						SELECT v.*
+						FROM variants v
+						JOIN gene_hits h ON h.id=v.id
+						ORDER BY h.gene_sort ${dir}, v.chrom, v.pos`
+					)
+					.bind(...args, limit, offset)
+					.all<any>()
+			: await db
+					.prepare(`SELECT * FROM variants v ${whereSql} ${orderSql} LIMIT ? OFFSET ?`)
+					.bind(...args, ...orderArgs, limit, offset)
+					.all<any>();
 
 	const ids = vrows.results.map((r) => r.id);
 	if (ids.length === 0) return { rows: [], total };
@@ -381,13 +558,15 @@ export async function searchVariants(
 	const fcohort = cohortIds.length ? `AND f.cohort_id IN (${cohortIds.map(() => '?').join(',')})` : '';
 	const freqSql = `
 		SELECT f.variant_id, f.cohort_id, c.label cohort_label, c.biobank_id, b.slug biobank_slug,
-		       p.name population, p.country_code, f.af, f.ac, f.an, f.n_homo, f.n_hetero, f.n_homo_ref
+		       p.name population, p.country_code,
+		       f.public_af, f.public_ac, f.an, f.ac_masked, f.ac_upper_bound, f.af_upper_bound,
+		       f.genotype_masked, f.public_n_homo, f.public_n_hetero, f.public_n_homo_ref
 		FROM frequencies f
 		JOIN cohorts c ON c.id=f.cohort_id
 		JOIN populations p ON p.id=c.population_id
 		JOIN biobanks b ON b.id=f.biobank_id
 		WHERE f.variant_id IN (${placeholders}) ${fbiobank} ${fcohort}
-		ORDER BY f.af DESC`;
+		ORDER BY COALESCE(f.public_af, f.af_upper_bound, 0) DESC, p.name`;
 	const frows = await db.prepare(freqSql).bind(...ids, ...biobankIds, ...cohortIds).all<any>();
 	const growSql = `
 		SELECT v.id variant_id, g.ensembl_id, g.symbol, g.gene_type, g.start, g.end, g.strand
@@ -399,20 +578,7 @@ export async function searchVariants(
 
 	const byVariant = new Map<number, FreqCell[]>();
 	for (const f of frows.results) {
-		const cell: FreqCell = {
-			cohortId: f.cohort_id,
-			cohortLabel: f.cohort_label,
-			population: f.population,
-			countryCode: f.country_code,
-			biobankId: f.biobank_id,
-			biobankSlug: f.biobank_slug,
-			af: f.af,
-			ac: f.ac,
-			an: f.an,
-			nHomo: f.n_homo,
-			nHetero: f.n_hetero,
-			nHomoRef: f.n_homo_ref
-		};
+		const cell = freqCellFromDb(f);
 		const arr = byVariant.get(f.variant_id) ?? [];
 		arr.push(cell);
 		byVariant.set(f.variant_id, arr);
@@ -442,6 +608,10 @@ export async function searchVariants(
 		vrsDigest: v.vrs_digest,
 		posHg19: v.pos_hg19,
 		lifted: v.lifted,
+		vepLabel: v.vep_label,
+		vepImpact: v.vep_impact,
+		hgvsConsequence: v.hgvs_consequence,
+		vepHasMultipleConsequences: Boolean(v.vep_has_multiple_consequences),
 		genes: genesByVariant.get(v.id) ?? [],
 		frequencies: byVariant.get(v.id) ?? []
 	}));
@@ -454,12 +624,14 @@ export async function getVariant(db: D1Database, id: number): Promise<VariantRow
 	const frows = await db
 		.prepare(
 			`SELECT f.cohort_id, c.label cohort_label, c.biobank_id, b.slug biobank_slug,
-			        p.name population, p.country_code, f.af, f.ac, f.an, f.n_homo, f.n_hetero, f.n_homo_ref
+			        p.name population, p.country_code,
+			        f.public_af, f.public_ac, f.an, f.ac_masked, f.ac_upper_bound, f.af_upper_bound,
+			        f.genotype_masked, f.public_n_homo, f.public_n_hetero, f.public_n_homo_ref
 			 FROM frequencies f
 			 JOIN cohorts c ON c.id=f.cohort_id
 			 JOIN populations p ON p.id=c.population_id
 			 JOIN biobanks b ON b.id=f.biobank_id
-			 WHERE f.variant_id=? ORDER BY f.af DESC`
+			 WHERE f.variant_id=? ORDER BY COALESCE(f.public_af, f.af_upper_bound, 0) DESC, p.name`
 		)
 		.bind(id)
 		.all<any>();
@@ -475,21 +647,12 @@ export async function getVariant(db: D1Database, id: number): Promise<VariantRow
 		vrsDigest: v.vrs_digest,
 		posHg19: v.pos_hg19,
 		lifted: v.lifted,
+		vepLabel: v.vep_label,
+		vepImpact: v.vep_impact,
+		hgvsConsequence: v.hgvs_consequence,
+		vepHasMultipleConsequences: Boolean(v.vep_has_multiple_consequences),
 		genes: withGenes.genes,
-		frequencies: frows.results.map((f) => ({
-			cohortId: f.cohort_id,
-			cohortLabel: f.cohort_label,
-			population: f.population,
-			countryCode: f.country_code,
-			biobankId: f.biobank_id,
-			biobankSlug: f.biobank_slug,
-			af: f.af,
-			ac: f.ac,
-			an: f.an,
-			nHomo: f.n_homo,
-			nHetero: f.n_hetero,
-			nHomoRef: f.n_homo_ref
-		}))
+		frequencies: frows.results.map(freqCellFromDb)
 	};
 }
 
@@ -500,7 +663,7 @@ function scopedVariantExistsSql(scopeSlug: string | null): { sql: string; args: 
 			SELECT 1
 			FROM frequencies f
 			JOIN biobanks b ON b.id=f.biobank_id
-			WHERE f.variant_id=v.id AND b.slug=?
+			WHERE f.variant_id=v.id AND b.slug=? AND f.ac > 0
 		)`,
 		args: [scopeSlug]
 	};
@@ -523,7 +686,7 @@ export async function resolveVariantIdentifier(db: D1Database, raw: string, scop
 	const token = decodeURIComponent(raw).trim();
 	if (!token) return null;
 
-	if (/^\d+$/.test(token)) return getVariant(db, Number(token));
+	if (/^\d+$/.test(token)) return getVariantBySql(db, 'v.id=?', [Number(token)], scopeSlug);
 
 	let m = /^rs(\d+)$/i.exec(token);
 	if (m) return getVariantBySql(db, 'v.rsid=?', [Number(m[1])], scopeSlug);
@@ -557,13 +720,59 @@ export interface BiobankOverview {
 		sampleCount: number;
 		cohortId: number;
 		variantCount: number;
+		countryMappings?: Array<{
+			country: string;
+			countryCode: string;
+			regionGroup: string;
+			subpopulationCode: string;
+			subpopulationName: string;
+			sampleCount: number;
+		}>;
 	}>;
 	totalSamples: number;
 	totalVariants: number;
 }
 
+export interface ExploreFilterOptions {
+	options: { slug: string; name: string }[];
+	populations: { cohortId: number; name: string; biobankSlug: string; biobankName: string }[];
+}
+
+export async function exploreFilterOptions(db: D1Database, scopeSlug: string | null): Promise<ExploreFilterOptions> {
+	const scopeId = await biobankIdForSlug(db, scopeSlug);
+	if (scopeSlug && !scopeId) return { options: [], populations: [] };
+	const bindArgs = scopeId ? [scopeId] : [];
+	const bWhere = scopeId ? 'WHERE b.id=?' : '';
+	const bankRows = await db
+		.prepare(`SELECT b.id, b.slug, b.name FROM biobanks b ${bWhere} ORDER BY b.id`)
+		.bind(...bindArgs)
+		.all<any>();
+	const popRows = await db
+		.prepare(
+			`SELECT c.id cohort_id, p.name, b.slug biobank_slug, b.name biobank_name
+			 FROM cohorts c
+			 JOIN populations p ON p.id=c.population_id
+			 JOIN biobanks b ON b.id=c.biobank_id
+			 ${scopeId ? 'WHERE b.id=?' : ''}
+			 ORDER BY b.id, p.name`
+		)
+		.bind(...bindArgs)
+		.all<any>();
+	const populations = popRows.results.map((p) => ({
+		cohortId: p.cohort_id,
+		name: p.name,
+		biobankSlug: p.biobank_slug,
+		biobankName: p.biobank_name
+	}));
+	return {
+		options: bankRows.results.map((b) => ({ slug: b.slug, name: b.name })),
+		populations: scopeSlug && populations.length <= 1 ? [] : populations
+	};
+}
+
 export async function biobanksOverview(db: D1Database, scopeSlug: string | null): Promise<BiobankOverview[]> {
 	const scopeId = await biobankIdForSlug(db, scopeSlug);
+	if (scopeSlug && !scopeId) return [];
 	const bWhere = scopeId ? 'WHERE id=?' : '';
 	const banks = await db.prepare(`SELECT * FROM biobanks ${bWhere} ORDER BY id`).bind(...(scopeId ? [scopeId] : [])).all<any>();
 
@@ -580,6 +789,38 @@ export async function biobanksOverview(db: D1Database, scopeSlug: string | null)
 			)
 			.bind(b.id)
 			.all<any>();
+		let mappingRows: any[] = [];
+		try {
+			const populationIds = pops.results.map((p) => p.id);
+			if (populationIds.length) {
+				mappingRows = (
+					await db
+						.prepare(
+							`SELECT population_id, country, country_code, region_group, subpopulation_code, subpopulation_name, sample_count
+							 FROM population_country_mappings
+							 WHERE population_id IN (${populationIds.map(() => '?').join(',')})
+							 ORDER BY population_id, region_group, country, subpopulation_code`
+						)
+						.bind(...populationIds)
+						.all<any>()
+				).results;
+			}
+		} catch {
+			mappingRows = [];
+		}
+		const mappingsByPopulation = new Map<number, any[]>();
+		for (const m of mappingRows) {
+			const list = mappingsByPopulation.get(m.population_id) ?? [];
+			list.push({
+				country: m.country,
+				countryCode: m.country_code,
+				regionGroup: m.region_group,
+				subpopulationCode: m.subpopulation_code,
+				subpopulationName: m.subpopulation_name,
+				sampleCount: m.sample_count
+			});
+			mappingsByPopulation.set(m.population_id, list);
+		}
 		const populations = pops.results.map((p) => ({
 			id: p.id,
 			name: p.name,
@@ -589,7 +830,8 @@ export async function biobanksOverview(db: D1Database, scopeSlug: string | null)
 			lon: p.lon,
 			sampleCount: p.sample_count,
 			cohortId: p.cohort_id,
-			variantCount: p.variant_count
+			variantCount: p.variant_count,
+			countryMappings: mappingsByPopulation.get(p.id) ?? []
 		}));
 		const totalSamples = populations.reduce((s, p) => s + p.sampleCount, 0);
 		const tv = await db
@@ -621,6 +863,7 @@ export interface TenantStats {
 
 export async function tenantStats(db: D1Database, scopeSlug: string | null): Promise<TenantStats> {
 	const id = await biobankIdForSlug(db, scopeSlug);
+	if (scopeSlug && !id) return { variants: 0, common: 0, lowFreq: 0, rare: 0 };
 	const where = id ? 'WHERE biobank_id=?' : '';
 	const args = id ? [id] : [];
 	const r = await db
@@ -630,7 +873,7 @@ export async function tenantStats(db: D1Database, scopeSlug: string | null): Pro
 				SUM(CASE WHEN m>=0.05 THEN 1 ELSE 0 END) common,
 				SUM(CASE WHEN m>=0.01 AND m<0.05 THEN 1 ELSE 0 END) lowFreq,
 				SUM(CASE WHEN m<0.01 THEN 1 ELSE 0 END) rare
-			 FROM (SELECT variant_id, MAX(af) m FROM frequencies ${where} GROUP BY variant_id)`
+			 FROM (SELECT variant_id, MAX(public_af) m FROM frequencies ${where} GROUP BY variant_id HAVING MAX(ac) > 0)`
 		)
 		.bind(...args)
 		.first<any>();
@@ -669,6 +912,7 @@ function safeParse(s: string): Record<string, any> {
 
 export async function getDatasets(db: D1Database, scopeSlug: string | null): Promise<DatasetRow[]> {
 	const scopeId = await biobankIdForSlug(db, scopeSlug);
+	if (scopeSlug && !scopeId) return [];
 	const where = scopeId ? 'WHERE biobank_id=?' : '';
 	const rows = await db
 		.prepare(`SELECT id, slug, biobank_id, metadata FROM datasets ${where} ORDER BY id`)

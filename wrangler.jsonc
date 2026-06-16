@@ -16,7 +16,8 @@
 		{ "pattern": "data.biovault.net", "custom_domain": true },
 		{ "pattern": "bipmed.biovault.net", "custom_domain": true },
 		{ "pattern": "carigenetics.biovault.net", "custom_domain": true },
-		{ "pattern": "pgp-harvard.biovault.net", "custom_domain": true }
+		{ "pattern": "pgp-harvard.biovault.net", "custom_domain": true },
+		{ "pattern": "1kgp.biovault.net", "custom_domain": true }
 		// Enable once these zones are proxied in this Cloudflare account:
 		// { "pattern": "bipmed.org", "custom_domain": true }
 		// { "pattern": "data.carigenetics.com", "custom_domain": true }

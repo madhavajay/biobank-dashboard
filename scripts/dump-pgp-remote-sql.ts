@@ -9,6 +9,7 @@
 import { Database } from 'bun:sqlite';
 import { readdirSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { publicFrequencyValues } from '../src/lib/privacy';
 
 const ROOT = join(import.meta.dir, '..');
 const D1_DIR = join(ROOT, '.wrangler/state/v3/d1/miniflare-D1DatabaseObject');
@@ -74,8 +75,15 @@ flush();
 console.log('PGP frequencies (biobank 3) ...');
 const frows = db.query(`SELECT variant_id,cohort_id,biobank_id,ac,an,af,n_homo,n_hetero,n_homo_ref FROM frequencies WHERE biobank_id=${PGP_BIOBANK} ORDER BY variant_id`).all() as any[];
 emit(
-	'INSERT OR IGNORE INTO frequencies (variant_id,cohort_id,biobank_id,ac,an,af,n_homo,n_hetero,n_homo_ref) VALUES ',
-	frows.map((f) => `(${f.variant_id},${f.cohort_id},${f.biobank_id},${f.ac},${f.an},${f.af},${nQ(f.n_homo)},${nQ(f.n_hetero)},${nQ(f.n_homo_ref)})`)
+	`INSERT OR IGNORE INTO frequencies (
+		variant_id,cohort_id,biobank_id,ac,an,af,n_homo,n_hetero,n_homo_ref,
+		ac_masked,public_ac,public_af,ac_upper_bound,af_upper_bound,
+		genotype_masked,public_n_hetero,public_n_homo,public_n_homo_ref
+	) VALUES `,
+	frows.map((f) => {
+		const p = publicFrequencyValues(f);
+		return `(${f.variant_id},${f.cohort_id},${f.biobank_id},${f.ac},${f.an},${f.af},${nQ(f.n_homo)},${nQ(f.n_hetero)},${nQ(f.n_homo_ref)},${p.acMasked ? 1 : 0},${nQ(p.publicAc)},${nQ(p.publicAf)},${nQ(p.acUpperBound)},${nQ(p.afUpperBound)},${p.genotypeMasked ? 1 : 0},${nQ(p.publicNHetero)},${nQ(p.publicNHomo)},${nQ(p.publicNHomoRef)})`;
+	})
 );
 flush();
 

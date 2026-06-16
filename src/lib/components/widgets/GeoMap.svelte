@@ -11,14 +11,18 @@
 		biobankSlug: string;
 		biobankName: string;
 		cohortId: number;
+		countryMappings?: Array<{ country: string; countryCode?: string; subpopulationCode?: string; subpopulationName?: string }>;
 		color?: string; // choropleth fill (coverage ramp)
+		colorMix?: string[];
 	}
 	interface GeoFeature {
+		id?: string;
 		geometry: {
 			type: 'Polygon' | 'MultiPolygon';
 			coordinates: unknown;
 		};
-		properties?: { name?: string };
+		geometry_name?: string;
+		properties?: { name?: string; NAME?: string; Estado?: string; SIGLA?: string };
 	}
 
 	let {
@@ -31,7 +35,11 @@
 		labelScale = 1,
 		markerScale,
 		hideDotsFor = [],
+		highlightedCountries = [],
+		highlightAllFeatures = false,
+		showFeatureLabels = false,
 		fit = 'meet',
+		backgroundSource = null,
 		source = '/world.geo.json',
 		framed = true,
 		tooltipPlacement = 'top-left',
@@ -48,7 +56,11 @@
 		labelScale?: number;
 		markerScale?: number;
 		hideDotsFor?: string[];
+		highlightedCountries?: string[];
+		highlightAllFeatures?: boolean;
+		showFeatureLabels?: boolean;
 		fit?: 'meet' | 'slice';
+		backgroundSource?: string | null;
 		source?: string;
 		framed?: boolean;
 		tooltipPlacement?: 'top-left' | 'open-water' | 'bottom-left' | 'bottom-right';
@@ -59,7 +71,9 @@
 
 	const W = 1000;
 	const H = 500;
-	let features = $state<{ name: string; d: string }[]>([]);
+	type FeaturePath = { name: string; d: string; label: string; labelX: number; labelY: number };
+	let backgroundFeatures = $state<FeaturePath[]>([]);
+	let features = $state<FeaturePath[]>([]);
 	let hover = $state<{ key: string; label: string; samples: number; variants: number } | null>(null);
 
 	const projX = (lon: number) => ((lon + 180) / 360) * W;
@@ -69,15 +83,75 @@
 		return ring.map(([lon, lat], i) => `${i ? 'L' : 'M'}${projX(lon).toFixed(4)} ${projY(lat).toFixed(4)}`).join('') + 'Z';
 	}
 
+	function collectCoordinates(coords: unknown, out: number[][] = []): number[][] {
+		if (!Array.isArray(coords)) return out;
+		if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+			out.push(coords as number[]);
+			return out;
+		}
+		for (const child of coords) collectCoordinates(child, out);
+		return out;
+	}
+
+	function labelPoint(coords: unknown): [number, number] {
+		const pairs = collectCoordinates(coords);
+		if (!pairs.length) return [W / 2, H / 2];
+		let minX = Infinity;
+		let maxX = -Infinity;
+		let minY = Infinity;
+		let maxY = -Infinity;
+		for (const [lon, lat] of pairs) {
+			const x = projX(lon);
+			const y = projY(lat);
+			minX = Math.min(minX, x);
+			maxX = Math.max(maxX, x);
+			minY = Math.min(minY, y);
+			maxY = Math.max(maxY, y);
+		}
+		return [(minX + maxX) / 2, (minY + maxY) / 2];
+	}
+
+	async function loadFeatures(src: string): Promise<FeaturePath[]> {
+		const geo = (await fetch(src).then((r) => r.json())) as { features: GeoFeature[] };
+		const out: FeaturePath[] = [];
+		for (const f of geo.features) {
+			const g = f.geometry;
+			let d = '';
+			if (g.type === 'Polygon') d = (g.coordinates as number[][][]).map(ringToPath).join('');
+			else if (g.type === 'MultiPolygon') d = (g.coordinates as number[][][][]).map((poly) => poly.map(ringToPath).join('')).join('');
+			const [labelX, labelY] = labelPoint(g.coordinates);
+			if (d)
+				out.push({
+					name: f.properties?.name ?? f.properties?.NAME ?? f.properties?.Estado ?? f.geometry_name ?? f.properties?.SIGLA ?? '',
+					label: f.properties?.SIGLA ?? f.id ?? '',
+					labelX,
+					labelY,
+					d
+				});
+		}
+		return out;
+	}
+
 	// population.country -> geojson feature name
 	const ALIAS: Record<string, string> = {
 		Bahamas: 'The Bahamas',
+		'The Gambia': 'Gambia',
 		'Trinidad and Tobago': 'Trinidad and Tobago',
 		'United States': 'United States of America'
 	};
 	const featureName = (country: string) => ALIAS[country] ?? country;
 
-	const pinByFeature = $derived(new Map(pins.map((p) => [featureName(p.country), p])));
+	const pinByFeature = $derived.by(() => {
+		const entries: Array<[string, Pin]> = [];
+		for (const p of pins) {
+			if (p.country && p.country !== 'Multiple countries') entries.push([featureName(p.country), p]);
+			for (const m of p.countryMappings ?? []) entries.push([featureName(m.country), p]);
+		}
+		return new Map(entries);
+	});
+	const highlightedFeatureNames = $derived(new Set(highlightedCountries.map(featureName)));
+	const firstPin = $derived(pins[0]);
+	const pinForFeature = (name: string) => pinByFeature.get(name) ?? (highlightAllFeatures ? firstPin : undefined);
 	const pinsAsDots = $derived(
 		showDots
 			? (showMatchedDots ? pins : pins.filter((p) => !features.some((f) => f.name === featureName(p.country)))).filter(
@@ -88,17 +162,10 @@
 
 	onMount(async () => {
 		try {
-			const geo = (await fetch(source).then((r) => r.json())) as { features: GeoFeature[] };
-			const out: { name: string; d: string }[] = [];
-			for (const f of geo.features) {
-				const g = f.geometry;
-				let d = '';
-				if (g.type === 'Polygon') d = (g.coordinates as number[][][]).map(ringToPath).join('');
-				else if (g.type === 'MultiPolygon') d = (g.coordinates as number[][][][]).map((poly) => poly.map(ringToPath).join('')).join('');
-				if (d) out.push({ name: f.properties?.name ?? '', d });
-			}
-			features = out;
+			backgroundFeatures = backgroundSource ? await loadFeatures(backgroundSource) : [];
+			features = await loadFeatures(source);
 		} catch {
+			backgroundFeatures = [];
 			features = [];
 		}
 	});
@@ -111,6 +178,16 @@
 	const dotR = $derived(Math.max(2.4, 7 / Math.sqrt(zoom)));
 	const dotScale = $derived(markerScale ?? (showMatchedDots ? 0.68 : 1));
 	const maxSamples = $derived(Math.max(1, ...pins.map((p) => p.sampleCount)));
+	const fillForPin = (p: Pin) => (p.colorMix && p.colorMix.length > 1 ? `url(#pin-mix-${p.cohortId})` : (p.color ?? 'var(--map-pin)'));
+	const gradientStops = (colors: string[]) => {
+		const stops: Array<{ offset: number; color: string }> = [];
+		const step = 100 / colors.length;
+		colors.forEach((color, i) => {
+			stops.push({ offset: i * step, color });
+			stops.push({ offset: (i + 1) * step, color });
+		});
+		return stops;
+	};
 
 	function enter(p: Pin, key: string) {
 		hover = { key, label: p.name, samples: p.sampleCount, variants: p.variantCount };
@@ -171,18 +248,37 @@
 	style="background: color-mix(in oklch, var(--brand-from) 8%, var(--card));"
 >
 	<svg {viewBox} class="block h-full w-full" preserveAspectRatio={`xMidYMid ${fit}`} role="img" aria-label="Biobank map" style="shape-rendering: geometricPrecision;">
+		<defs>
+			{#each pins.filter((p) => p.colorMix && p.colorMix.length > 1) as p}
+				<linearGradient id={`pin-mix-${p.cohortId}`} x1="0%" y1="0%" x2="100%" y2="100%">
+					{#each gradientStops(p.colorMix ?? []) as stop}
+						<stop offset={`${stop.offset}%`} stop-color={stop.color} />
+					{/each}
+				</linearGradient>
+			{/each}
+		</defs>
+
+		{#if backgroundFeatures.length}
+			<g opacity="0.86">
+				{#each backgroundFeatures as feat}
+					<path d={feat.d} fill="var(--map-land)" stroke="color-mix(in oklch, var(--foreground) 16%, transparent)" stroke-width={0.42 / zoom} stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
+				{/each}
+			</g>
+		{/if}
+
 		<g>
 			{#each features as feat}
-				{@const pin = pinByFeature.get(feat.name)}
+				{@const pin = pinForFeature(feat.name)}
+				{@const highlighted = highlightedFeatureNames.has(feat.name)}
 				{#if pin}
 					<path
 						d={feat.d}
 						class="cursor-pointer outline-none focus:outline-none [-webkit-tap-highlight-color:transparent]"
 						role="button"
 						tabindex="0"
-						fill={hover?.key === feat.name ? 'var(--map-pin)' : (pin.color ?? 'color-mix(in oklch, var(--map-pin) 38%, var(--map-land))')}
-						stroke="color-mix(in oklch, var(--map-pin) 54%, transparent)"
-						stroke-width={0.45 / zoom}
+						fill={hover?.key === feat.name || highlighted ? 'var(--map-pin)' : fillForPin(pin)}
+						stroke={highlighted ? 'var(--foreground)' : 'color-mix(in oklch, var(--map-pin) 54%, transparent)'}
+						stroke-width={highlightAllFeatures ? 0.72 : 0.45 / zoom}
 						stroke-linejoin="round"
 						stroke-linecap="round"
 						vector-effect="non-scaling-stroke"
@@ -197,13 +293,35 @@
 			{/each}
 		</g>
 
+		{#if showFeatureLabels}
+			<g class="pointer-events-none select-none">
+				{#each features as feat}
+					{#if feat.label}
+						<text
+							x={feat.labelX}
+							y={feat.labelY}
+							text-anchor="middle"
+							dominant-baseline="central"
+							fill="color-mix(in oklch, var(--foreground) 82%, var(--primary))"
+							stroke="color-mix(in oklch, var(--card) 88%, white)"
+							stroke-width={1.45}
+							vector-effect="non-scaling-stroke"
+							paint-order="stroke"
+							font-size="3.2"
+							font-weight="800"
+						>{feat.label}</text>
+					{/if}
+				{/each}
+			</g>
+		{/if}
+
 		<!-- pins for data locations without a country polygon (small islands) -->
 		<g>
 			{#each pinsAsDots as p}
 				{@const key = `dot:${p.cohortId}`}
 				<g class="cursor-pointer outline-none focus:outline-none [-webkit-tap-highlight-color:transparent]" role="button" tabindex="0" onmouseenter={() => enter(p, key)} onmouseleave={leave} onclick={() => onselect(p)} onkeydown={(e) => e.key === 'Enter' && onselect(p)}>
 					<circle cx={projX(p.lon)} cy={projY(p.lat)} r={(dotR + 2 / zoom) * dotScale * (0.6 + 0.6 * Math.sqrt(p.sampleCount / maxSamples))} fill="var(--map-pin)" opacity={hover?.key === key ? 0.25 : 0.1} />
-					<circle cx={projX(p.lon)} cy={projY(p.lat)} r={dotR * dotScale * (0.7 + 0.6 * Math.sqrt(p.sampleCount / maxSamples))} fill={p.color ?? 'var(--map-pin)'} opacity="0.9" stroke="white" stroke-width={0.7 / zoom} />
+					<circle cx={projX(p.lon)} cy={projY(p.lat)} r={dotR * dotScale * (0.7 + 0.6 * Math.sqrt(p.sampleCount / maxSamples))} fill={fillForPin(p)} opacity="0.92" stroke="white" stroke-width={0.7 / zoom} />
 				</g>
 			{/each}
 		</g>

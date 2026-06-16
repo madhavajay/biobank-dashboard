@@ -5,20 +5,58 @@
 	let { data } = $props();
 	const tenant = $derived(data.tenant);
 	const banks = $derived(data.biobanks);
+	const superpopColors: Record<string, string> = {
+		AFR: '#2563eb',
+		AMR: '#f97316',
+		EAS: '#dc2626',
+		EUR: '#7c3aed',
+		SAS: '#16a34a'
+	};
+	const regionColors: Record<string, string> = {
+		'North America': '#2563eb',
+		Caribbean: '#06b6d4',
+		'West Africa': '#10b981',
+		'East Africa': '#84cc16',
+		Europe: '#7c3aed',
+		'European diaspora': '#a855f7',
+		'South America': '#f97316',
+		'Latin American diaspora': '#fb923c',
+		'East Asia': '#dc2626',
+		'Southeast Asia': '#ef4444',
+		'South Asia': '#16a34a',
+		'South Asian diaspora': '#22c55e'
+	};
+	const colorMixFor = (p: any) =>
+		[...new Set((p.countryMappings ?? []).map((m: any) => regionColors[m.regionGroup]).filter(Boolean))];
+	const mixedBackground = (p: any) => {
+		const colors = p.colorMix?.length > 1 ? p.colorMix : [p.color ?? 'var(--primary)'];
+		const step = 100 / colors.length;
+		const stops = colors.flatMap((color: string, i: number) => [`${color} ${i * step}%`, `${color} ${(i + 1) * step}%`]);
+		return `linear-gradient(135deg, ${stops.join(',')})`;
+	};
 
 	const pins = $derived(
 		banks.flatMap((b: any) =>
-			b.populations.map((p: any) => ({ ...p, biobankSlug: b.slug, biobankName: b.name }))
+			b.populations.map((p: any) => ({
+				...p,
+				biobankSlug: b.slug,
+				biobankName: b.name,
+				color: b.slug === '1kgp' ? (superpopColors[p.name] ?? undefined) : undefined,
+				colorMix: b.slug === '1kgp' ? colorMixFor(p) : undefined
+			}))
 		)
 	);
 	const sortedPins = $derived([...pins].sort((a: any, b: any) => a.name.localeCompare(b.name)));
 	const caribbeanPins = $derived(pins.filter((p: any) => p.biobankSlug === 'carigenetics' && p.name !== 'Bermuda'));
 	const bermudaPins = $derived(pins.filter((p: any) => p.biobankSlug === 'carigenetics' && p.name === 'Bermuda'));
+	const oneKgpPins = $derived(pins.filter((p: any) => p.biobankSlug === '1kgp'));
+	let activeSuperpop = $state<any | null>(null);
+	const activeCountryNames = $derived(activeSuperpop?.countryMappings?.map((m: any) => m.country) ?? []);
 	const caribbeanSampleTotal = $derived(
 		[...caribbeanPins, ...bermudaPins].reduce((s: number, p: any) => s + p.sampleCount, 0)
 	);
 	const totalSamples = $derived(pins.reduce((s: number, p: any) => s + p.sampleCount, 0));
-	const totalVariants = $derived(banks.reduce((s: number, b: any) => s + b.totalVariants, 0));
+	const totalVariants = $derived(data.totals.variants);
 	const assays = $derived([...new Set(data.datasets.map((d: any) => d.assay).filter(Boolean))]);
 	const vc = $derived(data.variantClasses);
 
@@ -27,7 +65,7 @@
 	const exploreLink = (q = '') =>
 		`/explore${q ? `?q=${encodeURIComponent(q)}` : ''}${data.forceTenant ? `${q ? '&' : '?'}tenant=${data.forceTenant}` : ''}`;
 	const fmt = (n: number) => n.toLocaleString();
-	const tryQueries = ['BRCA1', 'rs1050828', 'G6PD', 'chr17:43078520'];
+	const tryQueries = ['BRCA1', 'rs1050828', 'p.Arg124His', 'G6PD', 'chr17:43078520'];
 	const sampleTotalFor = (slug: string) =>
 		pins.filter((p: any) => p.biobankSlug === slug).reduce((s: number, p: any) => s + p.sampleCount, 0);
 
@@ -36,6 +74,14 @@
 		{ label: 'Caribbean', slug: 'carigenetics', class: 'left-[29%] top-[57%]' },
 		{ label: 'Brazil', slug: 'bipmed', class: 'left-[38%] top-[66%]' }
 	];
+	const superpopLayout: Record<string, string> = {
+		AFR: 'left-[55%] top-[46%]',
+		AMR: 'left-[29%] top-[49%]',
+		EAS: 'left-[81%] top-[33%]',
+		EUR: 'left-[52%] top-[23%]',
+		SAS: 'left-[71%] top-[38%]'
+	};
+	const superpopCountryCount = (p: any) => new Set((p.countryMappings ?? []).map((m: any) => m.countryCode)).size;
 
 	const islandLayouts: Record<string, { left: number; top: number; anchorX: number; anchorY: number }> = {
 		Bahamas: { left: 45, top: 24, anchorX: 31, anchorY: 43 },
@@ -66,8 +112,8 @@
 <form method="GET" action="/explore" class="mb-6 flex items-center gap-2 rounded-[var(--radius)] border bg-card p-2.5 shadow-sm">
 	{#if data.forceTenant}<input type="hidden" name="tenant" value={data.forceTenant} />{/if}
 	<svg viewBox="0 0 24 24" class="ml-2 size-5 text-muted-foreground" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
-	<input name="q" placeholder="Search variants, genes, rsIDs, regions, or VRS IDs" class="flex-1 bg-transparent px-1 py-2 text-sm outline-none" />
-	<button class="brand-gradient group inline-flex items-center gap-1.5 rounded-md px-5 py-2 text-sm font-semibold text-white transition-all duration-200 hover:scale-105 hover:shadow-lg active:scale-95">
+	<input name="q" placeholder="Search variants, genes, rsIDs, regions, or HGVS consequences" class="flex-1 bg-transparent px-1 py-2 text-sm outline-none" />
+	<button class="brand-gradient group inline-flex cursor-pointer items-center gap-1.5 rounded-md px-5 py-2 text-sm font-semibold text-white transition-all duration-200 hover:scale-105 hover:shadow-lg active:scale-95">
 		Explore
 		<span class="transition-transform duration-200 group-hover:translate-x-1">-></span>
 	</button>
@@ -97,8 +143,10 @@
 				zoom={tenant.map.zoom}
 				showMatchedDots
 				hideDotsFor={['pgp-harvard', 'bipmed']}
+				highlightedCountries={activeCountryNames}
 				framed={false}
 				tooltipPlacement="bottom-left"
+				onhover={(p) => (activeSuperpop = p?.biobankSlug === '1kgp' ? p : null)}
 				onselect={(p) => (location.href = go(p.biobankSlug))}
 			/>
 
@@ -109,6 +157,22 @@
 				>
 					<span>{item.label}</span>
 					<span class="ml-1 font-mono text-[10px] text-muted-foreground">{fmt(item.slug === 'carigenetics' ? caribbeanSampleTotal : sampleTotalFor(item.slug))}</span>
+				</a>
+			{/each}
+
+			{#each oneKgpPins as p}
+				<a
+					href={go('1kgp')}
+					class={`absolute z-30 rounded-md border bg-card/95 px-2.5 py-1.5 text-xs font-bold shadow-sm backdrop-blur hover:bg-muted ${superpopLayout[p.name] ?? 'left-[50%] top-[50%]'}`}
+					style={`border-color:${p.color}; background:${mixedBackground(p)}; color:white; text-shadow:0 1px 1px rgb(0 0 0 / 0.35)`}
+					onmouseenter={() => (activeSuperpop = p)}
+					onmouseleave={() => (activeSuperpop = null)}
+					onfocus={() => (activeSuperpop = p)}
+					onblur={() => (activeSuperpop = null)}
+				>
+					<span>{p.name}</span>
+					<span class="ml-1 font-mono text-[10px] text-white/90">{fmt(p.sampleCount)}</span>
+					<span class="ml-1 text-[10px] font-medium text-white/85">{superpopCountryCount(p)} countries</span>
 				</a>
 			{/each}
 

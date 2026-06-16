@@ -7,8 +7,9 @@
 import { Database } from 'bun:sqlite';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { BIOBANKS, POPULATIONS, COHORTS, DATASETS, COHORT_DATASET } from './harmonize/lib/registry';
+import { BIOBANKS, POPULATIONS, COHORTS, DATASETS, COHORT_DATASET, POPULATION_COUNTRY_MAPPINGS } from './harmonize/lib/registry';
 import { eachLine } from './harmonize/lib/io';
+import { publicFrequencyValues } from '../src/lib/privacy';
 
 const ROOT = join(import.meta.dir, '..');
 const NORM = join(ROOT, 'data/normalized');
@@ -40,7 +41,7 @@ db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA synchronous = OFF');
 
 console.log('clearing tables…');
-for (const t of ['frequencies', 'variants', 'cohorts', 'datasets', 'populations', 'biobanks']) db.exec(`DELETE FROM ${t}`);
+for (const t of ['frequencies', 'variants', 'population_country_mappings', 'cohorts', 'datasets', 'populations', 'biobanks']) db.exec(`DELETE FROM ${t}`);
 
 // registry
 for (const b of BIOBANKS)
@@ -48,6 +49,10 @@ for (const b of BIOBANKS)
 for (const p of POPULATIONS)
 	db.query('INSERT INTO populations (id,biobank_id,name,country,country_code,admin_level,lat,lon) VALUES (?,?,?,?,?,?,?,?)').run(
 		p.id, p.biobankId, p.name, p.country, p.countryCode, p.adminLevel, p.lat, p.lon
+	);
+for (const m of POPULATION_COUNTRY_MAPPINGS)
+	db.query('INSERT INTO population_country_mappings (id,population_id,country,country_code,region_group,subpopulation_code,subpopulation_name,sample_count) VALUES (?,?,?,?,?,?,?,?)').run(
+		m.id, m.populationId, m.country, m.countryCode, m.regionGroup, m.subpopulationCode, m.subpopulationName, m.sampleCount
 	);
 for (const d of DATASETS)
 	db.query('INSERT INTO datasets (id,biobank_id,slug,metadata) VALUES (?,?,?,?)').run(d.id, d.biobankId, d.slug, JSON.stringify(d.metadata));
@@ -76,7 +81,11 @@ async function loadVariants(file: string) {
 // OR IGNORE: a few bipmed VCF rows lift to the same canonical variant → duplicate
 // (variant_id, cohort_id); keep the first.
 const insF = db.query(
-	'INSERT OR IGNORE INTO frequencies (variant_id,cohort_id,biobank_id,ac,an,af,n_homo,n_hetero,n_homo_ref) VALUES (?,?,?,?,?,?,?,?,?)'
+	`INSERT OR IGNORE INTO frequencies (
+		variant_id,cohort_id,biobank_id,ac,an,af,n_homo,n_hetero,n_homo_ref,
+		ac_masked,public_ac,public_af,ac_upper_bound,af_upper_bound,
+		genotype_masked,public_n_hetero,public_n_homo,public_n_homo_ref
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 );
 const maxAn = new Map<number, number>();
 async function loadFreqs(file: string) {
@@ -85,7 +94,12 @@ async function loadFreqs(file: string) {
 	await eachLine(file, (line) => {
 		if (!line) return;
 		const f = JSON.parse(line);
-		insF.run(f.variant_id, f.cohort_id, f.biobank_id, f.ac, f.an, f.af, f.n_homo, f.n_hetero, f.n_homo_ref);
+		const p = publicFrequencyValues(f);
+		insF.run(
+			f.variant_id, f.cohort_id, f.biobank_id, f.ac, f.an, f.af, f.n_homo, f.n_hetero, f.n_homo_ref,
+			p.acMasked ? 1 : 0, p.publicAc, p.publicAf, p.acUpperBound, p.afUpperBound,
+			p.genotypeMasked ? 1 : 0, p.publicNHetero, p.publicNHomo, p.publicNHomoRef
+		);
 		if (f.an > (maxAn.get(f.cohort_id) ?? 0)) maxAn.set(f.cohort_id, f.an);
 		if (++n % 200000 === 0) {
 			db.exec('COMMIT');
@@ -141,16 +155,19 @@ function freqCellsFor(ids: number[], bids: number[]) {
 	const fb = bids.length ? `AND f.biobank_id IN (${bids.join(',')})` : '';
 	const rows = q(
 		`SELECT f.variant_id, f.cohort_id, c.label cohort_label, c.biobank_id, b.slug biobank_slug, p.name population, p.country_code,
-		        f.af, f.ac, f.an, f.n_homo, f.n_hetero, f.n_homo_ref
+		        f.public_af, f.public_ac, f.an, f.ac_masked, f.ac_upper_bound, f.af_upper_bound,
+		        f.genotype_masked, f.public_n_homo, f.public_n_hetero, f.public_n_homo_ref
 		 FROM frequencies f JOIN cohorts c ON c.id=f.cohort_id JOIN populations p ON p.id=c.population_id JOIN biobanks b ON b.id=f.biobank_id
-		 WHERE f.variant_id IN (${ids.join(',')}) ${fb} ORDER BY f.af DESC`
+		 WHERE f.variant_id IN (${ids.join(',')}) ${fb} ORDER BY COALESCE(f.public_af, f.af_upper_bound, 0) DESC, p.name`
 	);
 	const m = new Map<number, any[]>();
 	for (const f of rows) {
 		const cell = {
 			cohortId: f.cohort_id, cohortLabel: f.cohort_label, population: f.population, countryCode: f.country_code,
-			biobankId: f.biobank_id, biobankSlug: f.biobank_slug, af: f.af, ac: f.ac, an: f.an,
-			nHomo: f.n_homo, nHetero: f.n_hetero, nHomoRef: f.n_homo_ref
+			biobankId: f.biobank_id, biobankSlug: f.biobank_slug, af: f.public_af, ac: f.public_ac, an: f.an,
+			acMasked: Boolean(f.ac_masked), acUpperBound: f.ac_upper_bound, afUpperBound: f.af_upper_bound,
+			genotypeMasked: Boolean(f.genotype_masked),
+			nHomo: f.public_n_homo, nHetero: f.public_n_hetero, nHomoRef: f.public_n_homo_ref
 		};
 		(m.get(f.variant_id) ?? m.set(f.variant_id, []).get(f.variant_id)!).push(cell);
 	}
@@ -164,7 +181,7 @@ function buildStats(bids: number[]) {
 		        SUM(CASE WHEN m>=0.05 THEN 1 ELSE 0 END) common,
 		        SUM(CASE WHEN m>=0.01 AND m<0.05 THEN 1 ELSE 0 END) lowFreq,
 		        SUM(CASE WHEN m<0.01 THEN 1 ELSE 0 END) rare
-		 FROM (SELECT variant_id, MAX(af) m FROM frequencies ${wIn} GROUP BY variant_id HAVING MAX(ac) > 0)`
+		 FROM (SELECT variant_id, MAX(public_af) m FROM frequencies ${wIn} GROUP BY variant_id HAVING MAX(ac) > 0)`
 	);
 	const banks = q(`SELECT * FROM biobanks ${bids.length ? `WHERE id IN (${bids.join(',')})` : ''} ORDER BY id`);
 	const biobanks = banks.map((b) => {
@@ -192,7 +209,7 @@ function buildStats(bids: number[]) {
 		: q1('SELECT COUNT(DISTINCT variant_id) n FROM frequencies WHERE ac>0').n;
 	const vrows = q(`SELECT * FROM variants v ${exists} ORDER BY v.chrom, v.pos LIMIT 50`);
 	const cells = freqCellsFor(vrows.map((v) => v.id), bids);
-	const rows = vrows.map((v) => ({ id: v.id, chrom: v.chrom, chromName: CHROM[v.chrom] ?? String(v.chrom), pos: v.pos, ref: v.ref, alt: v.alt, rsid: v.rsid, vrsDigest: v.vrs_digest, posHg19: v.pos_hg19, lifted: v.lifted, frequencies: cells.get(v.id) ?? [] }));
+	const rows = vrows.map((v) => ({ id: v.id, chrom: v.chrom, chromName: CHROM[v.chrom] ?? String(v.chrom), pos: v.pos, ref: v.ref, alt: v.alt, rsid: v.rsid, vrsDigest: v.vrs_digest, posHg19: v.pos_hg19, lifted: v.lifted, vepLabel: v.vep_label, vepImpact: v.vep_impact, hgvsConsequence: v.hgvs_consequence, vepHasMultipleConsequences: Boolean(v.vep_has_multiple_consequences), frequencies: cells.get(v.id) ?? [] }));
 	return { home, explore: { total, rows } };
 }
 

@@ -12,7 +12,7 @@
 		subtitle = '',
 		scoped = false,
 		options = [],
-		examples = ['BRCA1', 'rs2465136', '1:1000000-1100000', 'chr7', 'ga4gh:VA.3W84-kCDOBIiXcaOdX8XvHqgcoTx7u2a'],
+		examples = ['BRCA1', 'rs2465136', 'p.Arg124His', '1:1000000-1100000', 'chr7'],
 		initialQuery = '',
 		showGenotypeCounts = true,
 		populations = [],
@@ -34,10 +34,12 @@
 	const cfg = $derived(display ?? DEFAULTS);
 	const showGeno = $derived(display ? cfg.genotypes : showGenotypeCounts);
 	const showGene = $derived(cfg.gene);
-	const showVrs = $derived(cfg.vrs);
+	const showVep = $derived(cfg.vep);
+	const showVrs = $derived(false);
 	const barMax = $derived(cfg.barMax);
 	const acAnSplit = $derived(cfg.acAnSplit);
-	const vrsExpand = $derived(cfg.vrsExpand);
+	const vrsExpand = $derived(showVrs && cfg.vrsExpand);
+	const vepExpand = $derived(showVep);
 	const showGnomad = $derived(cfg.gnomad);
 	const variantDetailIcon = $derived(cfg.variantDetailIcon);
 	const geneWidthOverride = $derived(cfg.geneColWidth);
@@ -45,10 +47,49 @@
 	const variantWidthOverride = $derived(cfg.variantColWidth);
 	const gnomadUrl = (r: VRow) => `https://gnomad.broadinstitute.org/variant/${r.chromName}-${r.pos}-${r.ref}-${r.alt}?dataset=gnomad_r4`;
 	const variantHref = (r: VRow) => `/explore/variant/${publicVariantPathToken(r)}${forceTenant ? `?tenant=${forceTenant}` : ''}`;
+	const explorerFilterHref = (key: 'vepConsequence' | 'vepImpact', value: string) => {
+		const sp = new URLSearchParams({ [key]: value });
+		if (forceTenant) sp.set('tenant', forceTenant);
+		return `/explore?${sp.toString()}`;
+	};
+	const VEP_IMPACT_OPTIONS = ['HIGH', 'MODERATE', 'LOW', 'MODIFIER'];
+	const VEP_CONSEQUENCE_OPTIONS = [
+		'transcript ablation',
+		'splice acceptor',
+		'splice donor',
+		'stop gained',
+		'frameshift',
+		'stop lost',
+		'start lost',
+		'transcript amplification',
+		'inframe insertion',
+		'inframe deletion',
+		'missense',
+		'protein altering',
+		'splice region',
+		'incomplete terminal codon',
+		'start retained',
+		'stop retained',
+		'synonymous',
+		'coding sequence',
+		'5 prime UTR',
+		'3 prime UTR',
+		'non coding transcript exon',
+		'intron',
+		'NMD transcript',
+		'non coding transcript',
+		'upstream gene',
+		'downstream gene',
+		'intergenic'
+	];
 
 	// initial state read from the page URL (so a pasted/bookmarked link reproduces the view)
 	const sp0 = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
 	const sp0Cohorts = (sp0.get('cohorts') ?? '').split(',').filter(Boolean).map(Number);
+	const sp0HasVepImpact = sp0.has('vepImpact');
+	const sp0HasVepConsequence = sp0.has('vepConsequence');
+	const sp0VepImpacts = (sp0.get('vepImpact') ?? '').split(',').filter(Boolean);
+	const sp0VepConsequences = (sp0.get('vepConsequence') ?? '').split(',').filter(Boolean);
 
 	// biobank filter (global view only): which biobanks + ANY/ALL match
 	const sp0Banks = (sp0.get('biobanks') ?? '').split(',').filter(Boolean);
@@ -115,13 +156,40 @@
 		offset = 0;
 	}
 
+	let selectedVepImpacts = $state<Record<string, boolean>>(Object.fromEntries(VEP_IMPACT_OPTIONS.map((v) => [v, sp0HasVepImpact ? sp0VepImpacts.includes(v) : true])));
+	let selectedVepConsequences = $state<Record<string, boolean>>(Object.fromEntries(VEP_CONSEQUENCE_OPTIONS.map((v) => [v, sp0HasVepConsequence ? sp0VepConsequences.includes(v) : true])));
+	const selectedVepImpactValues = $derived(VEP_IMPACT_OPTIONS.filter((v) => selectedVepImpacts[v]));
+	const selectedVepConsequenceValues = $derived(VEP_CONSEQUENCE_OPTIONS.filter((v) => selectedVepConsequences[v]));
+	const vepImpactSummary = $derived(selectedVepImpactValues.length === VEP_IMPACT_OPTIONS.length ? 'All' : selectedVepImpactValues.length ? selectedVepImpactValues.join(', ') : 'None');
+	const vepConsequenceSummary = $derived(selectedVepConsequenceValues.length === VEP_CONSEQUENCE_OPTIONS.length ? 'All' : selectedVepConsequenceValues.length ? `${selectedVepConsequenceValues.length} selected` : 'None');
+	function toggleVepImpact(value: string) {
+		selectedVepImpacts = { ...selectedVepImpacts, [value]: !selectedVepImpacts[value] };
+		offset = 0;
+	}
+	function setAllVepImpacts(enabled: boolean) {
+		selectedVepImpacts = Object.fromEntries(VEP_IMPACT_OPTIONS.map((v) => [v, enabled]));
+		offset = 0;
+	}
+	function toggleVepConsequence(value: string) {
+		selectedVepConsequences = { ...selectedVepConsequences, [value]: !selectedVepConsequences[value] };
+		offset = 0;
+	}
+	function setAllVepConsequences(enabled: boolean) {
+		selectedVepConsequences = Object.fromEntries(VEP_CONSEQUENCE_OPTIONS.map((v) => [v, enabled]));
+		offset = 0;
+	}
+
 	interface FreqCell {
 		cohortId: number;
 		population: string;
 		biobankSlug: string;
-		af: number;
-		ac: number;
+		af: number | null;
+		ac: number | null;
 		an: number;
+		acMasked: boolean;
+		acUpperBound: number | null;
+		afUpperBound: number | null;
+		genotypeMasked: boolean;
 		nHetero: number | null;
 		nHomo: number | null;
 		nHomoRef: number | null;
@@ -143,12 +211,17 @@
 		rsid: number | null;
 		vrsDigest: string | null;
 		lifted: number;
+		vepLabel: string | null;
+		vepImpact: string | null;
+		hgvsConsequence: string | null;
+		vepHasMultipleConsequences: boolean;
 		genes?: GeneHit[];
 		frequencies: FreqCell[];
 	}
 	interface VariantResponse {
 		rows?: VRow[];
 		total?: number;
+		alleleCountReportingThreshold?: number;
 	}
 	interface PageTenant {
 		slug?: string;
@@ -174,7 +247,9 @@
 	let acMaxA = $state(sp0.get('acMax') ?? '');
 	let rows = $state<VRow[]>([]);
 	let total = $state(0);
+	let alleleCountReportingThreshold = $state(5);
 	let loading = $state(false);
+	let tableLoading = $state(false);
 	let lastTrackedQueryKey = '';
 
 	const tenantQ = $derived(forceTenant ? `&tenant=${forceTenant}` : '');
@@ -185,8 +260,8 @@
 		offset = 0;
 	}
 
-	type SortCol = '' | 'variant' | 'rsid' | 'maxaf' | 'vrs';
-	let sortCol = $state<SortCol>((['variant', 'rsid', 'maxaf', 'vrs'].includes(sp0.get('sort') ?? '') ? sp0.get('sort') : '') as SortCol);
+	type SortCol = '' | 'variant' | 'rsid' | 'gene' | 'maxaf' | 'vrs';
+	let sortCol = $state<SortCol>((['variant', 'rsid', 'gene', 'maxaf', 'vrs'].includes(sp0.get('sort') ?? '') ? sp0.get('sort') : '') as SortCol);
 	let sortDir = $state<'asc' | 'desc'>(sp0.get('dir') === 'desc' ? 'desc' : 'asc');
 	function setSort(col: SortCol) {
 		if (sortCol === col) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
@@ -205,6 +280,8 @@
 		if (afMaxA) p.set('afMax', afMaxA);
 		if (acMinA) p.set('acMin', acMinA);
 		if (acMaxA) p.set('acMax', acMaxA);
+		if (selectedVepImpactValues.length < VEP_IMPACT_OPTIONS.length) p.set('vepImpact', selectedVepImpactValues.join(','));
+		if (selectedVepConsequenceValues.length < VEP_CONSEQUENCE_OPTIONS.length) p.set('vepConsequence', selectedVepConsequenceValues.join(','));
 		if (showPopFilter && selectedFilterCohortIds.length && (populationMatchMode === 'all' || selectedFilterCohortIds.length < activePopulations.length)) {
 			p.set('cohorts', selectedFilterCohortIds.join(','));
 			if (populationMatchMode === 'all') p.set('cohortMatch', 'all');
@@ -263,6 +340,8 @@
 			parsed.get('afMax') ?? '',
 			parsed.get('acMin') ?? '',
 			parsed.get('acMax') ?? '',
+			parsed.get('vepImpact') ?? '',
+			parsed.get('vepConsequence') ?? '',
 			parsed.get('cohorts') ?? '',
 			parsed.get('cohortMatch') ?? '',
 			parsed.get('biobanks') ?? '',
@@ -288,6 +367,8 @@
 			af_max: parsed.get('afMax') ?? '',
 			ac_min: parsed.get('acMin') ?? '',
 			ac_max: parsed.get('acMax') ?? '',
+			vep_impact: parsed.get('vepImpact') ?? '',
+			vep_consequence: parsed.get('vepConsequence') ?? '',
 			cohorts: parsed.get('cohorts') ?? '',
 			cohort_match_mode: parsed.get('cohortMatch') ?? 'any',
 			biobanks: parsed.get('biobanks') ?? '',
@@ -305,6 +386,8 @@
 					parsed.get('afMax') ||
 					parsed.get('acMin') ||
 					parsed.get('acMax') ||
+					parsed.get('vepImpact') ||
+					parsed.get('vepConsequence') ||
 					parsed.get('cohorts') ||
 					parsed.get('cohortMatch') ||
 					parsed.get('biobanks') ||
@@ -323,6 +406,8 @@
 		if (afMaxA) sp.set('afMax', afMaxA);
 		if (acMinA) sp.set('acMin', acMinA);
 		if (acMaxA) sp.set('acMax', acMaxA);
+		if (selectedVepImpactValues.length < VEP_IMPACT_OPTIONS.length) sp.set('vepImpact', selectedVepImpactValues.join(','));
+		if (selectedVepConsequenceValues.length < VEP_CONSEQUENCE_OPTIONS.length) sp.set('vepConsequence', selectedVepConsequenceValues.join(','));
 		if (sortCol) {
 			sp.set('sort', sortCol);
 			sp.set('dir', sortDir);
@@ -351,22 +436,37 @@
 	async function load() {
 		const my = ++seq;
 		// an empty filter selection means "none" → no results (not "all")
-		if ((showFilter && selectedSlugs.length === 0) || (showPopFilter && selectedFilterCohortIds.length === 0)) {
+		if (
+			(showFilter && selectedSlugs.length === 0) ||
+			(showPopFilter && selectedFilterCohortIds.length === 0) ||
+			selectedVepImpactValues.length === 0 ||
+			selectedVepConsequenceValues.length === 0
+		) {
 			rows = [];
 			total = 0;
 			loading = false;
+			tableLoading = false;
 			return;
 		}
+		const startedAt = Date.now();
 		loading = true;
+		tableLoading = true;
 		try {
 			const params = buildParams();
 			const res = (await fetch(`/api/variants?${params}`).then((r) => r.json())) as VariantResponse;
 			if (my !== seq) return; // a newer request superseded this one
 			rows = res.rows ?? [];
 			total = res.total ?? 0;
+			alleleCountReportingThreshold = res.alleleCountReportingThreshold ?? alleleCountReportingThreshold;
 			trackVariantQuery(params, res);
 		} finally {
-			if (my === seq) loading = false;
+			if (my === seq) {
+				loading = false;
+				const remaining = Math.max(0, 350 - (Date.now() - startedAt));
+				window.setTimeout(() => {
+					if (my === seq) tableLoading = false;
+				}, remaining);
+			}
 		}
 	}
 
@@ -385,6 +485,8 @@
 		void populationMatchMode;
 		void selectedSlugs;
 		void selectedFilterCohortIds;
+		void selectedVepImpactValues;
+		void selectedVepConsequenceValues;
 		void showFilter;
 		void sortCol;
 		void sortDir;
@@ -425,6 +527,8 @@
 		gene = '';
 		qA = afMinA = afMaxA = acMinA = acMaxA = '';
 		geneA = '';
+		setAllVepImpacts(true);
+		setAllVepConsequences(true);
 		sortCol = '';
 		offset = 0;
 	}
@@ -480,10 +584,10 @@
 				if (showFilter) {
 					if (matchMode === 'all') {
 						return selectedSlugs.every((slug) =>
-							r.frequencies.some((f) => f.biobankSlug === slug && f.ac > 0)
+							r.frequencies.some((f) => f.biobankSlug === slug && (f.acMasked || (f.ac ?? 0) > 0))
 						);
 					}
-					return r.frequencies.some((f) => f.ac > 0);
+					return r.frequencies.some((f) => f.acMasked || (f.ac ?? 0) > 0);
 				}
 				return r.frequencies.length > 0;
 			});
@@ -492,11 +596,11 @@
 	// The last visible column is max-content so it collapses to its text width.
 	const multiPop = $derived(visibleRows.some((r) => r.frequencies.length > 1));
 	const showMaxAf = $derived(cfg.maxAf);
-	const colCount = $derived(3 + (showGene ? 1 : 0) + (showMaxAf ? 1 : 0) + (showVrs ? 1 : 0) + (showGnomad ? 1 : 0));
+	const colCount = $derived(3 + (showGene ? 1 : 0) + (showVep ? 2 : 0) + (showMaxAf ? 1 : 0) + (showVrs ? 1 : 0) + (showGnomad ? 1 : 0));
 	const popTmpl = $derived(
 		[
-			multiPop ? 'minmax(5rem,7rem)' : null,
-			vrsExpand ? barMax : `minmax(5rem,${barMax})`, // bar: fixed when VRS absorbs slack, else stretches to fill
+			multiPop ? 'minmax(3.75rem,5.5rem)' : null,
+			vepExpand ? barMax : `minmax(5rem,${barMax})`, // bar: fixed when VEP absorbs slack, else stretches to fill
 			'4rem', // freq
 			...(acAnSplit ? ['2.75rem', '3.5rem'] : [showGeno ? '4.5rem' : 'max-content']), // ac/an (split: separate right-aligned cols)
 			...(showGeno ? ['2rem', '3rem', '3rem'] : []) // het, hom_alt, hom_ref
@@ -510,24 +614,45 @@
 				? acAnSplit
 					? '25rem'
 					: showGeno
-						? '30rem'
-						: '18rem'
+						? '25rem'
+						: '15rem'
 				: acAnSplit
-					? '16rem'
+					? '14rem'
 					: showGeno
-						? '22rem'
-						: '12rem')
+						? '18rem'
+						: '10rem')
 	);
-	const geneColWidth = $derived(geneWidthOverride ?? '8rem');
-	const variantColWidth = $derived(variantWidthOverride ?? '10rem');
+	const geneColWidth = $derived(geneWidthOverride ?? '7rem');
+	const variantColWidth = $derived(variantWidthOverride ?? '9.5rem');
 	const fmtAf = (af: number) => (af >= 0.0001 || af === 0 ? af.toFixed(4) : af.toExponential(1));
-	const maxAf = (r: VRow) => (r.frequencies.length ? Math.max(...r.frequencies.map((f) => f.af)) : 0);
-	const isHighestAf = (r: VRow, f: FreqCell) => r.frequencies.length > 1 && f.af === maxAf(r);
+	const fmtAfPercent = (af: number) => `${(af * 100).toFixed(2)}%`;
+	const displayAfValue = (f: FreqCell) => f.af ?? f.afUpperBound ?? 0;
+	const displayAfLabel = (f: FreqCell) => (f.acMasked ? `<${fmtAf(f.afUpperBound ?? 0)}` : fmtAf(f.af ?? 0));
+	const displayAcLabel = (f: FreqCell) => (f.acMasked ? `<${f.acUpperBound ?? alleleCountReportingThreshold}` : String(f.ac ?? '—'));
+	const maskTitle = (f: FreqCell) =>
+		f.acMasked ? `Too low to report exact. AC <${f.acUpperBound ?? alleleCountReportingThreshold}; AF <${fmtAf(f.afUpperBound ?? 0)}.` : '';
+	const maxAf = (r: VRow) => (r.frequencies.length ? Math.max(...r.frequencies.map(displayAfValue)) : 0);
+	const isHighestAf = (r: VRow, f: FreqCell) => r.frequencies.length > 1 && displayAfValue(f) === maxAf(r);
 	const afValueClass = (r: VRow, f: FreqCell) =>
 		isHighestAf(r, f)
 			? 'inline-flex justify-end rounded-full border border-primary/25 bg-primary/10 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-primary'
 			: 'font-mono text-[11px] tabular-nums';
 	const geneLabel = (r: VRow) => (r.genes?.length ? [...new Set(r.genes.map((g) => g.symbol))].join(', ') : '');
+	const impactClass = (impact: string | null) =>
+		impact === 'HIGH'
+			? 'border-red-200 bg-red-50 text-red-700'
+			: impact === 'MODERATE'
+				? 'border-amber-200 bg-amber-50 text-amber-700'
+				: impact === 'LOW'
+					? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+					: 'border-slate-200 bg-slate-50 text-slate-700';
+	const vepTitle = (r: VRow) =>
+		[
+			r.vepLabel ? `Worst: ${r.vepLabel}` : null,
+			r.vepImpact ? `Category: ${r.vepImpact}` : null
+		]
+			.filter(Boolean)
+			.join('\n');
 	let copied = $state<string | null>(null);
 	function copyVrs(d: string) {
 		navigator.clipboard?.writeText(`ga4gh:VA.${d}`);
@@ -689,53 +814,109 @@
 		</div>
 	{/if}
 
-	<div class="mb-3 flex flex-wrap items-end gap-2">
-		<div class="relative min-w-48 flex-1">
-			<input
-				bind:value={q}
-				oninput={onInput}
-				onkeydown={(e) => e.key === 'Enter' && go()}
-				placeholder="rs123 · rs1|rs2|rs3 · chr7 · 1:1000000-1100000 · 1:1000000-1100000 ISG15"
-				class="w-full rounded-md border bg-background px-3 py-2 pr-9 text-sm outline-none focus:ring-2 focus:ring-ring"
-			/>
-			{#if loading}
-				<span class="absolute right-2.5 top-1/2 size-4 -translate-y-1/2 animate-spin rounded-full border-2 border-muted border-t-primary"></span>
-			{/if}
-		</div>
-		<button onclick={go} class="rounded-md bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90">{tr($lang, 'go')}</button>
-		<div class="flex flex-col gap-1">
-			<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'gene')}</span>
-			<input
-				bind:value={gene}
-				oninput={onInput}
-				onkeydown={(e) => e.key === 'Enter' && go()}
-				placeholder="ISG15"
-				class="w-24 rounded-md border bg-background px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-			/>
-		</div>
-		<div class="flex flex-col gap-1">
-			<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'alleleFreq')}</span>
-			<div class="flex items-center gap-1">
-				<input bind:value={afMin} oninput={onInput} placeholder="min" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" />
-				<span class="text-muted-foreground">–</span>
-				<input bind:value={afMax} oninput={onInput} placeholder="max" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" />
+	<div class="mb-3 flex flex-col gap-2">
+		<div class="flex flex-wrap items-end gap-2">
+			<div class="relative min-w-56 flex-1">
+				<input
+					bind:value={q}
+					oninput={onInput}
+					onkeydown={(e) => e.key === 'Enter' && go()}
+					placeholder="rs123 · p.Arg124His · chr7 · 1:1000000-1100000 · 1:1000000-1100000 ISG15"
+					class="w-full rounded-md border bg-background px-3 py-2 pr-9 text-sm outline-none focus:ring-2 focus:ring-ring"
+				/>
+				{#if loading}
+					<span class="absolute right-2.5 top-1/2 size-4 -translate-y-1/2 animate-spin rounded-full border-2 border-muted border-t-primary"></span>
+				{/if}
+			</div>
+			<div class="flex flex-col gap-1">
+				<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'gene')}</span>
+				<input
+					bind:value={gene}
+					oninput={onInput}
+					onkeydown={(e) => e.key === 'Enter' && go()}
+					placeholder="ISG15"
+					class="w-24 rounded-md border bg-background px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+				/>
+			</div>
+			<div class="flex flex-col gap-1">
+				<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'alleleFreq')}</span>
+				<div class="flex items-center gap-1">
+					<input bind:value={afMin} oninput={onInput} placeholder="min" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" />
+					<span class="text-muted-foreground">–</span>
+					<input bind:value={afMax} oninput={onInput} placeholder="max" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" />
+				</div>
+			</div>
+			<div class="flex flex-col gap-1">
+				<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'alleleCount')}</span>
+				<div class="flex items-center gap-1">
+					<input bind:value={acMin} oninput={onInput} min={alleleCountReportingThreshold} type="number" placeholder={String(alleleCountReportingThreshold)} class="w-16 rounded-md border bg-background px-2 py-2 text-sm" title={`Exact AC filters use reportable values only (AC >= ${alleleCountReportingThreshold}).`} />
+					<span class="text-muted-foreground">–</span>
+					<input bind:value={acMax} oninput={onInput} min={alleleCountReportingThreshold} type="number" placeholder="max" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" title={`Exact AC filters use reportable values only (AC >= ${alleleCountReportingThreshold}).`} />
+				</div>
 			</div>
 		</div>
-		<div class="flex flex-col gap-1">
-			<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'alleleCount')}</span>
-			<div class="flex items-center gap-1">
-				<input bind:value={acMin} oninput={onInput} placeholder="min" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" />
-				<span class="text-muted-foreground">–</span>
-				<input bind:value={acMax} oninput={onInput} placeholder="max" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" />
+		<div class="flex flex-wrap items-end gap-2">
+			<div class="relative flex flex-col gap-1">
+				<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">VEP impact</span>
+				<details class="relative" data-explorer-filter-menu="vep-impact">
+					<summary class="flex h-9 min-w-32 cursor-pointer list-none items-center justify-between gap-2 rounded-md border bg-background px-2.5 text-sm hover:bg-muted">
+						<span class="truncate">{vepImpactSummary}</span>
+						<span class="text-[10px] text-muted-foreground">▾</span>
+					</summary>
+					<div class="absolute left-0 top-full z-[70] mt-2 w-52 rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
+						<div class="mb-2 flex items-center justify-between border-b pb-2">
+							<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Impact</span>
+							<div class="flex items-center gap-1 text-[11px]">
+								<button type="button" onclick={() => setAllVepImpacts(true)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">All</button>
+								<button type="button" onclick={() => setAllVepImpacts(false)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">None</button>
+							</div>
+						</div>
+						<div class="grid gap-1">
+							{#each VEP_IMPACT_OPTIONS as impact}
+								<label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-muted">
+									<input type="checkbox" checked={selectedVepImpacts[impact]} onchange={() => toggleVepImpact(impact)} class="accent-[var(--primary)]" />
+									<span class={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${impactClass(impact)}`}>{impact}</span>
+								</label>
+							{/each}
+						</div>
+					</div>
+				</details>
 			</div>
+			<div class="relative flex flex-col gap-1">
+				<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">VEP consequence</span>
+				<details class="relative" data-explorer-filter-menu="vep-consequence">
+					<summary class="flex h-9 min-w-40 cursor-pointer list-none items-center justify-between gap-2 rounded-md border bg-background px-2.5 text-sm hover:bg-muted">
+						<span class="truncate">{vepConsequenceSummary}</span>
+						<span class="text-[10px] text-muted-foreground">▾</span>
+					</summary>
+					<div class="absolute left-0 top-full z-[70] mt-2 max-h-80 w-72 overflow-y-auto rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
+						<div class="sticky top-0 mb-2 flex items-center justify-between border-b bg-popover pb-2">
+							<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Consequence</span>
+							<div class="flex items-center gap-1 text-[11px]">
+								<button type="button" onclick={() => setAllVepConsequences(true)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">All</button>
+								<button type="button" onclick={() => setAllVepConsequences(false)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">None</button>
+							</div>
+						</div>
+						<div class="grid gap-1">
+							{#each VEP_CONSEQUENCE_OPTIONS as consequence}
+								<label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-muted">
+									<input type="checkbox" checked={selectedVepConsequences[consequence]} onchange={() => toggleVepConsequence(consequence)} class="accent-[var(--primary)]" />
+									<span class="min-w-0 truncate">{consequence}</span>
+								</label>
+							{/each}
+						</div>
+					</div>
+				</details>
+			</div>
+			<label class="flex flex-col text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+				{tr($lang, 'perPage')}
+				<select value={pageSize} onchange={(e) => setPageSize(Number((e.target as HTMLSelectElement).value))} class="rounded-md border bg-background px-2 py-2 text-sm text-foreground">
+					{#each [25, 50, 100, 200, 500] as n}<option value={n}>{n}</option>{/each}
+				</select>
+			</label>
+			<button onclick={reset} class="h-9 rounded-md border px-3 text-sm hover:bg-muted">{tr($lang, 'reset')}</button>
+			<button onclick={go} class="h-10 cursor-pointer rounded-md bg-primary px-6 text-sm font-bold text-primary-foreground shadow-sm hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2">Go</button>
 		</div>
-		<label class="flex flex-col text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-			{tr($lang, 'perPage')}
-			<select value={pageSize} onchange={(e) => setPageSize(Number((e.target as HTMLSelectElement).value))} class="rounded-md border bg-background px-2 py-2 text-sm text-foreground">
-				{#each [25, 50, 100, 200, 500] as n}<option value={n}>{n}</option>{/each}
-			</select>
-		</label>
-		<button onclick={reset} class="rounded-md border px-3 py-2 text-sm hover:bg-muted">{tr($lang, 'reset')}</button>
 	</div>
 
 	<!-- live curl for the current query -->
@@ -747,13 +928,15 @@
 
 	<div class="mb-3">{@render pager()}</div>
 
-	<div class="relative overflow-x-auto rounded-md border">
-		<table class={`w-full text-sm ${vrsExpand ? 'table-fixed' : ''}`}>
-			{#if vrsExpand}
+	<div class="variant-results-shell relative min-h-32 rounded-md border" class:variant-results-loading={tableLoading}>
+		<div class="overflow-x-auto">
+		<table class={`w-full text-sm ${vepExpand || vrsExpand ? 'table-fixed' : ''}`} aria-busy={tableLoading}>
+			{#if vepExpand || vrsExpand}
 				<colgroup>
 					<col style={`width:${variantColWidth}`} />
-					<col class="w-24" />
+					<col class="w-20" />
 					{#if showGene}<col style={`width:${geneColWidth}`} />{/if}
+					{#if showVep}<col class="w-28" /><col class="w-28" />{/if}
 					<col style={`width:${frequencyColWidth}`} />
 					{#if showMaxAf}<col class="w-20" />{/if}
 					{#if showVrs}<col />{/if}
@@ -763,8 +946,12 @@
 			<thead class="bg-muted/60 text-left text-xs uppercase tracking-wide text-muted-foreground">
 				<tr>
 					<th class={`py-2 pr-3 font-medium ${variantDetailIcon ? 'pl-7' : 'pl-3'}`}><button onclick={() => setSort('variant')} title="Genomic location on the GRCh38 assembly. Chromosome:position, then reference›alternate allele. Click to sort by position." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">{tr($lang, 'colVariant')} <span class="normal-case text-[9px] text-muted-foreground/70">GRCh38</span> <span class="text-[9px]">{ind('variant')}</span></button></th>
-					<th class="px-3 py-2 font-medium"><button onclick={() => setSort('rsid')} title="dbSNP Reference SNP cluster ID (rsID). Links out to NCBI dbSNP. Click to sort." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">rsID <span class="text-[9px]">{ind('rsid')}</span></button></th>
-					{#if showGene}<th class="px-3 py-2 font-medium"><span title="Gene(s) whose transcribed region overlaps this position (Ensembl)." class="cursor-help">Gene</span></th>{/if}
+					<th class="px-2 py-2 font-medium"><button onclick={() => setSort('rsid')} title="dbSNP Reference SNP cluster ID (rsID). Links out to NCBI dbSNP. Click to sort." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">rsID <span class="text-[9px]">{ind('rsid')}</span></button></th>
+					{#if showGene}<th class="px-3 py-2 font-medium"><button onclick={() => setSort('gene')} title="Gene(s) whose transcribed region overlaps this position (Ensembl). Click to sort by gene symbol." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">Gene <span class="text-[9px]">{ind('gene')}</span></button></th>{/if}
+					{#if showVep}
+						<th class="px-2 py-2 font-medium"><span title="Protein or coding HGVS string from the selected worst VEP annotation." class="cursor-help uppercase">HGVS</span></th>
+						<th class="px-2 py-2 font-medium"><span title="Worst Ensembl VEP consequence selected for display." class="cursor-help uppercase">VEP annotation</span></th>
+					{/if}
 					<th class="px-3 py-2 font-medium">
 						<div class="grid items-center gap-x-2 uppercase" style={`grid-template-columns:${popTmpl}`}>
 							{#if multiPop}<span class="cursor-help text-left" title="Cohort / population in which the allele frequencies on this row were measured.">{tr($lang, 'colPopulation')}</span>{/if}
@@ -806,7 +993,7 @@
 								<span class="text-muted-foreground group-hover:text-primary">-{r.ref}-{r.alt}</span>
 							</a>
 						</td>
-						<td class="whitespace-nowrap px-3 py-2">
+						<td class="whitespace-nowrap px-2 py-2">
 							{#if r.rsid}
 								<a class="text-primary hover:underline" href={`https://www.ncbi.nlm.nih.gov/snp/rs${r.rsid}`} target="_blank" rel="noreferrer">rs{r.rsid}</a>
 							{:else}<span class="text-muted-foreground">—</span>{/if}
@@ -820,28 +1007,59 @@
 								{/if}
 							</td>
 						{/if}
+						{#if showVep}
+							<td class="max-w-28 px-2 py-2">
+								{#if r.hgvsConsequence}
+									<span class="block truncate font-mono text-xs" title={r.hgvsConsequence}>{r.hgvsConsequence}</span>
+								{:else}
+									<span class="text-muted-foreground">—</span>
+								{/if}
+							</td>
+							<td class="min-w-0 max-w-28 px-2 py-2">
+								{#if r.vepLabel}
+									<a
+										href={explorerFilterHref('vepConsequence', r.vepLabel)}
+										class={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-ring ${impactClass(r.vepImpact)}`}
+										title={vepTitle(r)}
+									>
+										<span class="min-w-0 truncate">{r.vepLabel}</span>
+										{#if r.vepHasMultipleConsequences}<span class="shrink-0 text-[10px] opacity-75">+</span>{/if}
+									</a>
+								{:else if r.vepImpact}
+									<a
+										href={explorerFilterHref('vepImpact', r.vepImpact)}
+										class={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-ring ${impactClass(r.vepImpact)}`}
+										title={vepTitle(r)}
+									>
+										<span class="min-w-0 truncate">{r.vepImpact}</span>
+									</a>
+								{:else}
+									<span class="text-muted-foreground">—</span>
+								{/if}
+							</td>
+						{/if}
 						<td class="px-3 py-2">
 							<div class="grid items-center gap-x-2 gap-y-1" style={`grid-template-columns:${popTmpl}`}>
 								{#each r.frequencies as f}
 									{#if multiPop}
 										<span class="truncate text-xs text-muted-foreground" title={f.population}>{f.population}</span>
 									{/if}
-									<span class="af-track h-2 cursor-help overflow-hidden rounded-full" title={`${f.population} · alt allele freq ${fmtAf(f.af)} · AC ${f.ac}/${f.an}`}>
-										<span class="af-fill block h-full rounded-full" style={`width:${Math.min(100, f.af * 100)}%`}></span>
+									<span class="af-track h-2 cursor-help overflow-hidden rounded-full" title={f.acMasked ? `${f.population} · ${maskTitle(f)}` : `${f.population} · alt allele freq ${fmtAfPercent(f.af ?? 0)} · AC ${f.ac}/${f.an}`}>
+										<span class="af-fill block h-full rounded-full" class:opacity-60={f.acMasked} style={`width:${Math.min(100, displayAfValue(f) * 100)}%`}></span>
 									</span>
 									<span class="text-right">
-										<span class={afValueClass(r, f)} title={isHighestAf(r, f) ? `Highest frequency shown for this variant: ${f.population}` : undefined}>{fmtAf(f.af)}</span>
+										<span class={afValueClass(r, f)} title={f.acMasked ? maskTitle(f) : isHighestAf(r, f) ? `Highest frequency shown for this variant: ${f.population}` : undefined}>{displayAfLabel(f)}</span>
 									</span>
 									{#if acAnSplit}
-										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title="allele count">{f.ac}</span>
+										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title={f.acMasked ? maskTitle(f) : 'allele count'}>{displayAcLabel(f)}</span>
 										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title="allele number">{f.an}</span>
 									{:else}
-										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title="allele count / allele number">{f.ac}/{f.an}</span>
+										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title={f.acMasked ? maskTitle(f) : 'allele count / allele number'}>{displayAcLabel(f)}/{f.an}</span>
 									{/if}
 									{#if showGeno}
-										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title="heterozygous">{f.nHetero ?? '—'}</span>
-										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title="homozygous alt">{f.nHomo ?? '—'}</span>
-										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title="homozygous ref">{f.nHomoRef ?? '—'}</span>
+										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title={f.genotypeMasked ? 'Too low to report exact genotype counts.' : 'heterozygous'}>{f.genotypeMasked ? 'low' : (f.nHetero ?? '—')}</span>
+										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title={f.genotypeMasked ? 'Too low to report exact genotype counts.' : 'homozygous alt'}>{f.genotypeMasked ? 'low' : (f.nHomo ?? '—')}</span>
+										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title={f.genotypeMasked ? 'Too low to report exact genotype counts.' : 'homozygous ref'}>{f.genotypeMasked ? 'low' : (f.nHomoRef ?? '—')}</span>
 									{/if}
 								{/each}
 							</div>
@@ -876,6 +1094,17 @@
 				{/if}
 			</tbody>
 		</table>
+		</div>
+		{#if tableLoading}
+			<div class="variant-table-overlay" aria-hidden="true">
+				<div class="variant-table-overlay-position">
+					<div class="variant-table-loading-card">
+						<span class="variant-table-spinner"></span>
+						<span>{tr($lang, 'loadingLabel')}</span>
+					</div>
+				</div>
+			</div>
+		{/if}
 	</div>
 
 	<div class="mt-3">{@render pager()}</div>
@@ -905,5 +1134,61 @@
 		min-width: 0;
 		max-width: 100%;
 		overflow: hidden;
+	}
+
+	.variant-table-overlay {
+		position: absolute;
+		inset: 0;
+		z-index: 50;
+		pointer-events: none;
+		background: rgba(255, 255, 255, 0.72);
+		backdrop-filter: blur(1.5px);
+		border-radius: inherit;
+	}
+
+	:global(.dark) .variant-table-overlay {
+		background: rgba(0, 0, 0, 0.58);
+	}
+
+	.variant-table-overlay-position {
+		position: sticky;
+		top: 11rem;
+		display: flex;
+		align-items: flex-start;
+		justify-content: center;
+		min-height: 12rem;
+		padding-top: 4rem;
+	}
+
+	.variant-table-loading-card {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.75rem;
+		border: 1px solid var(--border);
+		border-radius: 0.5rem;
+		background: var(--card);
+		color: var(--foreground);
+		padding: 0.75rem 1rem;
+		font-size: 0.875rem;
+		font-weight: 600;
+		box-shadow:
+			0 10px 15px -3px rgba(0, 0, 0, 0.12),
+			0 4px 6px -4px rgba(0, 0, 0, 0.12);
+	}
+
+	.variant-table-spinner {
+		display: inline-block;
+		width: 1.25rem;
+		height: 1.25rem;
+		border: 2px solid color-mix(in oklch, var(--primary) 18%, transparent);
+		border-top-color: var(--primary);
+		border-radius: 9999px;
+		animation: variant-table-spin 0.72s linear infinite;
+	}
+
+	@keyframes variant-table-spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 </style>

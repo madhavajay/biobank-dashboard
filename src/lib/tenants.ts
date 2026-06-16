@@ -37,7 +37,7 @@ export const TENANTS: Tenant[] = [
 		logoEmoji: '🧬',
 		logoImg: '/tenants/biovault/logo.png',
 		scope: null,
-		map: { center: [8, -35], zoom: 1.75 },
+		map: { center: [0, 0], zoom: 1 },
 		theme: {
 			primary: 'oklch(0.696 0.17 162.48)',
 			primaryFg: 'oklch(0.99 0 0)',
@@ -80,7 +80,7 @@ export const TENANTS: Tenant[] = [
 		logoImg: '/tenants/bipmed/logo.png',
 		langs: ['en', 'pt'],
 		scope: 'bipmed',
-		map: { center: [-14.235, -51.925], zoom: 3.4 },
+		map: { center: [-14.235, -51.925], zoom: 4.2 },
 		theme: {
 			primary: 'oklch(0.34 0.06 235)',
 			primaryFg: 'oklch(0.99 0 0)',
@@ -111,6 +111,26 @@ export const TENANTS: Tenant[] = [
 			brandTo: 'oklch(0.34 0.13 16)',
 			mapLand: 'oklch(0.94 0.02 20)',
 			mapPin: 'oklch(0.47 0.18 18)'
+		}
+	},
+	{
+		slug: '1kgp',
+		hosts: ['1kgp.biovault.net', '1kgp.localhost', '1000-genomes.localhost'],
+		name: '1000 Genomes Project',
+		product: '1000 Genomes Project Frequencies',
+		tagline: 'Super-population allele frequencies across BioVault tracked loci.',
+		logoEmoji: '🧬',
+		scope: '1kgp',
+		map: { center: [0, 0], zoom: 1 },
+		theme: {
+			primary: 'oklch(0.50 0.15 255)',
+			primaryFg: 'oklch(0.99 0 0)',
+			accent: 'oklch(0.68 0.14 145)',
+			ring: 'oklch(0.50 0.15 255)',
+			brandFrom: 'oklch(0.54 0.16 255)',
+			brandTo: 'oklch(0.62 0.14 145)',
+			mapLand: 'oklch(0.94 0.012 240)',
+			mapPin: 'oklch(0.52 0.16 255)'
 		}
 	}
 ];

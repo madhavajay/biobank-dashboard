@@ -14,6 +14,9 @@
 		"db:seed": "bun scripts/seed-db.ts --local",
 		"db:seed:local": "bun scripts/seed-db.ts --local",
 		"db:seed:remote": "bun scripts/seed-db.ts --remote",
+		"db:export:vcf": "bun scripts/export-vcf.ts",
+		"db:export:loci-filter": "bun scripts/export-loci-filter.ts",
+		"db:import:1kgp": "bun scripts/import-1kgp-superpop-af.ts",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
