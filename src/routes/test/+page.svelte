@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { onDestroy, setContext } from 'svelte';
 	import type { Action } from 'svelte/action';
-	import type { ExpressionSpecification, Map as MapboxMap, Popup, StyleSpecification } from 'mapbox-gl';
+	import type { ExpressionSpecification, GeoJSONSource, Map as MapboxMap, Popup, StyleSpecification } from 'mapbox-gl';
 	import type { FeatureCollection, Point } from 'geojson';
 	import 'mapbox-gl/dist/mapbox-gl.css';
 	import { key, mapboxgl } from './mapboxgl';
+	import { TENANTS } from '$lib/tenants';
+	import { DATASETS, biobankSlugForDatasetSlug } from '$lib/datasets';
 
 	type Population = {
 		name: string;
@@ -24,6 +26,33 @@
 			subpopulationName: string;
 			sampleCount: number;
 		}>;
+	};
+
+	type CountryMapping = NonNullable<Population['countryMappings']>[number];
+
+	type DisplayDataset = {
+		slug?: string;
+		title: string;
+		description?: string;
+		release?: string;
+		assay?: string;
+		genomeBuild?: string;
+		participants?: number;
+		variants?: number;
+		biobankSlug?: string;
+		superPopulation?: string;
+	};
+
+	const CARIBBEAN_CODES = new Set(['BS', 'BB', 'BM', 'VG', 'LC', 'TT']);
+	const FALLBACK_DATASET_STATS: Record<string, { participants: number; variants: number }> = {
+		'cari-caribbean': { participants: 1475, variants: 1053817 },
+		'bipmed-wes': { participants: 203, variants: 708719 },
+		'pgp-usa': { participants: 463, variants: 2907156 },
+		'1kgp-afr': { participants: 893, variants: 1932985 },
+		'1kgp-amr': { participants: 490, variants: 1932985 },
+		'1kgp-eas': { participants: 585, variants: 1932985 },
+		'1kgp-eur': { participants: 633, variants: 1932985 },
+		'1kgp-sas': { participants: 601, variants: 1932985 }
 	};
 
 	type CountryRow = {
@@ -150,12 +179,6 @@
 				]
 			}
 		],
-		datasets: [
-			{ title: 'CariGenetics Caribbean Panel', release: '2025', assay: 'SNP genotyping', participants: 1475, variants: 1053817, genomeBuild: 'GRCh38' },
-			{ title: 'BIPMed WES', release: '2021', assay: 'WES', participants: 203, variants: 708719, genomeBuild: 'GRCh38 lifted' },
-			{ title: 'PGP Harvard', release: '2024', assay: 'WGS', participants: 463, variants: 2907156, genomeBuild: 'GRCh38' },
-			{ title: '1000 Genomes Project', release: 'Phase 3', assay: 'WGS', participants: 3202, variants: 1932985, genomeBuild: 'GRCh38' }
-		],
 		totals: { participants: 5343, datasetCount: 8, variants: 1966448, populations: 13 },
 		variantClasses: { common: 1735446, lowFreq: 191949, rare: 11904 }
 	};
@@ -204,6 +227,7 @@
 	let map: MapboxMap | undefined;
 	let popup: Popup | undefined;
 	let selectedCode = $state<string | null>(null);
+	let selectedDatasetSlug = $state<string | null>(null);
 	let searchQuery = $state('');
 
 	setContext(key, {
@@ -239,11 +263,88 @@
 		return [...byCode.values()].sort((a, b) => b.samples - a.samples || a.name.localeCompare(b.name));
 	});
 
+	const biobankWebsiteFallbacks: Record<string, string> = {
+		carigenetics: 'https://carigenetics.com',
+		bipmed: 'https://bipmed.org',
+		'pgp-harvard': 'https://pgp.med.harvard.edu',
+		'1kgp': 'https://www.internationalgenome.org'
+	};
+	const tenantFor = (slug?: string) => TENANTS.find((tenant) => tenant.slug === slug);
+
+	const displayDatasets = $derived.by<DisplayDataset[]>(() => {
+		const live = dashboard.datasets as Array<Record<string, unknown>> | undefined;
+		if (live?.length) {
+			return live.map((dataset) => {
+				const slug = String(dataset.slug ?? '');
+				return {
+					slug,
+					title: String(dataset.title ?? ''),
+					description: dataset.description ? String(dataset.description) : undefined,
+					release: dataset.release ? String(dataset.release) : undefined,
+					assay: dataset.assay ? String(dataset.assay) : undefined,
+					genomeBuild: dataset.genomeBuild ? String(dataset.genomeBuild) : undefined,
+					participants: Number(dataset.participants ?? 0),
+					variants: Number(dataset.variants ?? 0),
+					biobankSlug: biobankSlugForDatasetSlug(slug),
+					superPopulation: dataset.superPopulation ? String(dataset.superPopulation) : undefined
+				};
+			});
+		}
+
+		return DATASETS.map((dataset) => {
+			const stats = FALLBACK_DATASET_STATS[dataset.id] ?? { participants: 0, variants: 0 };
+			return {
+				slug: dataset.id,
+				title: dataset.title,
+				description: dataset.description,
+				release: dataset.release,
+				assay: dataset.assay,
+				genomeBuild: dataset.genomeBuild,
+				participants: stats.participants,
+				variants: stats.variants,
+				biobankSlug: dataset.biobankSlug,
+				superPopulation: dataset.superPopulation
+			};
+		});
+	});
+
+	function countryCodesForDataset(dataset: DisplayDataset) {
+		if (dataset.slug === 'cari-caribbean' || dataset.biobankSlug === 'carigenetics') {
+			return [...CARIBBEAN_CODES];
+		}
+		if (dataset.slug === 'bipmed-wes') return ['BR'];
+		if (dataset.slug === 'pgp-usa') return ['US'];
+		if (dataset.superPopulation) {
+			const population = (dashboard.populations as Population[]).find((item) => item.name === dataset.superPopulation);
+			if (population?.countryMappings?.length) {
+				return [...new Set(population.countryMappings.map((mapping) => mapping.countryCode))];
+			}
+		}
+		return [];
+	}
+
 	const selectedCountry = $derived(selectedCode ? (countryRows.find((country) => country.code === selectedCode) ?? null) : null);
-	const topCountry = $derived(countryRows[0]);
-	const maxSamples = $derived(Math.max(1, ...countryRows.map((c) => c.samples)));
-	const selectedCountryCodes = $derived(countryRows.map((c) => c.code));
-	const selectedCountryExpression = $derived(['in', ['get', 'iso_3166_1'], ['literal', selectedCountryCodes]]);
+	const selectedDataset = $derived(
+		selectedDatasetSlug ? (displayDatasets.find((dataset) => dataset.slug === selectedDatasetSlug) ?? null) : null
+	);
+	const scopedCountryRows = $derived.by(() => {
+		if (!selectedDataset) return countryRows;
+		const codes = new Set(countryCodesForDataset(selectedDataset));
+		return countryRows.filter((country) => codes.has(country.code));
+	});
+	const highlightCountryCodes = $derived.by(() => {
+		if (selectedCountry) return [selectedCountry.code];
+		if (selectedDataset) {
+			return countryCodesForDataset(selectedDataset).filter((code) => countryRows.some((country) => country.code === code));
+		}
+		return countryRows.map((country) => country.code);
+	});
+	const bubbleFocusCodes = $derived.by(() => {
+		if (selectedCountry) return [selectedCountry.code];
+		if (selectedDataset) return countryCodesForDataset(selectedDataset);
+		return countryRows.map((country) => country.code);
+	});
+	const countryHighlightExpression = $derived(['in', ['get', 'iso_3166_1'], ['literal', highlightCountryCodes]]);
 	const countryMaskFilter = [
 		'all',
 		['==', ['get', 'disputed'], 'false'],
@@ -259,12 +360,6 @@
 		'#c7b4ca'
 	];
 	const directPopulations = $derived((dashboard.populations as Population[]).filter((p) => p.countryCode !== 'XK').sort((a, b) => b.sampleCount - a.sampleCount));
-	const biobankWebsiteFallbacks: Record<string, string> = {
-		carigenetics: 'https://carigenetics.com',
-		bipmed: 'https://bipmed.org',
-		'pgp-harvard': 'https://pgp.med.harvard.edu',
-		'1kgp': 'https://www.internationalgenome.org'
-	};
 	const bubbleColorExpression: ExpressionSpecification = [
 		'step',
 		['get', 'samples'],
@@ -347,8 +442,163 @@
 		return `/explore${params.toString() ? `?${params}` : ''}`;
 	}
 
+	function countryMappingsForCode(code: string) {
+		const rows: Array<CountryMapping & { superpop: string }> = [];
+		for (const population of dashboard.populations as Population[]) {
+			for (const mapping of population.countryMappings ?? []) {
+				if (mapping.countryCode === code) {
+					rows.push({ ...mapping, superpop: population.name });
+				}
+			}
+		}
+		return rows.sort((a, b) => b.sampleCount - a.sampleCount || a.subpopulationName.localeCompare(b.subpopulationName));
+	}
+
+	function caribbeanPeerCountries(country: CountryRow) {
+		if (!CARIBBEAN_CODES.has(country.code)) return [];
+		return countryRows
+			.filter((row) => CARIBBEAN_CODES.has(row.code))
+			.sort((a, b) => b.samples - a.samples || a.name.localeCompare(b.name));
+	}
+
+	function countryContextLine(country: CountryRow) {
+		const caribbeanPeers = caribbeanPeerCountries(country);
+		if (caribbeanPeers.length) {
+			const total = caribbeanPeers.reduce((sum, row) => sum + row.samples, 0);
+			return `${fmt(country.samples)} of ${fmt(total)} Caribbean samples`;
+		}
+
+		for (const bank of countrySourceBanks(country)) {
+			const total = (dashboard.biobanks as Array<{ slug?: string; totalSamples?: number }>).find((item) => item.slug === bank.slug)?.totalSamples;
+			if (total && total > country.samples) {
+				return `${fmt(country.samples)} of ${fmt(total)} ${bank.name} samples`;
+			}
+		}
+
+		return null;
+	}
+
+	function datasetsForCountry(country: CountryRow) {
+		const bankSlugs = new Set(countrySourceBanks(country).map((bank) => bank.slug).filter(Boolean));
+		const superpops = new Set(countryMappingsForCode(country.code).map((mapping) => mapping.superpop));
+
+		return displayDatasets.filter((dataset) => {
+			if (!dataset.biobankSlug || !bankSlugs.has(dataset.biobankSlug)) return false;
+			if (dataset.biobankSlug === '1kgp') {
+				return dataset.superPopulation ? superpops.has(dataset.superPopulation) : false;
+			}
+			if (dataset.biobankSlug === 'carigenetics') {
+				return CARIBBEAN_CODES.has(country.code);
+			}
+			return true;
+		});
+	}
+
+	function datasetWebsite(dataset: DisplayDataset) {
+		return biobankWebsite({ slug: dataset.biobankSlug });
+	}
+
+	function exploreDatasetHref(dataset: DisplayDataset) {
+		const params = new URLSearchParams();
+		if (dataset.biobankSlug) params.set('biobanks', dataset.biobankSlug);
+		return `/explore${params.toString() ? `?${params}` : ''}`;
+	}
+
+	function flyToDatasetView(dataset: DisplayDataset) {
+		const rows = countryRows.filter((country) => countryCodesForDataset(dataset).includes(country.code));
+		if (!rows.length) {
+			map?.flyTo({
+				center: DEFAULT_MAP_CENTER,
+				zoom: DEFAULT_MAP_ZOOM,
+				duration: 900,
+				essential: true
+			});
+			return;
+		}
+
+		if (rows.length === 1) {
+			flyToCountry(rows[0], { keepDataset: true });
+			return;
+		}
+
+		const lng = rows.reduce((sum, country) => sum + country.center[0], 0) / rows.length;
+		const lat = rows.reduce((sum, country) => sum + country.center[1], 0) / rows.length;
+		const zoom =
+			dataset.slug === 'cari-caribbean'
+				? 4.6
+				: dataset.slug === 'bipmed-wes'
+					? 3.9
+					: dataset.slug === 'pgp-usa'
+						? 3.4
+						: dataset.superPopulation
+							? 2.4
+							: 3.2;
+
+		map?.flyTo({
+			center: [lng, lat],
+			zoom,
+			duration: 900,
+			essential: true
+		});
+	}
+
+	function selectDataset(dataset: DisplayDataset) {
+		selectedDatasetSlug = dataset.slug ?? null;
+		selectedCode = null;
+		flyToDatasetView(dataset);
+	}
+
+	function clearDatasetSelection() {
+		selectedDatasetSlug = null;
+		selectedCode = null;
+		map?.flyTo({
+			center: DEFAULT_MAP_CENTER,
+			zoom: DEFAULT_MAP_ZOOM,
+			duration: 900,
+			essential: true
+		});
+	}
+
+	function syncMapState() {
+		if (!map?.isStyleLoaded() || !map.getSource('collection-countries')) return;
+
+		const source = map.getSource('collection-countries') as GeoJSONSource;
+		source.setData(collectionGeoJson);
+
+		map.setFilter('selected-country-fill', ['all', ...countryMaskFilter.slice(1), countryHighlightExpression]);
+		map.setFilter('selected-country-outline', ['all', ...countryMaskFilter.slice(1), countryHighlightExpression]);
+		map.setFilter('non-selected-country-mask', ['all', ...countryMaskFilter.slice(1), ['!', countryHighlightExpression]]);
+
+		const focusExpression: ExpressionSpecification = [
+			'case',
+			['in', ['get', 'code'], ['literal', bubbleFocusCodes]],
+			0.98,
+			selectedDataset || selectedCountry ? 0.12 : 0.98
+		];
+		const haloExpression: ExpressionSpecification = [
+			'case',
+			['in', ['get', 'code'], ['literal', bubbleFocusCodes]],
+			0.2,
+			selectedDataset || selectedCountry ? 0.03 : 0.2
+		];
+		const labelExpression: ExpressionSpecification = [
+			'case',
+			['in', ['get', 'code'], ['literal', bubbleFocusCodes]],
+			1,
+			selectedDataset || selectedCountry ? 0.18 : 1
+		];
+
+		map.setPaintProperty('collection-country-bubbles', 'circle-opacity', focusExpression);
+		map.setPaintProperty('collection-country-bubble-halo', 'circle-opacity', haloExpression);
+		map.setPaintProperty('collection-country-labels', 'text-opacity', labelExpression);
+	}
+
 	function clearCountrySelection() {
 		selectedCode = null;
+		if (selectedDataset) {
+			flyToDatasetView(selectedDataset);
+			return;
+		}
 		map?.flyTo({
 			center: DEFAULT_MAP_CENTER,
 			zoom: DEFAULT_MAP_ZOOM,
@@ -404,7 +654,7 @@
 					type: 'fill',
 					source: 'composite',
 					'source-layer': 'country_boundaries',
-					filter: ['all', ...countryMaskFilter.slice(1), ['!', selectedCountryExpression]],
+					filter: ['all', ...countryMaskFilter.slice(1), ['!', countryHighlightExpression]],
 					paint: {
 						'fill-color': '#f8f7f2',
 						'fill-opacity': 0.98
@@ -415,7 +665,7 @@
 					type: 'fill',
 					source: 'composite',
 					'source-layer': 'country_boundaries',
-					filter: ['all', ...countryMaskFilter.slice(1), selectedCountryExpression],
+					filter: ['all', ...countryMaskFilter.slice(1), countryHighlightExpression],
 					paint: {
 						'fill-color': [
 							'match',
@@ -444,7 +694,7 @@
 					type: 'line',
 					source: 'composite',
 					'source-layer': 'country_boundaries',
-					filter: ['all', ...countryMaskFilter.slice(1), selectedCountryExpression],
+					filter: ['all', ...countryMaskFilter.slice(1), countryHighlightExpression],
 					paint: {
 						'line-color': '#ffffff',
 						'line-opacity': 0.36,
@@ -496,8 +746,14 @@
 		};
 	}
 
-	function flyToCountry(country: CountryRow) {
+	function flyToCountry(country: CountryRow, options: { keepDataset?: boolean } = {}) {
 		selectedCode = country.code;
+		if (!options.keepDataset && selectedDatasetSlug) {
+			const datasetCodes = selectedDataset ? countryCodesForDataset(selectedDataset) : [];
+			if (!datasetCodes.includes(country.code)) {
+				selectedDatasetSlug = null;
+			}
+		}
 		map?.flyTo({
 			center: country.center,
 			zoom: COUNTRY_ZOOMS[country.code] ?? 4.3,
@@ -525,6 +781,7 @@
 			map?.setFog(null);
 			map?.setSnow(null);
 			map?.setRain(null);
+			syncMapState();
 		});
 
 		map.on('click', 'collection-country-bubbles', (event) => {
@@ -568,6 +825,15 @@
 		map?.remove();
 		map = undefined;
 	});
+
+	$effect(() => {
+		collectionGeoJson;
+		countryHighlightExpression;
+		bubbleFocusCodes;
+		selectedDatasetSlug;
+		selectedCode;
+		syncMapState();
+	});
 </script>
 
 <svelte:head>
@@ -607,7 +873,13 @@
 
 	<div class="floating-title">
 		<h1>Global allele-frequency network</h1>
-		<p>{fmt(dashboard.totals.participants)} participants across {countryRows.length} countries</p>
+		<p>
+			{#if selectedDataset}
+				{selectedDataset.title} · {fmt(scopedCountryRows.length)} countries · {fmt(selectedDataset.participants)} participants
+			{:else}
+				{fmt(dashboard.totals.participants)} participants across {countryRows.length} countries
+			{/if}
+		</p>
 	</div>
 
 	<nav class="top-nav" aria-label="Dashboard navigation">
@@ -625,18 +897,69 @@
 					<p>Selected country</p>
 					<h2>{selectedCountry.name}</h2>
 				</div>
-				<button type="button" onclick={clearCountrySelection}>Clear</button>
+				<button type="button" onclick={clearCountrySelection}>{selectedDataset ? 'Back' : 'Clear'}</button>
 			</div>
 
 			<div class="country-detail">
-				<div class="detail-stat">
-					<span>Samples</span>
-					<strong>{fmt(selectedCountry.samples)}</strong>
+				{#if countryContextLine(selectedCountry)}
+					<p class="detail-context">{countryContextLine(selectedCountry)}</p>
+				{/if}
+
+				<div class="detail-stat-grid">
+					<div class="detail-stat">
+						<span>Samples</span>
+						<strong>{fmt(selectedCountry.samples)}</strong>
+					</div>
+					<div class="detail-stat">
+						<span>Variants</span>
+						<strong>{fmt(selectedCountry.variants)}</strong>
+					</div>
 				</div>
-				<div class="detail-stat">
-					<span>Variants</span>
-					<strong>{fmt(selectedCountry.variants)}</strong>
-				</div>
+
+				{#if caribbeanPeerCountries(selectedCountry).length}
+					<div class="detail-section">
+						<p>Caribbean breakdown</p>
+						<div class="detail-list">
+							{#each caribbeanPeerCountries(selectedCountry) as peer}
+								<button type="button" class="detail-list-row" class:active={peer.code === selectedCountry.code} onclick={() => flyToCountry(peer)}>
+									<span>{peer.name}</span>
+									<strong>{fmt(peer.samples)}</strong>
+								</button>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				{#if countryMappingsForCode(selectedCountry.code).length}
+					<div class="detail-section">
+						<p>1KGP subpopulations</p>
+						<div class="detail-list">
+							{#each countryMappingsForCode(selectedCountry.code) as mapping}
+								<div class="detail-list-row static">
+									<span>{mapping.subpopulationName}</span>
+									<strong>{fmt(mapping.sampleCount)}</strong>
+								</div>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				{#each datasetsForCountry(selectedCountry) as dataset}
+					<article class="meta-dataset compact">
+						<div class="meta-dataset-head">
+							<p>Dataset</p>
+							{#if dataset.release}<span class="meta-release">{dataset.release}</span>{/if}
+						</div>
+						<h3>{dataset.title}</h3>
+						{#if dataset.description}<p class="meta-desc">{dataset.description}</p>{/if}
+						<dl class="meta-grid">
+							<div><dt>Participants</dt><dd>{fmt(dataset.participants)}</dd></div>
+							<div><dt>Variants</dt><dd>{fmt(dataset.variants)}</dd></div>
+							<div><dt>Assay</dt><dd>{dataset.assay}</dd></div>
+							<div><dt>Build</dt><dd>{dataset.genomeBuild}</dd></div>
+						</dl>
+					</article>
+				{/each}
 
 				<div class="detail-section">
 					<p>Sources</p>
@@ -652,6 +975,56 @@
 					{#if countrySourceBanks(selectedCountry)[0]}
 						<a href={biobankWebsite(countrySourceBanks(selectedCountry)[0])} target="_blank" rel="noreferrer">Open source portal</a>
 					{/if}
+				</div>
+			</div>
+		{:else if selectedDataset}
+			<div class="panel-heading detail-heading">
+				<div>
+					<p>Dataset</p>
+					<h2>{selectedDataset.title}</h2>
+				</div>
+				<button type="button" onclick={clearDatasetSelection}>Clear</button>
+			</div>
+
+			<div class="country-detail">
+				{#if selectedDataset.description}
+					<p class="detail-context">{selectedDataset.description}</p>
+				{/if}
+
+				<article class="meta-dataset compact">
+					<div class="meta-dataset-head">
+						<p>Dataset stats</p>
+						{#if selectedDataset.release}<span class="meta-release">{selectedDataset.release}</span>{/if}
+					</div>
+					<dl class="meta-grid">
+						<div><dt>Participants</dt><dd>{fmt(selectedDataset.participants)}</dd></div>
+						<div><dt>Variants</dt><dd>{fmt(selectedDataset.variants)}</dd></div>
+						<div><dt>Assay</dt><dd>{selectedDataset.assay}</dd></div>
+						<div><dt>Build</dt><dd>{selectedDataset.genomeBuild}</dd></div>
+					</dl>
+				</article>
+
+				<div class="detail-section">
+					<p>{selectedDataset.slug === 'cari-caribbean' ? 'Caribbean coverage' : 'Countries in dataset'}</p>
+					<div class="country-list inset">
+						{#each scopedCountryRows as country}
+							<button type="button" onclick={() => flyToCountry(country, { keepDataset: true })}>
+								<span class="country-main">
+									<span>{country.name}</span>
+									<small>{country.sources.slice(0, 2).join(' + ')}</small>
+								</span>
+								<span class="country-count">
+									<strong>{fmt(country.samples)}</strong>
+									<small>{country.code}</small>
+								</span>
+							</button>
+						{/each}
+					</div>
+				</div>
+
+				<div class="detail-actions">
+					<a href={exploreDatasetHref(selectedDataset)}>Explore variants</a>
+					<a href={datasetWebsite(selectedDataset)} target="_blank" rel="noreferrer">Open source portal</a>
 				</div>
 			</div>
 		{:else}
@@ -693,22 +1066,36 @@
 		</div>
 	</section>
 
-	<section class="bottom-panel" aria-label="Datasets and cohorts">
+	<section class="bottom-panel" aria-label="Databases">
 		<div class="panel-heading dataset-heading">
-			<h2>Datasets</h2>
+			<h2>Databases</h2>
 			<span class="dataset-count">
-				<strong>{dashboard.biobanks.length}</strong>
-				<small>datasets</small>
+				<strong>{displayDatasets.length}</strong>
+				<small>databases</small>
 			</span>
 		</div>
 
-		<div class="dataset-strip">
-			{#each dashboard.biobanks as bank}
-				<a href={biobankWebsite(bank)} target="_blank" rel="noreferrer">
-					<span>{bank.name}</span>
-					<strong>{fmt(bank.totalSamples)} samples</strong>
-					<small>{fmt(bank.totalVariants)} variants</small>
-				</a>
+		<div class="database-scroll">
+			{#each displayDatasets as dataset}
+				{@const tenant = tenantFor(dataset.biobankSlug)}
+				<button
+					type="button"
+					class="database-row"
+					class:active={selectedDatasetSlug === dataset.slug}
+					onclick={() => selectDataset(dataset)}
+				>
+					<span class="dataset-logo" aria-hidden="true">
+						{#if tenant?.logoImg}
+							<img src={tenant.logoImg} alt="" />
+						{:else}
+							<span>{tenant?.logoEmoji ?? '🧬'}</span>
+						{/if}
+					</span>
+					<span class="database-row-main">
+						<span class="database-row-title">{dataset.title}</span>
+						<small>{dataset.release} · {fmt(dataset.participants)} participants · {dataset.assay}</small>
+					</span>
+				</button>
 			{/each}
 			<a href="/contact" class="dataset-cta">Want to contribute data? <strong>Get in touch</strong></a>
 		</div>
@@ -943,8 +1330,7 @@
 	}
 
 	.country-main small,
-	.country-count small,
-	.dataset-strip small {
+	.country-count small {
 		display: block;
 		font-size: 10px;
 		font-weight: 500;
@@ -1077,7 +1463,12 @@
 		padding: var(--om-space-m);
 	}
 
+	.meta-dataset-head p {
+		margin: 0;
+	}
+
 	.detail-stat span,
+	.meta-dataset-head p,
 	.detail-section p {
 		display: block;
 		font-size: 10px;
@@ -1172,9 +1563,214 @@
 		bottom: var(--bottom-inset);
 		display: flex;
 		flex-direction: column;
-		width: min(430px, calc(100vw - 32px));
+		width: min(460px, calc(100vw - 32px));
+		max-height: min(430px, calc(100vh - 140px));
 		overflow: hidden;
 		padding: 0;
+	}
+
+	.biobank-scroll,
+	.database-scroll {
+		display: grid;
+		gap: var(--om-space-s);
+		overflow: auto;
+		padding: 0 var(--om-space-m) var(--om-space-m);
+	}
+
+	.database-row {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		gap: var(--om-space-m);
+		align-items: center;
+		width: 100%;
+		border: 0;
+		border-radius: var(--om-radius-m);
+		background: color-mix(in srgb, var(--om-white) 55%, transparent);
+		padding: var(--om-space-s);
+		text-align: left;
+		cursor: pointer;
+		font-family: 'Inter', system-ui, sans-serif;
+	}
+
+	.database-row:hover,
+	.database-row.active {
+		background: color-mix(in srgb, var(--om-teal-100) 72%, var(--om-white));
+	}
+
+	.database-row-main {
+		display: grid;
+		gap: 2px;
+		min-width: 0;
+	}
+
+	.database-row-title {
+		overflow: hidden;
+		font-size: 12px;
+		font-weight: 700;
+		line-height: 1.35;
+		color: var(--om-gray-850);
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.database-row-main small {
+		overflow: hidden;
+		font-size: 10px;
+		font-weight: 500;
+		line-height: 1.4;
+		color: var(--om-gray-600);
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.dataset-logo {
+		display: flex;
+		width: 84px;
+		height: 42px;
+		align-items: center;
+		justify-content: center;
+		border-radius: var(--om-radius-s);
+		background: color-mix(in srgb, var(--om-white) 88%, transparent);
+		overflow: hidden;
+		flex-shrink: 0;
+	}
+
+	.dataset-logo img {
+		max-width: 76px;
+		max-height: 34px;
+		object-fit: contain;
+	}
+
+	.dataset-logo > span {
+		font-size: 22px;
+		line-height: 1;
+	}
+
+	.country-list.inset {
+		overflow: visible;
+		padding: 0;
+	}
+
+	.meta-dataset {
+		border-radius: var(--om-radius-m);
+		background: var(--om-gray-100);
+		padding: var(--om-space-m);
+	}
+
+	.meta-dataset.compact {
+		padding: var(--om-space-s) var(--om-space-m);
+	}
+
+	.meta-dataset-head {
+		display: flex;
+		flex: 1;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--om-space-s);
+	}
+
+	.meta-release {
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--om-teal-100) 80%, var(--om-white));
+		padding: 2px 8px;
+		font-size: 10px;
+		font-weight: 700;
+		line-height: 1.3;
+		color: var(--om-teal-700);
+	}
+
+	.meta-dataset h3 {
+		margin-top: 6px;
+		font-family: 'Rubik', 'Inter', system-ui, sans-serif;
+		font-size: 14px;
+		font-weight: 700;
+		line-height: 1.25;
+		color: var(--om-gray-850);
+	}
+
+	.meta-desc {
+		margin-top: 4px;
+		font-size: 11px;
+		font-weight: 500;
+		line-height: 1.45;
+		color: var(--om-gray-600);
+	}
+
+	.meta-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 8px var(--om-space-m);
+		margin-top: var(--om-space-s);
+	}
+
+	.meta-grid dt {
+		font-size: 10px;
+		font-weight: 600;
+		color: var(--om-gray-600);
+	}
+
+	.meta-grid dd {
+		margin: 1px 0 0;
+		font-size: 11px;
+		font-weight: 700;
+		color: var(--om-gray-850);
+	}
+
+	.detail-context {
+		font-size: 12px;
+		font-weight: 600;
+		line-height: 1.4;
+		color: var(--om-gray-600);
+	}
+
+	.detail-stat-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: var(--om-space-s);
+	}
+
+	.detail-list {
+		display: grid;
+		gap: 4px;
+		margin-top: var(--om-space-xs);
+	}
+
+	.detail-list-row {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		gap: var(--om-space-s);
+		align-items: center;
+		border: 0;
+		border-radius: var(--om-radius-s);
+		background: transparent;
+		padding: 5px 7px;
+		font-family: 'Inter', system-ui, sans-serif;
+		font-size: 11px;
+		font-weight: 600;
+		line-height: 1.35;
+		color: var(--om-gray-850);
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.detail-list-row.static {
+		cursor: default;
+	}
+
+	.detail-list-row:hover,
+	.detail-list-row.active {
+		background: color-mix(in srgb, var(--om-teal-100) 72%, var(--om-white));
+	}
+
+	.detail-list-row span {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.detail-list-row strong {
+		font-size: 11px;
+		font-weight: 800;
 	}
 
 	.dataset-heading {
@@ -1199,48 +1795,6 @@
 		font-weight: 600;
 		line-height: 1.2;
 		color: var(--om-gray-600);
-	}
-
-	.dataset-strip {
-		display: grid;
-		gap: 7px;
-		padding: 0 var(--om-space-m) var(--om-space-m);
-	}
-
-	.dataset-strip a:not(.dataset-cta) {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) auto;
-		column-gap: var(--om-space-s);
-		align-items: baseline;
-		color: var(--om-gray-850);
-		text-decoration: none;
-	}
-
-	.dataset-strip a:not(.dataset-cta):hover span {
-		color: var(--om-teal-700);
-		text-decoration: underline;
-	}
-
-	.dataset-strip span,
-	.dataset-strip strong {
-		display: block;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.dataset-strip span {
-		font-size: 11px;
-		font-weight: 700;
-	}
-
-	.dataset-strip strong {
-		font-size: 11px;
-		font-weight: 700;
-	}
-
-	.dataset-strip small {
-		display: none;
 	}
 
 	.dataset-cta {
