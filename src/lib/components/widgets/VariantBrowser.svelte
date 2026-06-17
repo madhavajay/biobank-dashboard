@@ -33,7 +33,7 @@
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import { lang, tr } from '$lib/i18n';
 	import { DEFAULTS, type ExplorerDisplay } from '$lib/explorer';
-	import { publicVariantPathToken } from '$lib/variant-id';
+	import { publicVariantId } from '$lib/variant-id';
 	let {
 		forceTenant = '',
 		title = '',
@@ -47,6 +47,7 @@
 		showApiBar = true,
 		showTitle = true,
 		onParamsChange = undefined,
+		onVariantNavigate = undefined,
 		showGenotypeCounts = true,
 		populations = [],
 		display = undefined
@@ -63,6 +64,7 @@
 		showApiBar?: boolean;
 		showTitle?: boolean;
 		onParamsChange?: (params: string) => void;
+		onVariantNavigate?: (href: string) => void;
 		showGenotypeCounts?: boolean;
 		populations?: { cohortId: number; name: string; biobankSlug?: string; biobankName?: string }[];
 		display?: ExplorerDisplay;
@@ -84,7 +86,16 @@
 	const frequencyWidthOverride = $derived(cfg.frequencyColWidth);
 	const variantWidthOverride = $derived(cfg.variantColWidth);
 	const gnomadUrl = (r: VRow) => `https://gnomad.broadinstitute.org/variant/${r.chromName}-${r.pos}-${r.ref}-${r.alt}?dataset=gnomad_r4`;
-	const variantHref = (r: VRow) => `/explore/variant/${publicVariantPathToken(r)}${forceTenant ? `?tenant=${forceTenant}` : ''}`;
+	const variantHref = (r: VRow) => {
+		const tenant = forceTenant || page.url.searchParams.get('tenant') || '';
+		const base = `/explore/variant/${publicVariantId(r)}`;
+		return tenant ? `${base}?tenant=${encodeURIComponent(tenant)}` : base;
+	};
+	function openVariantDetail(href: string, event: MouseEvent) {
+		if (!onVariantNavigate) return;
+		event.preventDefault();
+		onVariantNavigate(href);
+	}
 	const explorerFilterHref = (key: 'vepConsequence' | 'vepImpact', value: string) => {
 		const sp = new URLSearchParams({ [key]: value });
 		if (forceTenant) sp.set('tenant', forceTenant);
@@ -812,7 +823,13 @@
 				{#each visibleRows as r (r.id)}
 					<tr class="border-t hover:bg-muted/40">
 						<td class={`relative whitespace-nowrap py-2 pr-3 font-mono text-xs ${variantDetailIcon ? 'pl-7' : 'pl-3'}`}>
-							<a href={variantHref(r)} title="View variant details" class="group inline-flex items-baseline gap-1 rounded-sm text-primary hover:underline focus:outline-none focus:ring-2 focus:ring-ring">
+							<a
+								href={variantHref(r)}
+								data-sveltekit-preload-data="off"
+								onclick={(event) => openVariantDetail(variantHref(r), event)}
+								title="View variant details"
+								class="group inline-flex items-baseline gap-1 rounded-sm text-primary hover:underline focus:outline-none focus:ring-2 focus:ring-ring"
+							>
 								{#if variantDetailIcon}
 									<SearchIcon class="absolute left-2 top-1/2 size-3.5 -translate-y-1/2 opacity-70" aria-hidden="true" />
 								{/if}

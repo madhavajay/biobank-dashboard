@@ -573,7 +573,7 @@ export async function searchVariants(
 					.all<any>();
 
 	const ids = vrows.results.map((r) => r.id);
-	if (ids.length === 0) return { rows: [], total };
+	if (ids.length === 0) return finalizeVariantSearch(db, scopeSlug, params, [], total);
 
 	const placeholders = ids.map(() => '?').join(',');
 	const fbiobank = biobankIds.length ? `AND f.biobank_id IN (${biobankIds.map(() => '?').join(',')})` : '';
@@ -637,6 +637,209 @@ export async function searchVariants(
 		genes: genesByVariant.get(v.id) ?? [],
 		frequencies: byVariant.get(v.id) ?? []
 	}));
+	return finalizeVariantSearch(db, scopeSlug, params, rows, total);
+}
+
+async function variantsTableEmpty(db: QueryDb): Promise<boolean> {
+	try {
+		const row = await db.prepare('SELECT COUNT(*) n FROM variants').first<{ n: number }>();
+		return (row?.n ?? 0) === 0;
+	} catch {
+		return false;
+	}
+}
+
+function cachedRowMatchesToken(row: VariantRow, raw: string): boolean {
+	const s = raw.trim().replace(/,/g, '');
+	if (!s) return false;
+	if (variantTokenMatchesRow(row, s)) return true;
+	const hgvs = normalizeHgvsSearch(s);
+	if (hgvs && (row.hgvsConsequence ?? '').toLowerCase() === hgvs.toLowerCase()) return true;
+	let m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:]\s?(\d+)\s*-\s*(\d+)$/i.exec(s);
+	if (m) {
+		const c = chromToCode(m[1]);
+		if (c && row.chrom === c && row.pos >= Number(m[2]) && row.pos <= Number(m[3])) return true;
+	}
+	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:]\s?(\d+)$/i.exec(s);
+	if (m) {
+		const c = chromToCode(m[1]);
+		if (c && row.chrom === c && row.pos === Number(m[2])) return true;
+	}
+	m = /^(?:chr)?([0-9]+|x|y|mt|m)$/i.exec(s);
+	if (m) {
+		const c = chromToCode(m[1]);
+		if (c && row.chrom === c) return true;
+	}
+	if (looksLikeGeneSymbol(s)) {
+		const norm = normGeneSymbol(s);
+		return row.genes.some(
+			(g) => normGeneSymbol(g.symbol) === norm || normGeneSymbol(g.ensemblId.split('.')[0]) === norm
+		);
+	}
+	const variantKey = `${row.chromName}-${row.pos}-${row.ref}-${row.alt}`.toLowerCase();
+	const rsKey = row.rsid ? `rs${row.rsid}` : '';
+	const needle = s.toLowerCase();
+	if (variantKey.includes(needle) || rsKey.toLowerCase().includes(needle)) return true;
+	return row.genes.some(
+		(g) => g.symbol.toLowerCase().includes(needle) || g.ensemblId.toLowerCase().includes(needle)
+	);
+}
+
+function cachedRowMatchesQuery(row: VariantRow, q: string): boolean {
+	const groups = q
+		.trim()
+		.replace(/\s*-\s*/g, '-')
+		.replace(/:\s+/g, ':')
+		.split(/\s+/)
+		.map((t) => t.trim())
+		.filter(Boolean);
+	if (!groups.length) return true;
+	return groups.every((group) => {
+		const terms = group
+			.split('|')
+			.map((t) => t.trim())
+			.filter(Boolean);
+		return terms.some((term) => cachedRowMatchesToken(row, term));
+	});
+}
+
+function cachedRowMatchesGene(row: VariantRow, gene: string): boolean {
+	const norm = normGeneSymbol(gene);
+	return row.genes.some(
+		(g) =>
+			normGeneSymbol(g.symbol) === norm ||
+			normGeneSymbol(g.ensemblId.split('.')[0]) === norm ||
+			g.ensemblId.toUpperCase().includes(norm)
+	);
+}
+
+function hasFrequencyRangeParams(params: SearchParams): boolean {
+	return params.afMin != null || params.afMax != null || params.acMin != null || params.acMax != null;
+}
+
+function frequencyCellQualifies(f: FreqCell, params: SearchParams): boolean {
+	if ((f.ac ?? 0) <= 0) return false;
+	if (hasFrequencyRangeParams(params) && f.af == null && f.ac == null) return false;
+	if (params.afMin != null && (f.af == null || f.af < params.afMin)) return false;
+	if (params.afMax != null && (f.af == null || f.af > params.afMax)) return false;
+	if (params.acMin != null && (f.ac == null || f.ac < params.acMin)) return false;
+	if (params.acMax != null && (f.ac == null || f.ac > params.acMax)) return false;
+	return true;
+}
+
+function rowQualifiesFrequencies(row: VariantRow, params: SearchParams, biobankSlugs: string[]): boolean {
+	const match = params.match === 'all' ? 'all' : 'any';
+	const cohortIds = params.cohorts ?? [];
+	const cohortMatch = params.cohortMatch === 'all' ? 'all' : 'any';
+	const hasFreqSelector = biobankSlugs.length > 0 || cohortIds.length > 0 || hasFrequencyRangeParams(params);
+	if (!hasFreqSelector) return true;
+
+	const qualifies = (f: FreqCell) => {
+		if (biobankSlugs.length && !biobankSlugs.includes(f.biobankSlug)) return false;
+		if (cohortIds.length && cohortMatch !== 'all' && !cohortIds.includes(f.cohortId)) return false;
+		return frequencyCellQualifies(f, params);
+	};
+
+	if (cohortIds.length && cohortMatch === 'all') {
+		return cohortIds.every((cohortId) => row.frequencies.some((f) => f.cohortId === cohortId && qualifies(f)));
+	}
+	if (biobankSlugs.length && match === 'all') {
+		return biobankSlugs.every((slug) =>
+			row.frequencies.some(
+				(f) =>
+					f.biobankSlug === slug &&
+					frequencyCellQualifies(f, params) &&
+					(!cohortIds.length || cohortIds.includes(f.cohortId))
+			)
+		);
+	}
+	return row.frequencies.some(qualifies);
+}
+
+function applyScopeToRows(rows: VariantRow[], scopeSlug: string | null): VariantRow[] {
+	if (!scopeSlug) return rows;
+	return rows
+		.map((row) => {
+			const frequencies = row.frequencies.filter((f) => f.biobankSlug === scopeSlug);
+			if (!frequencies.length) return null;
+			return { ...row, frequencies };
+		})
+		.filter((row): row is VariantRow => row !== null);
+}
+
+function sortCachedRows(rows: VariantRow[], params: SearchParams): VariantRow[] {
+	const dir = params.dir === 'desc' ? -1 : 1;
+	const sorted = [...rows];
+	if (params.sort === 'rsid') {
+		sorted.sort((a, b) => dir * ((a.rsid ?? 0) - (b.rsid ?? 0)) || a.chrom - b.chrom || a.pos - b.pos);
+	} else if (params.sort === 'vrs') {
+		sorted.sort(
+			(a, b) => dir * String(a.vrsDigest ?? '').localeCompare(String(b.vrsDigest ?? '')) || a.chrom - b.chrom || a.pos - b.pos
+		);
+	} else if (params.sort === 'gene') {
+		sorted.sort(
+			(a, b) =>
+				dir * (a.genes[0]?.symbol ?? '').localeCompare(b.genes[0]?.symbol ?? '') || a.chrom - b.chrom || a.pos - b.pos
+		);
+	} else if (params.sort === 'maxaf') {
+		sorted.sort((a, b) => {
+			const maxA = Math.max(...a.frequencies.map((f) => f.af ?? 0), 0);
+			const maxB = Math.max(...b.frequencies.map((f) => f.af ?? 0), 0);
+			return dir * (maxA - maxB) || a.chrom - b.chrom || a.pos - b.pos;
+		});
+	} else {
+		sorted.sort((a, b) => dir * (a.chrom - b.chrom) || dir * (a.pos - b.pos));
+	}
+	return sorted;
+}
+
+async function searchExploreCacheFallback(
+	db: QueryDb,
+	scopeSlug: string | null,
+	params: SearchParams
+): Promise<{ rows: VariantRow[]; total: number } | null> {
+	if (params.biobanks?.includes('__none__')) return null;
+	const cached = await getStats(db, `explore:${scopeSlug ?? 'global'}`);
+	if (!cached?.rows?.length) return null;
+
+	const limit = Math.min(Math.max(params.limit ?? 50, 1), 500);
+	const offset = Math.max(params.offset ?? 0, 0);
+	const biobankSlugs = scopeSlug
+		? [scopeSlug]
+		: (params.biobanks ?? []).filter((slug) => slug && slug !== '__none__');
+	const vepImpacts = [...new Set((params.vepImpacts ?? []).map((v) => v.trim().toUpperCase()).filter((v) => VALID_VEP_IMPACTS.has(v)))];
+	const vepConsequences = [...new Set((params.vepConsequences ?? []).map((v) => v.trim()).filter(Boolean))];
+
+	let rows = sanitizeVariantRowsForPublic(cached.rows) as VariantRow[];
+	rows = applyScopeToRows(rows, scopeSlug);
+	rows = rows.filter((row) => {
+		if (params.q?.trim() && !cachedRowMatchesQuery(row, params.q)) return false;
+		if (params.gene?.trim() && !cachedRowMatchesGene(row, params.gene)) return false;
+		if (params.chrom != null && row.chrom !== params.chrom) return false;
+		if (params.posMin != null && row.pos < params.posMin) return false;
+		if (params.posMax != null && row.pos > params.posMax) return false;
+		if (params.rsid != null && row.rsid !== params.rsid) return false;
+		if (vepImpacts.length && (!row.vepImpact || !vepImpacts.includes(row.vepImpact.toUpperCase()))) return false;
+		if (vepConsequences.length && (!row.vepLabel || !vepConsequences.includes(row.vepLabel))) return false;
+		return rowQualifiesFrequencies(row, params, biobankSlugs);
+	});
+
+	rows = sortCachedRows(rows, params);
+	const total = rows.length;
+	return { rows: rows.slice(offset, offset + limit), total };
+}
+
+async function finalizeVariantSearch(
+	db: QueryDb,
+	scopeSlug: string | null,
+	params: SearchParams,
+	rows: VariantRow[],
+	total: number
+): Promise<{ rows: VariantRow[]; total: number }> {
+	if (rows.length === 0 && total === 0 && (await variantsTableEmpty(db))) {
+		const cached = await searchExploreCacheFallback(db, scopeSlug, params);
+		if (cached) return cached;
+	}
 	return { rows, total };
 }
 
@@ -704,26 +907,72 @@ export function canonicalVariantId(v: VariantRow): string {
 	return publicVariantId(v);
 }
 
+function variantTokenMatchesRow(
+	row: Pick<VariantRow, 'id' | 'chrom' | 'pos' | 'ref' | 'alt' | 'rsid' | 'vrsDigest'>,
+	token: string
+): boolean {
+	if (/^\d+$/.test(token)) return row.id === Number(token);
+
+	let m = /^rs(\d+)$/i.exec(token);
+	if (m) return row.rsid === Number(m[1]);
+
+	m = /^(?:ga4gh:VA\.)?([A-Za-z0-9_-]{32})$/.exec(token);
+	if (m) return row.vrsDigest === m[1];
+
+	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:](\d+)-([A-Za-z]+)-([A-Za-z]+)$/i.exec(token.replace(/,/g, ''));
+	if (!m) return false;
+	const chrom = chromToCode(m[1]);
+	if (!chrom) return false;
+	return row.chrom === chrom && row.pos === Number(m[2]) && row.ref === m[3].toUpperCase() && row.alt === m[4].toUpperCase();
+}
+
+// When the explore stats cache is populated but the variants table is empty (common
+// in local dev after baking stats without seeding), fall back to the cached rows.
+async function resolveVariantFromExploreCache(db: QueryDb, raw: string, scopeSlug: string | null): Promise<VariantRow | null> {
+	const token = decodeURIComponent(raw).trim();
+	if (!token) return null;
+	const cached = await getStats(db, `explore:${scopeSlug ?? 'global'}`);
+	if (!cached?.rows?.length) return null;
+	const rows = sanitizeVariantRowsForPublic(cached.rows) as VariantRow[];
+	const hit = rows.find((row) => variantTokenMatchesRow(row, token));
+	if (!hit) return null;
+	if (scopeSlug) {
+		const frequencies = hit.frequencies.filter((f) => f.biobankSlug === scopeSlug);
+		if (!frequencies.length) return null;
+		return { ...hit, frequencies };
+	}
+	return hit;
+}
+
 export async function resolveVariantIdentifier(db: QueryDb, raw: string, scopeSlug: string | null): Promise<VariantRow | null> {
 	const token = decodeURIComponent(raw).trim();
 	if (!token) return null;
 
-	if (/^\d+$/.test(token)) return getVariantBySql(db, 'v.id=?', [Number(token)], scopeSlug);
+	let variant: VariantRow | null = null;
 
-	let m = /^rs(\d+)$/i.exec(token);
-	if (m) return getVariantBySql(db, 'v.rsid=?', [Number(m[1])], scopeSlug);
+	if (/^\d+$/.test(token)) variant = await getVariantBySql(db, 'v.id=?', [Number(token)], scopeSlug);
 
-	m = /^(?:ga4gh:VA\.)?([A-Za-z0-9_-]{32})$/.exec(token);
-	if (m) return getVariantBySql(db, 'v.vrs_digest=?', [m[1]], scopeSlug);
-
-	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:](\d+)-([A-Za-z]+)-([A-Za-z]+)$/i.exec(token.replace(/,/g, ''));
-	if (m) {
-		const chrom = chromToCode(m[1]);
-		if (!chrom) return null;
-		return getVariantBySql(db, 'v.chrom=? AND v.pos=? AND v.ref=? AND v.alt=?', [chrom, Number(m[2]), m[3].toUpperCase(), m[4].toUpperCase()], scopeSlug);
+	if (!variant) {
+		let m = /^rs(\d+)$/i.exec(token);
+		if (m) variant = await getVariantBySql(db, 'v.rsid=?', [Number(m[1])], scopeSlug);
 	}
 
-	return null;
+	if (!variant) {
+		const m = /^(?:ga4gh:VA\.)?([A-Za-z0-9_-]{32})$/.exec(token);
+		if (m) variant = await getVariantBySql(db, 'v.vrs_digest=?', [m[1]], scopeSlug);
+	}
+
+	if (!variant) {
+		const m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:](\d+)-([A-Za-z]+)-([A-Za-z]+)$/i.exec(token.replace(/,/g, ''));
+		if (m) {
+			const chrom = chromToCode(m[1]);
+			if (chrom) {
+				variant = await getVariantBySql(db, 'v.chrom=? AND v.pos=? AND v.ref=? AND v.alt=?', [chrom, Number(m[2]), m[3].toUpperCase(), m[4].toUpperCase()], scopeSlug);
+			}
+		}
+	}
+
+	return variant ?? resolveVariantFromExploreCache(db, raw, scopeSlug);
 }
 
 export interface BiobankOverview {

@@ -18,6 +18,9 @@
 	import { lang } from '$lib/i18n'
 	import AtlasHome from '$lib/templates/AtlasHome.svelte'
 	import VariantBrowser from '$lib/components/widgets/VariantBrowser.svelte'
+	import VariantDetailPage from '$lib/components/app/VariantDetailPage.svelte'
+	import type { PageServerData as VariantPageData } from '../../routes/explore/variant/[id]/$types'
+	import { goto } from '$app/navigation'
 	import * as Drawer from '$lib/components/ui/drawer/index.js'
 
 	type Population = {
@@ -584,7 +587,21 @@
 	]
 
 	let { data, children } = $props()
-	const isHome = $derived(page.url.pathname === '/')
+	const isHome = $derived(page.url.pathname === '/' || page.url.pathname === '/explore')
+	const isVariantRoute = $derived(page.url.pathname.startsWith('/explore/variant/'))
+	const variantDetailData = $derived.by((): VariantPageData | null => {
+		if (!isVariantRoute) return null
+		const routeData = page.data as VariantPageData
+		if (!routeData.variant) return null
+		return routeData
+	})
+	const variantRouteError = $derived(
+		isVariantRoute && !variantDetailData && page.status >= 400
+			? (typeof page.error === 'object' && page.error && 'message' in page.error
+					? String(page.error.message)
+					: 'Variant not found')
+			: null
+	)
 	const rawDashboard = $derived(data.dashboard ?? data ?? fallbackDashboard)
 	const dashboard = $derived.by(() => {
 		const source = (rawDashboard ?? fallbackDashboard) as typeof fallbackDashboard & {
@@ -653,6 +670,7 @@
 	let filterPopulations = $state<Record<number, boolean>>({})
 	let filterPopulationMatchMode = $state<'any' | 'all'>('any')
 	let filterStateHydrated = $state(false)
+	let lastHydratedExploreUrl = $state('')
 	let resultsDrawerOpen = $state(false)
 	let resultsDrawerExpanded = $state(false)
 	let resultsTableQueryString = $state('')
@@ -748,15 +766,20 @@
 			Number(filterPageSize !== 50)
 	)
 
-	$effect(() => {
-		if (filterStateHydrated || !filterBiobankOptions.length) return
-		const sp = page.url.searchParams
+	function hydrateExploreFiltersFromUrl(
+		sp: URLSearchParams,
+		{ syncSearch = true, clearSearch = false }: { syncSearch?: boolean; clearSearch?: boolean } = {}
+	) {
 		const urlBanks = (sp.get('biobanks') ?? '').split(',').filter(Boolean)
 		const urlCohorts = new Set((sp.get('cohorts') ?? '').split(',').filter(Boolean).map(Number))
 		const urlImpacts = new Set((sp.get('vepImpact') ?? '').split(',').filter(Boolean))
 		const urlConsequences = new Set((sp.get('vepConsequence') ?? '').split(',').filter(Boolean))
 
-		searchQuery = sp.get('q') ?? searchQuery
+		if (syncSearch) {
+			searchQuery = sp.get('q') ?? ''
+		} else if (clearSearch && !sp.has('q')) {
+			searchQuery = ''
+		}
 		filterGene = sp.get('gene') ?? ''
 		filterAfMin = sp.get('afMin') ?? ''
 		filterAfMax = sp.get('afMax') ?? ''
@@ -786,7 +809,24 @@
 				sp.has('vepConsequence') ? urlConsequences.has(value) : true,
 			])
 		)
-		resultsDrawerOpen = sp.get('results') === '1'
+		resultsDrawerOpen = sp.get('results') === '1' || page.url.pathname === '/explore'
+	}
+
+	$effect(() => {
+		if (!filterBiobankOptions.length) return
+		const path = page.url.pathname
+		if (path !== '/' && path !== '/explore') return
+		const urlKey = `${path}?${page.url.search}`
+		if (urlKey === lastHydratedExploreUrl) return
+
+		const prevPath = lastHydratedExploreUrl ? lastHydratedExploreUrl.split('?')[0] : ''
+		const forceFullHydrate = !lastHydratedExploreUrl
+		const pathChanged = Boolean(lastHydratedExploreUrl) && prevPath !== path
+		hydrateExploreFiltersFromUrl(page.url.searchParams, {
+			syncSearch: forceFullHydrate || pathChanged,
+			clearSearch: forceFullHydrate || pathChanged
+		})
+		lastHydratedExploreUrl = urlKey
 		filterStateHydrated = true
 	})
 	const datasetCountValue = (slug: string, value: unknown, field: 'participants' | 'variants') => {
@@ -932,10 +972,12 @@
 			: null
 	)
 	const showExploreLeftPanels = $derived(
-		(page.url.pathname.startsWith('/explore') || (isHome && resultsDrawerOpen)) &&
+		!isVariantRoute &&
+			(page.url.pathname === '/explore' || (page.url.pathname === '/' && resultsDrawerOpen)) &&
 			!selectedCountry &&
 			!selectedDataset
 	)
+	const showVariantLeftPanels = $derived(!!variantDetailData)
 	const scopedCountryRows = $derived.by(() => {
 		if (!selectedDataset) return countryRows
 		const codes = new Set(countryCodesForDataset(selectedDataset))
@@ -1111,14 +1153,8 @@
 	}
 
 	function handleSearchSubmit(event: SubmitEvent) {
-		const country = findMapSearchMatch(searchQuery)
-		if (!country || mapFilterCount || selectedDataset) {
-			event.preventDefault()
-			openResultsDrawer()
-			return
-		}
 		event.preventDefault()
-		flyToCountry(country)
+		openResultsDrawer()
 	}
 
 	function pickCountry(country: CountryRow) {
@@ -1184,8 +1220,7 @@
 
 	function buildExploreParams() {
 		const params = new URLSearchParams()
-		const country = findMapSearchMatch(searchQuery)
-		if (searchQuery.trim() && !country) params.set('q', searchQuery.trim())
+		if (searchQuery.trim()) params.set('q', searchQuery.trim())
 		if (filterGene.trim()) params.set('gene', filterGene.trim())
 		if (filterAfMin) params.set('afMin', filterAfMin)
 		if (filterAfMax) params.set('afMax', filterAfMax)
@@ -1235,7 +1270,8 @@
 	const mapResultsPath = $derived.by(() => {
 		const params = buildExploreParams()
 		params.set('results', '1')
-		return `/${params.toString() ? `?${params.toString()}` : ''}`
+		const base = page.url.pathname === '/explore' || page.url.pathname.startsWith('/explore/variant') ? '/explore' : '/'
+		return `${base}${params.toString() ? `?${params.toString()}` : ''}`
 	})
 	const mapResultsUrl = $derived(
 		`${typeof location !== 'undefined' ? location.origin : ''}${mapResultsPath}`
@@ -1246,7 +1282,7 @@
 		if (selectedCountry) parts.push(selectedCountry.name)
 		if (selectedDataset) parts.push(selectedDataset.title)
 		if (filterGene.trim()) parts.push(filterGene.trim())
-		if (searchQuery.trim() && !findMapSearchMatch(searchQuery)) parts.push(searchQuery.trim())
+		if (searchQuery.trim()) parts.push(searchQuery.trim())
 		if (filterAfMin || filterAfMax) parts.push(`AF ${filterAfMin || '0'}-${filterAfMax || 'max'}`)
 		if (filterAcMin || filterAcMax) parts.push(`AC ${filterAcMin || '0'}-${filterAcMax || 'max'}`)
 		return parts.length
@@ -1262,6 +1298,32 @@
 	const drawerCurlCmd = $derived(
 		`curl '${typeof location !== 'undefined' ? location.origin : ''}/api/variants?${drawerApiQueryString}'`
 	)
+
+	function openVariantFromDrawer(href: string) {
+		resultsDrawerOpen = true
+		resultsDrawerExpanded = true
+		const target = new URL(href, page.url)
+		const tenant = page.url.searchParams.get('tenant') ?? data.forceTenant
+		if (tenant && !target.searchParams.has('tenant')) {
+			target.searchParams.set('tenant', tenant)
+		}
+		void goto(`${target.pathname}${target.search}`)
+	}
+
+	function openExploreFromVariant(href: string) {
+		resultsDrawerOpen = true
+		resultsDrawerExpanded = true
+		const target = new URL(href, page.url)
+		const tenant = page.url.searchParams.get('tenant') ?? data.forceTenant
+		if (tenant && !target.searchParams.has('tenant')) {
+			target.searchParams.set('tenant', tenant)
+		}
+		if (!target.searchParams.has('results')) {
+			target.searchParams.set('results', '1')
+		}
+		lastHydratedExploreUrl = ''
+		void goto(`${target.pathname}${target.search}`)
+	}
 
 	function openResultsDrawer() {
 		resultsDrawerOpen = true
@@ -1287,12 +1349,16 @@
 	}
 
 	function syncResultsUrl(open: boolean) {
-		if (typeof location === 'undefined' || page.url.pathname !== '/') return
+		if (typeof location === 'undefined') return
+		const path = page.url.pathname
+		if (path !== '/' && path !== '/explore') return
 		const params = buildExploreParams()
 		if (open) params.set('results', '1')
 		else params.delete('results')
 		const qs = params.toString()
-		history.replaceState(history.state, '', `/${qs ? `?${qs}` : ''}`)
+		const urlKey = `${path}${qs ? `?${qs}` : ''}`
+		history.replaceState(history.state, '', urlKey)
+		lastHydratedExploreUrl = urlKey
 	}
 
 	$effect(() => {
@@ -1303,7 +1369,14 @@
 		}
 		void resultsDrawerOpen
 		void exploreQueryString
-		syncResultsUrl(resultsDrawerOpen)
+		if (!isVariantRoute) syncResultsUrl(resultsDrawerOpen)
+	})
+
+	$effect(() => {
+		if (isVariantRoute && variantDetailData) {
+			resultsDrawerOpen = true
+			resultsDrawerExpanded = true
+		}
 	})
 
 	function countrySourceBanks(country: CountryRow) {
@@ -1904,7 +1977,7 @@
 
 		<form
 			method="GET"
-			action="/"
+			action={page.url.pathname === '/explore' ? '/explore' : '/'}
 			class="global-search"
 			class:dropdown-open={countryPickerOpen}
 			onsubmit={handleSearchSubmit}
@@ -2029,21 +2102,23 @@
 				aria-label={tx('Variant results', 'Resultados de variantes')}
 			>
 				<div class="drawer-copy-ears" aria-label={tx('Share tools', 'Ferramentas de compartilhamento')}>
-					<button
-						type="button"
-						class:active={drawerFiltersOpen}
-						onclick={() => (drawerFiltersOpen = !drawerFiltersOpen)}
-					>
-						{tx('Filters', 'Filtros')}{#if mapFilterCount} <strong>{mapFilterCount}</strong>{/if}
-					</button>
-					<button type="button" onclick={copyDrawerCurl} title={drawerCurlCmd}
-						>{curlCopied ? tx('Copied', 'Copiado') : 'curl'}</button
-					>
-					<button type="button" onclick={copyShareUrl}
-						>{shareCopied ? tx('Copied', 'Copiado') : tx('link', 'link')}</button
-					>
+					{#if !isVariantRoute}
+						<button
+							type="button"
+							class:active={drawerFiltersOpen}
+							onclick={() => (drawerFiltersOpen = !drawerFiltersOpen)}
+						>
+							{tx('Filters', 'Filtros')}{#if mapFilterCount} <strong>{mapFilterCount}</strong>{/if}
+						</button>
+						<button type="button" onclick={copyDrawerCurl} title={drawerCurlCmd}
+							>{curlCopied ? tx('Copied', 'Copiado') : 'curl'}</button
+						>
+						<button type="button" onclick={copyShareUrl}
+							>{shareCopied ? tx('Copied', 'Copiado') : tx('link', 'link')}</button
+						>
+					{/if}
 				</div>
-				{#if drawerFiltersOpen}
+				{#if drawerFiltersOpen && !isVariantRoute}
 					<div class="map-filter-menu drawer-filter-menu">
 						{#if filterBiobankOptions.length > 1}
 							<section class="map-filter-section">
@@ -2242,26 +2317,125 @@
 					</div>
 				{/if}
 				<div class="map-results-body">
-					{#key resultsDrawerKey}
-						<VariantBrowser
-							forceTenant={data.forceTenant}
-							scoped={!!data.tenant.scope}
-							options={data.options ?? []}
-							populations={data.populations ?? []}
-							initialParams={activeResultsQueryString}
-							syncToUrl={false}
-							showApiBar={false}
-							showTitle={false}
-							onParamsChange={(params) => (resultsTableQueryString = params)}
-							showGenotypeCounts={data.showGenotypeCounts}
-							display={data.display}
-							title={tx('Variants', 'Variantes')}
-							subtitle={resultsContextTitle}
-						/>
-					{/key}
+					{#if isVariantRoute && variantDetailData}
+						<VariantDetailPage data={variantDetailData} part="tables" onExploreNavigate={openExploreFromVariant} />
+					{:else if variantRouteError}
+						<div class="variant-route-error">
+							<p>{variantRouteError}</p>
+							<button type="button" onclick={() => history.back()}>
+								{tx('Back to results', 'Voltar aos resultados')}
+							</button>
+						</div>
+					{:else}
+						{#key resultsDrawerKey}
+							<VariantBrowser
+								forceTenant={data.forceTenant}
+								scoped={!!data.tenant.scope}
+								options={data.options ?? []}
+								populations={data.populations ?? []}
+								initialParams={activeResultsQueryString}
+								syncToUrl={false}
+								showApiBar={false}
+								showTitle={false}
+								onParamsChange={(params) => (resultsTableQueryString = params)}
+								onVariantNavigate={openVariantFromDrawer}
+								showGenotypeCounts={data.showGenotypeCounts}
+								display={data.display}
+								title={tx('Variants', 'Variantes')}
+								subtitle={resultsContextTitle}
+							/>
+						{/key}
+					{/if}
 				</div>
 			</Drawer.Content>
 		</Drawer.Root>
+
+		{#if showVariantLeftPanels && variantDetailData}
+			<VariantDetailPage data={variantDetailData} part="panel" onExploreNavigate={openExploreFromVariant} />
+		{:else if showExploreLeftPanels}
+			<section class="explore-intro-panel" aria-label={tx('Explore BioVault', 'Explorar BioVault')}>
+				<h2>{tx('Explore', 'Explorar')} <span>BioVault</span></h2>
+				<p>{tx('Variants across the whole network.', 'Variantes em toda a rede.')}</p>
+			</section>
+
+			<section class="explore-stat-row" aria-label={tx('Network summary', 'Resumo da rede')}>
+				<div class="explore-stat-box">
+					<strong>{countryRows.length}</strong>
+					<span>{tx('countries', 'países')}</span>
+				</div>
+				<div class="explore-stat-box">
+					<strong>{fmt(dashboard.totals.participants)}</strong>
+					<span>{tx('participants', 'participantes')}</span>
+				</div>
+			</section>
+
+			<section class="variant-mix explore-variant-panel" aria-label={tx('Variants', 'Variantes')}>
+				<div class="variant-head">
+					<h2>{tx('Variants', 'Variantes')}</h2>
+					<strong>{fmt(variantMixTotal)}</strong>
+				</div>
+
+				<div class="variant-bar" aria-hidden="true">
+					{#each variantClassRows as row (row.key)}
+						<span style={`width:${pct(row.count, dashboard.totals.variants)}; background:${row.color}`}></span>
+					{/each}
+				</div>
+				<div class="variant-key">
+					{#each variantClassRows as row (row.key)}
+						<div class="variant-key-slot">
+							<div class="variant-key-item">
+								<span class="variant-key-label">
+									<span class="variant-swatch" style:background-color={row.color}></span>
+									{row.label}
+								</span>
+								<strong>{fmt(row.count)}</strong>
+							</div>
+						</div>
+					{/each}
+				</div>
+			</section>
+
+			<section class="bottom-panel explore-datasets-panel" aria-label={tx('Databases', 'Bancos de dados')}>
+				<div class="panel-heading dataset-heading">
+					<h2>{tx('Databases', 'Bancos de dados')}</h2>
+					<span class="dataset-count">
+						<strong>{displayDatasets.length}</strong>
+						<small>{tx('databases', 'bancos')}</small>
+					</span>
+				</div>
+
+				<div class="database-scroll">
+					{#each displayDatasets as dataset}
+						{@const tenant = tenantFor(dataset.biobankSlug)}
+						<button
+							type="button"
+							class="database-row"
+							class:active={selectedDatasetSlug === dataset.slug}
+							onclick={() => selectDataset(dataset)}
+						>
+							<span class="dataset-logo" aria-hidden="true">
+								{#if tenant?.logoImg}
+									<img src={tenant.logoImg} alt="" />
+								{:else}
+									<span>{tenant?.logoEmoji ?? 'DB'}</span>
+								{/if}
+							</span>
+							<span class="database-row-main">
+								<span class="database-row-title">{dataset.title}</span>
+								<small
+									>{dataset.release} · {fmt(dataset.participants)}
+									{tx('participants', 'participantes')} · {dataset.assay}</small
+								>
+							</span>
+						</button>
+					{/each}
+					<a href="/contact" class="dataset-cta"
+						>{tx('Want to contribute data?', 'Quer contribuir com dados?')}
+						<strong>{tx('Get in touch', 'Entre em contato')}</strong></a
+					>
+				</div>
+			</section>
+		{/if}
 
 		{#if isHome}
 			{#if selectedCountry || selectedDataset}
@@ -2437,99 +2611,6 @@
 				</aside>
 			{/if}
 
-			{#if showExploreLeftPanels}
-				<section class="explore-intro-panel" aria-label={tx('Explore BioVault', 'Explorar BioVault')}>
-					<h2>{tx('Explore', 'Explorar')} <span>BioVault</span></h2>
-					<p>{tx('Variants across the whole network.', 'Variantes em toda a rede.')}</p>
-				</section>
-
-				<section class="explore-stat-row" aria-label={tx('Network summary', 'Resumo da rede')}>
-					<div class="explore-stat-box">
-						<strong>{countryRows.length}</strong>
-						<span>{tx('countries', 'países')}</span>
-					</div>
-					<div class="explore-stat-box">
-						<strong>{fmt(dashboard.totals.participants)}</strong>
-						<span>{tx('participants', 'participantes')}</span>
-					</div>
-				</section>
-
-				<section
-					class="variant-mix explore-variant-panel"
-					aria-label={tx('Variants', 'Variantes')}
-				>
-					<div class="variant-head">
-						<h2>{tx('Variants', 'Variantes')}</h2>
-						<strong>{fmt(variantMixTotal)}</strong>
-					</div>
-
-					<div class="variant-bar" aria-hidden="true">
-						{#each variantClassRows as row (row.key)}
-							<span
-								style={`width:${pct(row.count, dashboard.totals.variants)}; background:${row.color}`}
-							></span>
-						{/each}
-					</div>
-					<div class="variant-key">
-						{#each variantClassRows as row (row.key)}
-							<div class="variant-key-slot">
-								<div class="variant-key-item">
-									<span class="variant-key-label">
-										<span class="variant-swatch" style:background-color={row.color}></span>
-										{row.label}
-									</span>
-									<strong>{fmt(row.count)}</strong>
-								</div>
-							</div>
-						{/each}
-					</div>
-				</section>
-
-				<section
-					class="bottom-panel explore-datasets-panel"
-					aria-label={tx('Databases', 'Bancos de dados')}
-				>
-					<div class="panel-heading dataset-heading">
-						<h2>{tx('Databases', 'Bancos de dados')}</h2>
-						<span class="dataset-count">
-							<strong>{displayDatasets.length}</strong>
-							<small>{tx('databases', 'bancos')}</small>
-						</span>
-					</div>
-
-					<div class="database-scroll">
-						{#each displayDatasets as dataset}
-							{@const tenant = tenantFor(dataset.biobankSlug)}
-							<button
-								type="button"
-								class="database-row"
-								class:active={selectedDatasetSlug === dataset.slug}
-								onclick={() => selectDataset(dataset)}
-							>
-								<span class="dataset-logo" aria-hidden="true">
-									{#if tenant?.logoImg}
-										<img src={tenant.logoImg} alt="" />
-									{:else}
-										<span>{tenant?.logoEmoji ?? 'DB'}</span>
-									{/if}
-								</span>
-								<span class="database-row-main">
-									<span class="database-row-title">{dataset.title}</span>
-									<small
-										>{dataset.release} · {fmt(dataset.participants)}
-										{tx('participants', 'participantes')} · {dataset.assay}</small
-									>
-								</span>
-							</button>
-						{/each}
-						<a href="/contact" class="dataset-cta"
-							>{tx('Want to contribute data?', 'Quer contribuir com dados?')}
-							<strong>{tx('Get in touch', 'Entre em contato')}</strong></a
-						>
-					</div>
-				</section>
-			{/if}
-
 			<!-- Temporarily hidden per design pass.
 	<section class="variant-mix" class:drawer-open={resultsDrawerOpen} aria-label={tx('Variants', 'Variantes')}>
 		<div class="variant-head">
@@ -2596,101 +2677,8 @@
 	-->
 
 			<p class="site-footer">© BioVault GA4GH VRS · <a href="/api">Beacon v2</a></p>
-		{:else}
-			{#if showExploreLeftPanels}
-				<section class="explore-intro-panel" aria-label={tx('Explore BioVault', 'Explorar BioVault')}>
-					<h2>{tx('Explore', 'Explorar')} <span>BioVault</span></h2>
-					<p>{tx('Variants across the whole network.', 'Variantes em toda a rede.')}</p>
-				</section>
-
-				<section class="explore-stat-row" aria-label={tx('Network summary', 'Resumo da rede')}>
-					<div class="explore-stat-box">
-						<strong>{countryRows.length}</strong>
-						<span>{tx('countries', 'países')}</span>
-					</div>
-					<div class="explore-stat-box">
-						<strong>{fmt(dashboard.totals.participants)}</strong>
-						<span>{tx('participants', 'participantes')}</span>
-					</div>
-				</section>
-
-				<section
-					class="variant-mix explore-variant-panel"
-					aria-label={tx('Variants', 'Variantes')}
-				>
-					<div class="variant-head">
-						<h2>{tx('Variants', 'Variantes')}</h2>
-						<strong>{fmt(variantMixTotal)}</strong>
-					</div>
-
-					<div class="variant-bar" aria-hidden="true">
-						{#each variantClassRows as row (row.key)}
-							<span
-								style={`width:${pct(row.count, dashboard.totals.variants)}; background:${row.color}`}
-							></span>
-						{/each}
-					</div>
-					<div class="variant-key">
-						{#each variantClassRows as row (row.key)}
-							<div class="variant-key-slot">
-								<div class="variant-key-item">
-									<span class="variant-key-label">
-										<span class="variant-swatch" style:background-color={row.color}></span>
-										{row.label}
-									</span>
-									<strong>{fmt(row.count)}</strong>
-								</div>
-							</div>
-						{/each}
-					</div>
-				</section>
-
-				<section
-					class="bottom-panel explore-datasets-panel"
-					aria-label={tx('Databases', 'Bancos de dados')}
-				>
-					<div class="panel-heading dataset-heading">
-						<h2>{tx('Databases', 'Bancos de dados')}</h2>
-						<span class="dataset-count">
-							<strong>{displayDatasets.length}</strong>
-							<small>{tx('databases', 'bancos')}</small>
-						</span>
-					</div>
-
-					<div class="database-scroll">
-						{#each displayDatasets as dataset}
-							{@const tenant = tenantFor(dataset.biobankSlug)}
-							<button
-								type="button"
-								class="database-row"
-								class:active={selectedDatasetSlug === dataset.slug}
-								onclick={() => selectDataset(dataset)}
-							>
-								<span class="dataset-logo" aria-hidden="true">
-									{#if tenant?.logoImg}
-										<img src={tenant.logoImg} alt="" />
-									{:else}
-										<span>{tenant?.logoEmoji ?? 'DB'}</span>
-									{/if}
-								</span>
-								<span class="database-row-main">
-									<span class="database-row-title">{dataset.title}</span>
-									<small
-										>{dataset.release} · {fmt(dataset.participants)}
-										{tx('participants', 'participantes')} · {dataset.assay}</small
-									>
-								</span>
-							</button>
-						{/each}
-						<a href="/contact" class="dataset-cta"
-							>{tx('Want to contribute data?', 'Quer contribuir com dados?')}
-							<strong>{tx('Get in touch', 'Entre em contato')}</strong></a
-						>
-					</div>
-				</section>
-			{/if}
-
-			<main class="route-overlay" class:with-left-panels={showExploreLeftPanels}>
+		{:else if !isVariantRoute}
+			<main class="route-overlay" class:with-left-panels={showExploreLeftPanels || showVariantLeftPanels}>
 				{@render children?.()}
 			</main>
 		{/if}
@@ -2785,7 +2773,8 @@
 	.country-panel,
 	.bottom-panel,
 	.variant-mix,
-	.explore-intro-panel {
+	.explore-intro-panel,
+	:global(.variant-detail-panel) {
 		position: absolute;
 		z-index: 2;
 		border: 0;
@@ -2890,7 +2879,7 @@
 
 	.global-search {
 		position: absolute;
-		z-index: 3;
+		z-index: 60;
 		top: var(--screen-inset);
 		left: calc(var(--top-search-left) - (var(--top-search-width) / 2));
 		display: flex;
@@ -3283,6 +3272,8 @@
 		color: var(--om-gray-850);
 		outline: none;
 		appearance: none;
+		user-select: text;
+		-webkit-user-select: text;
 	}
 
 	.global-search input::placeholder {
@@ -3387,6 +3378,149 @@
 		font-weight: 600;
 		line-height: 1.3;
 		color: var(--om-gray-600);
+	}
+
+	:global(.variant-detail-panel) {
+		top: var(--results-drawer-top);
+		left: var(--screen-inset);
+		display: flex;
+		width: var(--side-panel-width);
+		max-height: calc(100vh - var(--results-drawer-top) - var(--bottom-inset));
+		flex-direction: column;
+		gap: var(--om-space-s);
+		overflow: auto;
+		padding: 14px var(--om-space-l) var(--om-space-l);
+	}
+
+	:global(.variant-detail-back) {
+		font-size: 12px;
+		font-weight: 700;
+		color: var(--om-gray-600);
+		text-decoration: none;
+	}
+
+	:global(.variant-detail-back:hover) {
+		color: var(--om-teal-700);
+		text-decoration: underline;
+	}
+
+	:global(.variant-detail-title) {
+		margin: 0;
+		overflow: hidden;
+		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+		font-size: 18px;
+		font-weight: 800;
+		line-height: 1.15;
+		color: var(--om-gray-850);
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	:global(.variant-detail-links) {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+
+	:global(.variant-detail-links a) {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		border: 1px solid color-mix(in srgb, var(--om-gray-400) 70%, transparent);
+		border-radius: var(--om-radius-s);
+		background: color-mix(in srgb, var(--om-white) 84%, transparent);
+		padding: 4px 8px;
+		font-size: 11px;
+		font-weight: 700;
+		color: var(--om-gray-700);
+		text-decoration: none;
+	}
+
+	:global(.variant-detail-links a:hover) {
+		border-color: color-mix(in srgb, var(--om-teal-600) 42%, transparent);
+		color: var(--om-teal-700);
+	}
+
+	:global(.variant-detail-links img),
+	:global(.variant-detail-links svg) {
+		width: 14px;
+		height: 14px;
+	}
+
+	:global(.variant-detail-summary) {
+		display: grid;
+		gap: var(--om-space-s);
+	}
+
+	:global(.variant-detail-summary h3) {
+		margin: 0;
+		font-size: 11px;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: var(--om-teal-700);
+	}
+
+	:global(.variant-detail-summary dl) {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 10px 12px;
+		margin: 0;
+	}
+
+	:global(.variant-detail-summary dl .span-all) {
+		grid-column: 1 / -1;
+	}
+
+	:global(.variant-detail-summary dt) {
+		font-size: 10px;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: var(--om-gray-550);
+	}
+
+	:global(.variant-detail-summary dd) {
+		margin: 2px 0 0;
+		font-size: 12px;
+		font-weight: 600;
+		line-height: 1.35;
+		color: var(--om-gray-850);
+	}
+
+	:global(.variant-detail-summary dd.mono) {
+		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+		font-size: 11px;
+	}
+
+	:global(.variant-gene-list) {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+	}
+
+	:global(.variant-gene-list a) {
+		border: 1px solid color-mix(in srgb, var(--om-gray-400) 70%, transparent);
+		border-radius: 999px;
+		padding: 2px 8px;
+		font-size: 11px;
+		font-weight: 700;
+		color: var(--om-teal-700);
+		text-decoration: none;
+	}
+
+	:global(.variant-gene-list a:hover) {
+		background: color-mix(in srgb, var(--om-teal-100) 60%, transparent);
+	}
+
+	:global(.vep-chip) {
+		display: inline-flex;
+		border-radius: 999px;
+		border: 1px solid color-mix(in srgb, var(--om-gray-400) 70%, transparent);
+		padding: 2px 8px;
+		font-size: 11px;
+		font-weight: 700;
+		text-decoration: none;
 	}
 
 	.explore-stat-row {
@@ -3695,7 +3829,20 @@
 		padding: 0;
 	}
 
-	.map-results-body :global(.card-surface) {
+	/* vaul applies user-select: none on the drawer; allow copying table values */
+	:global(.map-results-drawer .map-results-body),
+	:global(.map-results-drawer .map-results-body *) {
+		user-select: text !important;
+		-webkit-user-select: text !important;
+	}
+
+	:global(.map-results-drawer .map-results-body button),
+	:global(.map-results-drawer .map-results-body summary) {
+		user-select: none !important;
+		-webkit-user-select: none !important;
+	}
+
+	.map-results-body > :global(.card-surface) {
 		display: flex;
 		min-height: 0;
 		flex: 1;
@@ -3706,14 +3853,98 @@
 		padding: 0;
 	}
 
-	.map-results-body :global(.card-surface > .mb-3) {
+	.map-results-body :global(.variant-detail-tables) {
+		display: flex;
+		min-height: 0;
+		min-width: 0;
+		flex: 1;
+		flex-direction: column;
+		overflow: hidden;
+		width: 100%;
+	}
+
+	.map-results-body :global(.variant-detail-tabs) {
+		display: flex;
+		flex-shrink: 0;
+		gap: 0;
+		overflow-x: auto;
+		border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+		background: color-mix(in srgb, var(--om-gray-100) 60%, transparent);
+	}
+
+	.map-results-body :global(.variant-detail-tabs button) {
+		flex-shrink: 0;
+		border: 0;
+		border-bottom: 2px solid transparent;
+		background: transparent;
+		padding: 10px 14px;
+		font-size: 0.8125rem;
+		font-weight: 600;
+		color: var(--muted-foreground);
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.map-results-body :global(.variant-detail-tabs button:hover) {
+		color: var(--foreground);
+	}
+
+	.map-results-body :global(.variant-detail-tabs button.active),
+	.map-results-body :global(.variant-detail-tabs button[aria-selected='true']) {
+		color: var(--foreground);
+		border-bottom-color: var(--primary);
+	}
+
+	.map-results-body :global(.variant-detail-tab-panels) {
+		display: flex;
+		min-height: 0;
+		flex: 1;
+		flex-direction: column;
+		overflow: hidden;
+	}
+
+	.map-results-body :global(.variant-detail-tab-panels > .card-surface) {
+		display: flex;
+		min-height: 0;
+		flex: 1;
+		flex-direction: column;
+		overflow: auto;
+		border: 0;
+		background: transparent;
+		box-shadow: none;
+		margin-bottom: 0 !important;
+	}
+
+	.variant-route-error {
+		display: flex;
+		flex: 1;
+		flex-direction: column;
+		align-items: flex-start;
+		justify-content: center;
+		gap: 0.75rem;
+		padding: 1.5rem;
+		color: var(--muted-foreground);
+	}
+
+	.variant-route-error button {
+		border: 1px solid var(--border);
+		border-radius: 0.375rem;
+		padding: 0.375rem 0.75rem;
+		font-size: 0.875rem;
+	}
+
+	.variant-route-error button:hover {
+		background: var(--muted);
+	}
+
+	.map-results-body > :global(.card-surface > .mb-3) {
 		order: 2;
 		flex-shrink: 0;
 		margin: 0 !important;
 		padding: 10px var(--om-space-m);
 	}
 
-	.map-results-body :global(.card-surface > .mb-3 button:not(:disabled)) {
+	.map-results-body > :global(.card-surface > .mb-3 button:not(:disabled)) {
 		cursor: pointer;
 	}
 
