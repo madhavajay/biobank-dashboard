@@ -7,6 +7,8 @@
 	import { key, mapboxgl } from './mapboxgl';
 	import { TENANTS } from '$lib/tenants';
 	import { DATASETS, biobankSlugForDatasetSlug } from '$lib/datasets';
+	import { BRAZIL_STATES } from '$lib/data/brazil-states';
+	import { LANGS, lang } from '$lib/i18n';
 
 	type Population = {
 		name: string;
@@ -62,6 +64,14 @@
 		variants: number;
 		center: [number, number];
 		sources: string[];
+	};
+
+	type CoverageRow = {
+		code: string;
+		name: string;
+		samples: number | null;
+		subtitle: string;
+		center: [number, number];
 	};
 
 	const fallbackDashboard = {
@@ -236,6 +246,7 @@
 
 	const fmt = (n: number | null | undefined) => (n ?? 0).toLocaleString();
 	const pct = (n: number, d: number) => (d ? `${Math.round((n / d) * 100)}%` : '0%');
+	const tx = (en: string, pt: string) => ($lang === 'pt' ? pt : en);
 
 	const countryRows = $derived.by<CountryRow[]>(() => {
 		const byCode = new Map<string, CountryRow>();
@@ -263,12 +274,6 @@
 		return [...byCode.values()].sort((a, b) => b.samples - a.samples || a.name.localeCompare(b.name));
 	});
 
-	const biobankWebsiteFallbacks: Record<string, string> = {
-		carigenetics: 'https://carigenetics.com',
-		bipmed: 'https://bipmed.org',
-		'pgp-harvard': 'https://pgp.med.harvard.edu',
-		'1kgp': 'https://www.internationalgenome.org'
-	};
 	const tenantFor = (slug?: string) => TENANTS.find((tenant) => tenant.slug === slug);
 
 	const displayDatasets = $derived.by<DisplayDataset[]>(() => {
@@ -308,6 +313,21 @@
 		});
 	});
 
+	function isBipmedDataset(dataset?: DisplayDataset | null) {
+		return dataset?.slug === 'bipmed-wes' || dataset?.biobankSlug === 'bipmed';
+	}
+
+	function isPgpDataset(dataset?: DisplayDataset | null) {
+		return dataset?.slug === 'pgp-usa' || dataset?.biobankSlug === 'pgp-harvard';
+	}
+
+	function datasetCoverageLabel(dataset: DisplayDataset) {
+		if (dataset.slug === 'cari-caribbean' || dataset.biobankSlug === 'carigenetics') return tx('Caribbean coverage', 'Cobertura do Caribe');
+		if (isBipmedDataset(dataset)) return tx('Brazil states', 'Estados do Brasil');
+		if (isPgpDataset(dataset)) return tx('United States coverage', 'Cobertura dos Estados Unidos');
+		return tx('Countries in dataset', 'Países no conjunto de dados');
+	}
+
 	function countryCodesForDataset(dataset: DisplayDataset) {
 		if (dataset.slug === 'cari-caribbean' || dataset.biobankSlug === 'carigenetics') {
 			return [...CARIBBEAN_CODES];
@@ -332,6 +352,25 @@
 		const codes = new Set(countryCodesForDataset(selectedDataset));
 		return countryRows.filter((country) => codes.has(country.code));
 	});
+	const scopedCoverageRows = $derived.by((): CoverageRow[] => {
+		if (!selectedDataset) return [];
+		if (isBipmedDataset(selectedDataset)) {
+			return BRAZIL_STATES.map((state) => ({
+				code: state.code,
+				name: state.name,
+				samples: null,
+				subtitle: 'BIPMed',
+				center: state.center
+			}));
+		}
+		return scopedCountryRows.map((country) => ({
+			code: country.code,
+			name: country.name,
+			samples: country.samples,
+			subtitle: country.sources.slice(0, 2).join(' + '),
+			center: country.center
+		}));
+	});
 	const highlightCountryCodes = $derived.by(() => {
 		if (selectedCountry) return [selectedCountry.code];
 		if (selectedDataset) {
@@ -345,6 +384,14 @@
 		return countryRows.map((country) => country.code);
 	});
 	const countryHighlightExpression = $derived(['in', ['get', 'iso_3166_1'], ['literal', highlightCountryCodes]]);
+	const variantMixTotal = $derived(
+		selectedCountry?.variants ?? selectedDataset?.variants ?? dashboard.totals.variants
+	);
+	const variantClassRows = $derived([
+		{ key: 'common', label: tx('Common', 'Comuns'), count: dashboard.variantClasses.common, color: '#4a6fd8' },
+		{ key: 'lowFreq', label: tx('Low-freq', 'Baixa freq.'), count: dashboard.variantClasses.lowFreq, color: '#7b5cc4' },
+		{ key: 'rare', label: tx('Rare', 'Raras'), count: dashboard.variantClasses.rare, color: '#e2689a' }
+	]);
 	const countryMaskFilter = [
 		'all',
 		['==', ['get', 'disputed'], 'false'],
@@ -412,10 +459,6 @@
 		flyToCountry(country);
 	}
 
-	function biobankWebsite(bank: { slug?: string; website?: string }) {
-		return bank.website ?? (bank.slug ? biobankWebsiteFallbacks[bank.slug] : undefined) ?? '/contact';
-	}
-
 	function countrySourceBanks(country: CountryRow) {
 		const banks = dashboard.biobanks as Array<{ slug?: string; name: string; website?: string }>;
 		const seen = new Set<string>();
@@ -433,13 +476,6 @@
 			results.push(bank);
 		}
 		return results;
-	}
-
-	function exploreCountryHref(country: CountryRow) {
-		const slugs = countrySourceBanks(country).map((bank) => bank.slug).filter(Boolean);
-		const params = new URLSearchParams();
-		if (slugs.length) params.set('biobanks', slugs.join(','));
-		return `/explore${params.toString() ? `?${params}` : ''}`;
 	}
 
 	function countryMappingsForCode(code: string) {
@@ -494,17 +530,27 @@
 		});
 	}
 
-	function datasetWebsite(dataset: DisplayDataset) {
-		return biobankWebsite({ slug: dataset.biobankSlug });
-	}
-
-	function exploreDatasetHref(dataset: DisplayDataset) {
-		const params = new URLSearchParams();
-		if (dataset.biobankSlug) params.set('biobanks', dataset.biobankSlug);
-		return `/explore${params.toString() ? `?${params}` : ''}`;
-	}
-
 	function flyToDatasetView(dataset: DisplayDataset) {
+		if (isBipmedDataset(dataset)) {
+			map?.flyTo({
+				center: [-51.925, -14.235],
+				zoom: 3.9,
+				duration: 900,
+				essential: true
+			});
+			return;
+		}
+
+		if (isPgpDataset(dataset)) {
+			map?.flyTo({
+				center: [-98.58, 39.83],
+				zoom: 3.4,
+				duration: 900,
+				essential: true
+			});
+			return;
+		}
+
 		const rows = countryRows.filter((country) => countryCodesForDataset(dataset).includes(country.code));
 		if (!rows.length) {
 			map?.flyTo({
@@ -517,7 +563,12 @@
 		}
 
 		if (rows.length === 1) {
-			flyToCountry(rows[0], { keepDataset: true });
+			map?.flyTo({
+				center: rows[0].center,
+				zoom: COUNTRY_ZOOMS[rows[0].code] ?? 4.3,
+				duration: 900,
+				essential: true
+			});
 			return;
 		}
 
@@ -537,6 +588,16 @@
 		map?.flyTo({
 			center: [lng, lat],
 			zoom,
+			duration: 900,
+			essential: true
+		});
+	}
+
+	function flyToCoverageRow(row: CoverageRow, options?: { keepDataset?: boolean }) {
+		selectedCode = options?.keepDataset ? selectedCode : null;
+		map?.flyTo({
+			center: row.center,
+			zoom: isBipmedDataset(selectedDataset) ? 5.4 : 5.8,
 			duration: 900,
 			essential: true
 		});
@@ -776,7 +837,15 @@
 			renderWorldCopies: false
 		});
 
+		const resizeMap = () => map?.resize();
+		const resizeObserver = new ResizeObserver(resizeMap);
+		resizeObserver.observe(container);
+		requestAnimationFrame(resizeMap);
+		requestAnimationFrame(() => requestAnimationFrame(resizeMap));
+		window.addEventListener('resize', resizeMap);
+
 		map.on('load', () => {
+			resizeMap();
 			map?.setTerrain(null);
 			map?.setFog(null);
 			map?.setSnow(null);
@@ -813,6 +882,8 @@
 
 		return {
 			destroy() {
+				window.removeEventListener('resize', resizeMap);
+				resizeObserver.disconnect();
 				popup?.remove();
 				map?.remove();
 				map = undefined;
@@ -854,50 +925,76 @@
 			bind:value={searchQuery}
 			list="test-search-suggestions"
 			name="q"
-			placeholder="Search country, cohort, gene, rsID, or position"
+			placeholder={tx('Search country, cohort, gene, rsID, or position', 'Pesquisar país, coorte, gene, rsID ou posição')}
 		/>
 		<datalist id="test-search-suggestions">
 			{#each countryRows as country}
-				<option value={country.name}>{country.code} · {fmt(country.samples)} samples</option>
+				<option value={country.name}>{country.code} · {fmt(country.samples)} {tx('samples', 'amostras')}</option>
 			{/each}
 			{#each directPopulations as population}
 				<option value={population.name}>{population.biobankName}</option>
 			{/each}
-			<option value="Caribbean">Region</option>
-			<option value="BRCA1">Gene</option>
+			<option value="Caribbean">{tx('Region', 'Região')}</option>
+			<option value="BRCA1">{tx('Gene', 'Gene')}</option>
 			<option value="rs1050828">rsID</option>
-			<option value="chr17:43078520">Position</option>
+			<option value="chr17:43078520">{tx('Position', 'Posição')}</option>
 		</datalist>
-		<button>Search</button>
+		<button>{tx('Explore', 'Explorar')}</button>
 	</form>
 
 	<div class="floating-title">
-		<h1>Global allele-frequency network</h1>
+		<h1>{tx('Global allele-frequency network', 'Rede global de frequência alélica')}</h1>
 		<p>
 			{#if selectedDataset}
-				{selectedDataset.title} · {fmt(scopedCountryRows.length)} countries · {fmt(selectedDataset.participants)} participants
+				{#if isBipmedDataset(selectedDataset)}
+					{selectedDataset.title} · {fmt(BRAZIL_STATES.length)} {tx('states', 'estados')} · {fmt(selectedDataset.participants)} {tx('participants', 'participantes')}
+				{:else if isPgpDataset(selectedDataset)}
+					{selectedDataset.title} · {tx('United States', 'Estados Unidos')} · {fmt(selectedDataset.participants)} {tx('participants', 'participantes')}
+				{:else}
+					{selectedDataset.title} · {fmt(scopedCountryRows.length)} {tx('countries', 'países')} · {fmt(selectedDataset.participants)} {tx('participants', 'participantes')}
+				{/if}
 			{:else}
-				{fmt(dashboard.totals.participants)} participants across {countryRows.length} countries
+				{fmt(dashboard.totals.participants)} {tx('participants across', 'participantes em')} {countryRows.length} {tx('countries', 'países')}
 			{/if}
 		</p>
 	</div>
 
-	<nav class="top-nav" aria-label="Dashboard navigation">
-		<a href="/">Home</a>
-		<a href="/explore">Explore</a>
-		<a href="/about">About</a>
-		<a href="/contact">Contact</a>
+	<nav class="top-nav" aria-label={tx('Dashboard navigation', 'Navegação do painel')}>
+		<a href="/">{tx('Home', 'Início')}</a>
+		<a href="/explore">{tx('Explore', 'Explorar')}</a>
+		<a href="/about">{tx('About', 'Sobre')}</a>
+		<a href="/contact">{tx('Contact', 'Contato')}</a>
 		<a href="/api">API</a>
+		<label class="language-switcher" aria-label={tx('Language', 'Idioma')}>
+			<select bind:value={$lang}>
+				{#each LANGS as option}
+					<option value={option.code}>{option.flag} {option.code.toUpperCase()}</option>
+				{/each}
+			</select>
+		</label>
 	</nav>
 
-	<aside class="country-panel" aria-label="Countries by sample count">
+	<aside class="country-panel" aria-label={tx('Countries by sample count', 'Países por número de amostras')}>
+		{#snippet panelLogo(slug?: string)}
+			{@const tenant = tenantFor(slug)}
+			{#if tenant}
+				<span class="dataset-logo" aria-hidden="true">
+					{#if tenant.logoImg}
+						<img src={tenant.logoImg} alt="" />
+					{:else}
+						<span>{tenant.logoEmoji}</span>
+					{/if}
+				</span>
+			{/if}
+		{/snippet}
+
 		{#if selectedCountry}
 			<div class="panel-heading detail-heading">
 				<div>
-					<p>Selected country</p>
+					<p>{tx('Selected country', 'País selecionado')}</p>
 					<h2>{selectedCountry.name}</h2>
 				</div>
-				<button type="button" onclick={clearCountrySelection}>{selectedDataset ? 'Back' : 'Clear'}</button>
+				<button type="button" class="panel-action secondary" onclick={clearCountrySelection}>{selectedDataset ? tx('Back', 'Voltar') : tx('Reset view', 'Redefinir vista')}</button>
 			</div>
 
 			<div class="country-detail">
@@ -905,20 +1002,9 @@
 					<p class="detail-context">{countryContextLine(selectedCountry)}</p>
 				{/if}
 
-				<div class="detail-stat-grid">
-					<div class="detail-stat">
-						<span>Samples</span>
-						<strong>{fmt(selectedCountry.samples)}</strong>
-					</div>
-					<div class="detail-stat">
-						<span>Variants</span>
-						<strong>{fmt(selectedCountry.variants)}</strong>
-					</div>
-				</div>
-
 				{#if caribbeanPeerCountries(selectedCountry).length}
 					<div class="detail-section">
-						<p>Caribbean breakdown</p>
+						<p>{tx('Caribbean breakdown', 'Detalhamento do Caribe')}</p>
 						<div class="detail-list">
 							{#each caribbeanPeerCountries(selectedCountry) as peer}
 								<button type="button" class="detail-list-row" class:active={peer.code === selectedCountry.code} onclick={() => flyToCountry(peer)}>
@@ -932,7 +1018,7 @@
 
 				{#if countryMappingsForCode(selectedCountry.code).length}
 					<div class="detail-section">
-						<p>1KGP subpopulations</p>
+						<p>{tx('1KGP subpopulations', 'Subpopulações 1KGP')}</p>
 						<div class="detail-list">
 							{#each countryMappingsForCode(selectedCountry.code) as mapping}
 								<div class="detail-list-row static">
@@ -946,44 +1032,36 @@
 
 				{#each datasetsForCountry(selectedCountry) as dataset}
 					<article class="meta-dataset compact">
-						<div class="meta-dataset-head">
-							<p>Dataset</p>
-							{#if dataset.release}<span class="meta-release">{dataset.release}</span>{/if}
+						<div class="meta-dataset-intro">
+							{@render panelLogo(dataset.biobankSlug)}
+							<div class="meta-dataset-copy">
+								<div class="meta-dataset-head">
+									<p>{tx('Dataset', 'Conjunto de dados')}</p>
+									{#if dataset.release}<span class="meta-release">{dataset.release}</span>{/if}
+								</div>
+								<h3>{dataset.title}</h3>
+								{#if dataset.description}<p class="meta-desc">{dataset.description}</p>{/if}
+							</div>
 						</div>
-						<h3>{dataset.title}</h3>
-						{#if dataset.description}<p class="meta-desc">{dataset.description}</p>{/if}
 						<dl class="meta-grid">
-							<div><dt>Participants</dt><dd>{fmt(dataset.participants)}</dd></div>
-							<div><dt>Variants</dt><dd>{fmt(dataset.variants)}</dd></div>
-							<div><dt>Assay</dt><dd>{dataset.assay}</dd></div>
-							<div><dt>Build</dt><dd>{dataset.genomeBuild}</dd></div>
+							<div><dt>{tx('Participants', 'Participantes')}</dt><dd>{fmt(dataset.participants)}</dd></div>
+							<div><dt>{tx('Variants', 'Variantes')}</dt><dd>{fmt(dataset.variants)}</dd></div>
+							<div><dt>{tx('Assay', 'Ensaio')}</dt><dd>{dataset.assay}</dd></div>
+							<div><dt>{tx('Build', 'Montagem')}</dt><dd>{dataset.genomeBuild}</dd></div>
 						</dl>
 					</article>
 				{/each}
-
-				<div class="detail-section">
-					<p>Sources</p>
-					<div class="source-links">
-						{#each countrySourceBanks(selectedCountry) as bank}
-							<a href={biobankWebsite(bank)} target="_blank" rel="noreferrer">{bank.name}</a>
-						{/each}
-					</div>
-				</div>
-
-				<div class="detail-actions">
-					<a href={exploreCountryHref(selectedCountry)}>Explore variants</a>
-					{#if countrySourceBanks(selectedCountry)[0]}
-						<a href={biobankWebsite(countrySourceBanks(selectedCountry)[0])} target="_blank" rel="noreferrer">Open source portal</a>
-					{/if}
-				</div>
 			</div>
 		{:else if selectedDataset}
 			<div class="panel-heading detail-heading">
-				<div>
-					<p>Dataset</p>
-					<h2>{selectedDataset.title}</h2>
+				<div class="detail-heading-main">
+					{@render panelLogo(selectedDataset.biobankSlug)}
+					<div>
+						<p>{tx('Dataset', 'Conjunto de dados')}</p>
+						<h2>{selectedDataset.title}</h2>
+					</div>
 				</div>
-				<button type="button" onclick={clearDatasetSelection}>Clear</button>
+				<button type="button" class="panel-action secondary" onclick={clearDatasetSelection}>{tx('Reset view', 'Redefinir vista')}</button>
 			</div>
 
 			<div class="country-detail">
@@ -993,43 +1071,38 @@
 
 				<article class="meta-dataset compact">
 					<div class="meta-dataset-head">
-						<p>Dataset stats</p>
+						<p>{tx('Dataset stats', 'Estatísticas do conjunto')}</p>
 						{#if selectedDataset.release}<span class="meta-release">{selectedDataset.release}</span>{/if}
 					</div>
 					<dl class="meta-grid">
-						<div><dt>Participants</dt><dd>{fmt(selectedDataset.participants)}</dd></div>
-						<div><dt>Variants</dt><dd>{fmt(selectedDataset.variants)}</dd></div>
-						<div><dt>Assay</dt><dd>{selectedDataset.assay}</dd></div>
-						<div><dt>Build</dt><dd>{selectedDataset.genomeBuild}</dd></div>
+						<div><dt>{tx('Participants', 'Participantes')}</dt><dd>{fmt(selectedDataset.participants)}</dd></div>
+						<div><dt>{tx('Variants', 'Variantes')}</dt><dd>{fmt(selectedDataset.variants)}</dd></div>
+						<div><dt>{tx('Assay', 'Ensaio')}</dt><dd>{selectedDataset.assay}</dd></div>
+						<div><dt>{tx('Build', 'Montagem')}</dt><dd>{selectedDataset.genomeBuild}</dd></div>
 					</dl>
 				</article>
 
 				<div class="detail-section">
-					<p>{selectedDataset.slug === 'cari-caribbean' ? 'Caribbean coverage' : 'Countries in dataset'}</p>
+					<p>{datasetCoverageLabel(selectedDataset)}</p>
 					<div class="country-list inset">
-						{#each scopedCountryRows as country}
-							<button type="button" onclick={() => flyToCountry(country, { keepDataset: true })}>
+						{#each scopedCoverageRows as row}
+							<button type="button" onclick={() => flyToCoverageRow(row, { keepDataset: true })}>
 								<span class="country-main">
-									<span>{country.name}</span>
-									<small>{country.sources.slice(0, 2).join(' + ')}</small>
+									<span>{row.name}</span>
+									<small>{row.subtitle}</small>
 								</span>
 								<span class="country-count">
-									<strong>{fmt(country.samples)}</strong>
-									<small>{country.code}</small>
+									<strong>{row.samples == null ? '—' : fmt(row.samples)}</strong>
+									<small>{row.code}</small>
 								</span>
 							</button>
 						{/each}
 					</div>
 				</div>
-
-				<div class="detail-actions">
-					<a href={exploreDatasetHref(selectedDataset)}>Explore variants</a>
-					<a href={datasetWebsite(selectedDataset)} target="_blank" rel="noreferrer">Open source portal</a>
-				</div>
 			</div>
 		{:else}
 			<div class="panel-heading">
-				<h2>Countries by samples</h2>
+				<h2>{tx('Countries by samples', 'Países por amostras')}</h2>
 			</div>
 
 			<div class="country-list">
@@ -1049,29 +1122,38 @@
 		{/if}
 	</aside>
 
-	<section class="variant-mix" aria-label="Variants">
+	<section class="variant-mix" aria-label={tx('Variants', 'Variantes')}>
 		<div class="variant-head">
-			<h2>Variants</h2>
-			<strong>{fmt(dashboard.totals.variants)}</strong>
+			<h2>{tx('Variants', 'Variantes')}</h2>
+			<strong>{fmt(variantMixTotal)}</strong>
 		</div>
-		<div class="variant-bar">
-			<span style={`width:${pct(dashboard.variantClasses.common, dashboard.totals.variants)}`}></span>
-			<span style={`width:${pct(dashboard.variantClasses.lowFreq, dashboard.totals.variants)}`}></span>
-			<span style={`width:${pct(dashboard.variantClasses.rare, dashboard.totals.variants)}`}></span>
+
+		<div class="variant-bar" aria-hidden="true">
+			{#each variantClassRows as row (row.key)}
+				<span style={`width:${pct(row.count, dashboard.totals.variants)}; background:${row.color}`}></span>
+			{/each}
 		</div>
-		<div class="variant-rows">
-			<div><span>Common</span><strong>{fmt(dashboard.variantClasses.common)}</strong></div>
-			<div><span>Low-frequency</span><strong>{fmt(dashboard.variantClasses.lowFreq)}</strong></div>
-			<div><span>Rare</span><strong>{fmt(dashboard.variantClasses.rare)}</strong></div>
+		<div class="variant-key">
+			{#each variantClassRows as row (row.key)}
+				<div class="variant-key-slot">
+					<div class="variant-key-item">
+						<span class="variant-key-label">
+							<span class="variant-swatch" style:background-color={row.color}></span>
+							{row.label}
+						</span>
+						<strong>{fmt(row.count)}</strong>
+					</div>
+				</div>
+			{/each}
 		</div>
 	</section>
 
-	<section class="bottom-panel" aria-label="Databases">
+	<section class="bottom-panel" aria-label={tx('Databases', 'Bancos de dados')}>
 		<div class="panel-heading dataset-heading">
-			<h2>Databases</h2>
+			<h2>{tx('Databases', 'Bancos de dados')}</h2>
 			<span class="dataset-count">
 				<strong>{displayDatasets.length}</strong>
-				<small>databases</small>
+				<small>{tx('databases', 'bancos')}</small>
 			</span>
 		</div>
 
@@ -1093,13 +1175,15 @@
 					</span>
 					<span class="database-row-main">
 						<span class="database-row-title">{dataset.title}</span>
-						<small>{dataset.release} · {fmt(dataset.participants)} participants · {dataset.assay}</small>
+						<small>{dataset.release} · {fmt(dataset.participants)} {tx('participants', 'participantes')} · {dataset.assay}</small>
 					</span>
 				</button>
 			{/each}
-			<a href="/contact" class="dataset-cta">Want to contribute data? <strong>Get in touch</strong></a>
+			<a href="/contact" class="dataset-cta">{tx('Want to contribute data?', 'Quer contribuir com dados?')} <strong>{tx('Get in touch', 'Entre em contato')}</strong></a>
 		</div>
 	</section>
+
+	<p class="site-footer">© BioVault GA4GH VRS · <a href="/api">Beacon v2</a></p>
 </div>
 
 <style>
@@ -1151,6 +1235,7 @@
 		--om-space-xl: 20px;
 		--screen-inset: 24px;
 		--bottom-inset: 28px;
+		--side-panel-width: min(370px, calc(100vw - 32px));
 		position: relative;
 		height: 100vh;
 		width: 100%;
@@ -1212,10 +1297,11 @@
 		top: var(--screen-inset);
 		right: var(--screen-inset);
 		display: flex;
-		flex-wrap: wrap;
+		flex-wrap: nowrap;
+		align-items: center;
 		justify-content: flex-end;
-		gap: 10px 16px;
-		max-width: min(400px, calc(100vw - 32px));
+		gap: 14px;
+		max-width: calc(100vw - 32px);
 		padding: 10px 14px;
 		border-radius: var(--om-radius-m);
 		background: color-mix(in srgb, var(--om-white) 58%, transparent);
@@ -1233,6 +1319,34 @@
 	.top-nav a:hover {
 		color: var(--om-teal-700);
 		text-decoration: underline;
+	}
+
+	.language-switcher {
+		display: flex;
+		align-items: center;
+		margin-left: 2px;
+		line-height: 1;
+	}
+
+	.language-switcher select {
+		height: 24px;
+		width: 68px;
+		border: 1px solid color-mix(in srgb, var(--om-gray-400) 55%, transparent);
+		border-radius: var(--om-radius-s);
+		background: color-mix(in srgb, var(--om-white) 62%, transparent);
+		padding: 0 22px 0 7px;
+		font-size: 12px;
+		font-weight: 700;
+		line-height: 1;
+		cursor: pointer;
+		color: var(--om-gray-700);
+	}
+
+	.language-switcher select:hover,
+	.language-switcher select:focus {
+		border-color: color-mix(in srgb, var(--om-teal-600) 52%, transparent);
+		background: color-mix(in srgb, var(--om-teal-100) 68%, var(--om-white));
+		outline: none;
 	}
 
 	.global-search {
@@ -1341,7 +1455,7 @@
 	.variant-mix {
 		bottom: var(--bottom-inset);
 		left: 50%;
-		width: min(520px, calc(100vw - 32px));
+		width: min(480px, calc(100vw - 32px));
 		padding: var(--om-space-m);
 		transform: translateX(-50%);
 	}
@@ -1351,7 +1465,7 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: var(--om-space-l);
-		margin-bottom: var(--om-space-m);
+		margin-bottom: var(--om-space-s);
 	}
 
 	.variant-head h2 {
@@ -1368,45 +1482,90 @@
 
 	.variant-bar {
 		display: flex;
-		height: 13px;
+		height: 14px;
 		overflow: hidden;
 		border-radius: 999px;
-		background: var(--om-gray-200);
+		background: color-mix(in srgb, var(--om-gray-200) 55%, transparent);
+		box-shadow: inset 0 1px 2px rgb(46 43 59 / 0.06);
 	}
 
-	.variant-bar span:nth-child(1) {
-		background: var(--om-gray-700);
-	}
-	.variant-bar span:nth-child(2) {
-		background: var(--om-gray-500);
-	}
-	.variant-bar span:nth-child(3) {
-		background: var(--om-gray-300);
+	.variant-bar span {
+		min-width: 2px;
 	}
 
-	.variant-rows {
+	.variant-key {
 		display: grid;
-		gap: 7px;
-		margin-top: var(--om-space-m);
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		column-gap: var(--om-space-s);
+		margin-top: var(--om-space-s);
 	}
 
-	.variant-rows div {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) auto;
-		align-items: baseline;
-		gap: var(--om-space-m);
-		font-size: 12px;
+	.variant-key-slot {
+		min-width: 0;
 	}
 
-	.variant-rows span {
+	.variant-key-item {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 1px;
+		text-align: center;
+	}
+
+	.variant-key-label {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 6px;
+		font-size: 11px;
 		font-weight: 600;
-		color: var(--om-gray-600);
+		color: var(--om-gray-700);
+		min-width: 0;
+		max-width: 100%;
+		white-space: nowrap;
 	}
 
-	.variant-rows strong {
-		font-size: 13px;
+	.variant-swatch {
+		width: 9px;
+		height: 9px;
+		border-radius: 999px;
+		flex-shrink: 0;
+		box-shadow: 0 0 0 1px rgb(46 43 59 / 0.08);
+	}
+
+	.variant-key-item strong {
+		font-size: 12px;
 		font-weight: 800;
+		line-height: 1.2;
+		font-variant-numeric: tabular-nums;
 		color: var(--om-gray-850);
+	}
+
+	.site-footer {
+		position: absolute;
+		z-index: 2;
+		left: 50%;
+		bottom: 6px;
+		margin: 0;
+		transform: translateX(-50%);
+		font-family: 'Inter', system-ui, sans-serif;
+		font-size: 11px;
+		font-weight: 600;
+		line-height: 1.2;
+		color: var(--om-gray-600);
+		text-align: center;
+		text-shadow: 0 1px 0 rgb(255 255 255 / 0.72);
+		white-space: nowrap;
+	}
+
+	.site-footer a {
+		color: var(--om-gray-700);
+		text-decoration: none;
+	}
+
+	.site-footer a:hover {
+		color: var(--om-teal-700);
+		text-decoration: underline;
 	}
 
 	.country-panel {
@@ -1415,7 +1574,7 @@
 		display: flex;
 		max-height: min(430px, calc(100vh - 140px));
 		height: min(430px, calc(100vh - 140px));
-		width: min(370px, calc(100vw - 32px));
+		width: var(--side-panel-width);
 		flex-direction: column;
 		overflow: hidden;
 	}
@@ -1428,24 +1587,41 @@
 		padding: var(--om-space-m) var(--om-space-m) var(--om-space-l);
 	}
 
+	.panel-heading.detail-heading {
+		padding-bottom: var(--om-space-s);
+	}
+
 	.panel-heading h2 {
 		margin-top: 2px;
 		font-size: 18px;
 		line-height: 1.2;
 	}
 
-	.detail-heading button {
-		border: 0;
-		border-radius: var(--om-radius-s);
-		background: color-mix(in srgb, var(--om-white) 50%, transparent);
-		padding: 6px 9px;
-		font-size: 11px;
-		font-weight: 700;
-		color: var(--om-gray-600);
-		cursor: pointer;
+	.detail-heading-main {
+		display: flex;
+		align-items: center;
+		gap: var(--om-space-m);
+		min-width: 0;
 	}
 
-	.detail-heading button:hover {
+	.detail-heading .panel-action {
+		min-height: 34px;
+		border: 1px solid color-mix(in srgb, var(--om-gray-400) 70%, transparent);
+		border-radius: var(--om-radius-s);
+		background: color-mix(in srgb, var(--om-white) 84%, transparent);
+		box-shadow: 0 1px 2px rgb(46 43 59 / 0.04);
+		padding: 0 12px;
+		font-size: 12px;
+		font-weight: 700;
+		line-height: 1;
+		color: var(--om-gray-700);
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.detail-heading .panel-action:hover {
+		border-color: color-mix(in srgb, var(--om-teal-600) 42%, transparent);
+		background: color-mix(in srgb, var(--om-teal-100) 60%, var(--om-white));
 		color: var(--om-teal-700);
 	}
 
@@ -1453,21 +1629,13 @@
 		display: grid;
 		gap: var(--om-space-m);
 		overflow: auto;
-		padding: var(--om-space-m);
-	}
-
-	.detail-stat {
-		border: 0;
-		border-radius: var(--om-radius-m);
-		background: var(--om-gray-100);
-		padding: var(--om-space-m);
+		padding: 0 var(--om-space-m) var(--om-space-s);
 	}
 
 	.meta-dataset-head p {
 		margin: 0;
 	}
 
-	.detail-stat span,
 	.meta-dataset-head p,
 	.detail-section p {
 		display: block;
@@ -1476,40 +1644,6 @@
 		letter-spacing: 0;
 		text-transform: uppercase;
 		color: var(--om-teal-700);
-	}
-
-	.detail-stat strong {
-		display: block;
-		margin-top: 3px;
-		font-size: 24px;
-		font-weight: 800;
-		line-height: 1.1;
-	}
-
-	.source-links,
-	.detail-actions {
-		display: grid;
-		gap: var(--om-space-xs);
-		margin-top: var(--om-space-xs);
-	}
-
-	.source-links a,
-	.detail-actions a {
-		border-radius: var(--om-radius-s);
-		color: var(--om-gray-850);
-		font-size: 12px;
-		font-weight: 700;
-		text-decoration: none;
-	}
-
-	.source-links a:hover,
-	.detail-actions a:hover {
-		color: var(--om-teal-700);
-		text-decoration: underline;
-	}
-
-	.detail-actions {
-		padding-top: var(--om-space-m);
 	}
 
 	.country-list {
@@ -1563,13 +1697,12 @@
 		bottom: var(--bottom-inset);
 		display: flex;
 		flex-direction: column;
-		width: min(460px, calc(100vw - 32px));
+		width: var(--side-panel-width);
 		max-height: min(430px, calc(100vh - 140px));
 		overflow: hidden;
 		padding: 0;
 	}
 
-	.biobank-scroll,
 	.database-scroll {
 		display: grid;
 		gap: var(--om-space-s);
@@ -1625,8 +1758,8 @@
 
 	.dataset-logo {
 		display: flex;
-		width: 84px;
-		height: 42px;
+		width: 64px;
+		height: 32px;
 		align-items: center;
 		justify-content: center;
 		border-radius: var(--om-radius-s);
@@ -1636,8 +1769,8 @@
 	}
 
 	.dataset-logo img {
-		max-width: 76px;
-		max-height: 34px;
+		max-width: 58px;
+		max-height: 26px;
 		object-fit: contain;
 	}
 
@@ -1659,6 +1792,18 @@
 
 	.meta-dataset.compact {
 		padding: var(--om-space-s) var(--om-space-m);
+	}
+
+	.meta-dataset-intro {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--om-space-m);
+		margin-bottom: var(--om-space-s);
+	}
+
+	.meta-dataset-copy {
+		min-width: 0;
+		flex: 1;
 	}
 
 	.meta-dataset-head {
@@ -1717,16 +1862,11 @@
 	}
 
 	.detail-context {
+		margin: 0;
 		font-size: 12px;
 		font-weight: 600;
 		line-height: 1.4;
 		color: var(--om-gray-600);
-	}
-
-	.detail-stat-grid {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: var(--om-space-s);
 	}
 
 	.detail-list {
@@ -1804,6 +1944,7 @@
 		font-weight: 600;
 		line-height: 1.3;
 		color: var(--om-gray-600);
+		text-align: center;
 		text-decoration: none;
 	}
 
