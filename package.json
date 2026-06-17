@@ -20,6 +20,7 @@
 		"db:export:loci-filter": "bun scripts/export-loci-filter.ts",
 		"db:import:1kgp": "bun scripts/import-1kgp-superpop-af.ts",
 		"prepare": "svelte-kit sync || echo ''",
+	"test": "bun test src/lib/search/variant-search.test.ts",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
 	},

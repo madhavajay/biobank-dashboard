@@ -2,6 +2,17 @@
 import { CODE_CHROM, REFGET_SQ } from './chroms';
 import { publicVariantId } from '$lib/variant-id';
 import { ALLELE_COUNT_REPORTING_THRESHOLD, alleleFrequencyUpperBound, isAlleleCountMasked, isGenotypeMasked } from '$lib/privacy';
+import {
+	GENE_SEARCH_MIN_LEN,
+	looksLikeGeneSymbol,
+	looksLikeLocusToken,
+	looksLikeRsidToken,
+	normalizeVariantSearchInput,
+	parseVariantSearchTerm,
+	rowMatchesGeneToken,
+	rowMatchesSearchQuery,
+	rowMatchesSearchToken
+} from '$lib/search/variant-search';
 
 type QueryDb = D1Database | D1DatabaseSession;
 
@@ -97,96 +108,8 @@ export interface SearchParams {
 
 const VALID_VEP_IMPACTS = new Set(['HIGH', 'MODERATE', 'LOW', 'MODIFIER']);
 
-function normalizeHgvsSearch(raw: string): string | null {
-	const s = raw.trim();
-	if (!s) return null;
-	const suffix = s.includes(':') ? s.slice(s.lastIndexOf(':') + 1) : s;
-	return /^(?:p|c|n|m|r)\.[A-Za-z0-9_*?>=<+\-[\]();]+$/i.test(suffix) ? suffix : null;
-}
-
-const LOCUS_EXACT_POS_MIN_LEN = 8;
-const RSID_EXACT_MIN_LEN = 8;
-
-function looksLikeLocusToken(raw: string): boolean {
-	return /^chr(?:[0-9]+|[xyXYmtMT]|[-:]|$)/.test(raw.trim());
-}
-
-function rsidTokenCondition(digits: string): { sql: string; args: unknown[] } | null {
-	if (digits.length < 2) return null;
-	if (digits.length >= RSID_EXACT_MIN_LEN) return { sql: 'v.rsid=?', args: [Number(digits)] };
-	return { sql: 'CAST(v.rsid AS TEXT) LIKE ?', args: [`${digits}%`] };
-}
-
-function numericTokenCondition(raw: string): { sql: string; args: unknown[] } | null {
-	if (!/^\d+$/.test(raw)) return null;
-	if (raw.length >= RSID_EXACT_MIN_LEN) {
-		return { sql: '(v.id=? OR v.rsid=?)', args: [Number(raw), Number(raw)] };
-	}
-	return { sql: '(v.id=? OR CAST(v.rsid AS TEXT) LIKE ?)', args: [Number(raw), `${raw}%`] };
-}
-
-// A single search term -> a variant-matching SQL condition. Terms can be an rsID,
-// a VRS id, a chromosome, a position, or a range.
-function parseTerm(raw: string): { sql: string; args: unknown[] } | null {
-	const s = raw.trim().replace(/,/g, ''); // tolerate thousands separators: 44,903,787
-	if (!s) return null;
-	const hgvs = normalizeHgvsSearch(s);
-	if (hgvs) return { sql: 'v.hgvs_consequence=?', args: [hgvs] };
-	let m = /^rs(\d+)$/i.exec(s);
-	if (m) return rsidTokenCondition(m[1]);
-	m = /^(?:ga4gh:VA\.)?([A-Za-z0-9_-]{32})$/.exec(s);
-	if (m) return { sql: 'v.vrs_digest=?', args: [m[1]] };
-	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:](\d+)-([A-Za-z]+)-([A-Za-z]+)$/i.exec(s);
-	if (m) {
-		const c = chromToCode(m[1]);
-		if (c) return { sql: '(v.chrom=? AND v.pos=? AND v.ref=? AND v.alt=?)', args: [c, Number(m[2]), m[3].toUpperCase(), m[4].toUpperCase()] };
-	}
-	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:]\s?(\d+)\s*-\s*(\d+)$/i.exec(s); // range
-	if (m) {
-		const c = chromToCode(m[1]);
-		if (c) return { sql: '(v.chrom=? AND v.pos>=? AND v.pos<=?)', args: [c, Number(m[2]), Number(m[3])] };
-	}
-	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:]$/i.exec(s); // chr1- or chr17: while typing
-	if (m) {
-		const c = chromToCode(m[1]);
-		if (c) return { sql: 'v.chrom=?', args: [c] };
-	}
-	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:]\s?(\d+)$/i.exec(s); // single position (exact or prefix)
-	if (m) {
-		const c = chromToCode(m[1]);
-		const posStr = m[2];
-		if (c) {
-			if (posStr.length >= LOCUS_EXACT_POS_MIN_LEN) {
-				return { sql: '(v.chrom=? AND v.pos=?)', args: [c, Number(posStr)] };
-			}
-			return { sql: '(v.chrom=? AND CAST(v.pos AS TEXT) LIKE ?)', args: [c, `${posStr}%`] };
-		}
-	}
-	m = /^(?:chr)?([0-9]+|x|y|mt|m)$/i.exec(s); // whole chromosome
-	if (m) {
-		const c = chromToCode(m[1]);
-		if (c) return { sql: 'v.chrom=?', args: [c] };
-	}
-	return numericTokenCondition(s);
-}
-
-// Compound query: term | term | term  -> OR of the terms (any type mix).
-function parseQueryCondition(q: string): { sql: string; args: unknown[] } | null {
-	const conds = q
-		.split('|')
-		.map((t) => parseTerm(t))
-		.filter((t): t is { sql: string; args: unknown[] } => t !== null);
-	if (!conds.length) return null;
-	if (conds.length === 1) return conds[0];
-	return { sql: '(' + conds.map((c) => c.sql).join(' OR ') + ')', args: conds.flatMap((c) => c.args) };
-}
-
 function normGeneSymbol(raw: string): string {
 	return raw.trim().toUpperCase();
-}
-
-function looksLikeGeneSymbol(raw: string): boolean {
-	return /^[A-Za-z][A-Za-z0-9._-]{1,31}$/.test(raw.trim());
 }
 
 async function genesForSymbols(db: QueryDb, symbols: string[]): Promise<{ chrom: number; start: number; end: number }[]> {
@@ -210,7 +133,7 @@ async function genesForSymbolPrefix(
 	limit = 48
 ): Promise<{ chrom: number; start: number; end: number }[]> {
 	const norm = normGeneSymbol(prefix);
-	if (norm.length < 2) return [];
+	if (norm.length < GENE_SEARCH_MIN_LEN) return [];
 	try {
 		const r = await db
 			.prepare(`SELECT chrom,start,end FROM genes WHERE symbol_norm LIKE ? ORDER BY symbol_norm LIMIT ?`)
@@ -237,12 +160,8 @@ function geneIntervalsToCondition(geneIntervals: { chrom: number; start: number;
 	};
 }
 
-function rsidPrefixCondition(digits: string): { sql: string; args: unknown[] } | null {
-	return rsidTokenCondition(digits);
-}
-
 function geneSymbolContainsCondition(symbolNorm: string): { sql: string; args: unknown[] } | null {
-	if (symbolNorm.length < 2) return null;
+	if (symbolNorm.length < GENE_SEARCH_MIN_LEN) return null;
 	return {
 		sql: `EXISTS (
 			SELECT 1 FROM genes g
@@ -257,7 +176,7 @@ async function geneConditionForQuery(
 	db: QueryDb,
 	raw: string
 ): Promise<{ sql: string; args: unknown[] } | null> {
-	if (!looksLikeGeneSymbol(raw) || looksLikeLocusToken(raw)) return null;
+	if (looksLikeRsidToken(raw) || !looksLikeGeneSymbol(raw) || looksLikeLocusToken(raw)) return null;
 
 	const geneIntervals = await genesForSymbols(db, [raw]);
 	const exact = geneIntervalsToCondition(geneIntervals);
@@ -272,13 +191,20 @@ async function geneConditionForQuery(
 }
 
 async function conditionForQueryToken(db: QueryDb, raw: string): Promise<{ sql: string; args: unknown[] } | null> {
-	const parsed = parseTerm(raw);
+	const parsed = parseVariantSearchTerm(raw);
 	if (parsed) return parsed;
 
-	const s = raw.trim().replace(/,/g, '');
-	if (!s || looksLikeLocusToken(s)) return null;
+	const s = normalizeVariantSearchInput(raw).replace(/,/g, '');
+	if (!s || looksLikeLocusToken(s) || looksLikeRsidToken(s)) return null;
 
-	return geneConditionForQuery(db, raw);
+	const geneCond = await geneConditionForQuery(db, raw);
+	if (geneCond) return geneCond;
+
+	if (s.length >= 2) {
+		return { sql: 'LOWER(v.hgvs_consequence) LIKE ?', args: [`%${s.toLowerCase()}%`] };
+	}
+
+	return null;
 }
 
 export async function attachGenesToRows<T extends { id: number }>(db: QueryDb, rows: T[]): Promise<(T & { genes: GeneHit[] })[]> {
@@ -315,10 +241,7 @@ export async function attachGenesToRows<T extends { id: number }>(db: QueryDb, r
 }
 
 async function parseQueryConditionWithGenes(db: QueryDb, q: string): Promise<{ sql: string; args: unknown[] } | null> {
-	const groups = q
-		.trim()
-		.replace(/\s*-\s*/g, '-')
-		.replace(/:\s+/g, ':')
+	const groups = normalizeVariantSearchInput(q)
 		.split(/\s+/)
 		.map((t) => t.trim())
 		.filter(Boolean);
@@ -945,114 +868,8 @@ async function variantsTableEmpty(db: QueryDb): Promise<boolean> {
 	}
 }
 
-function rowMatchesRsidToken(row: Pick<VariantRow, 'id' | 'rsid'>, raw: string): boolean {
-	const s = raw.trim().replace(/,/g, '');
-	let m = /^rs(\d+)$/i.exec(s);
-	if (m) {
-		const digits = m[1];
-		if (row.rsid == null) return false;
-		if (digits.length >= RSID_EXACT_MIN_LEN) return row.rsid === Number(digits);
-		return String(row.rsid).startsWith(digits);
-	}
-	if (/^\d+$/.test(s)) {
-		if (s.length >= RSID_EXACT_MIN_LEN) return row.id === Number(s) || row.rsid === Number(s);
-		if (row.rsid != null && String(row.rsid).startsWith(s)) return true;
-		return row.id === Number(s);
-	}
-	return false;
-}
-
-function rowMatchesGeneToken(row: Pick<VariantRow, 'genes'>, raw: string): boolean {
-	if (looksLikeLocusToken(raw)) return false;
-	const norm = normGeneSymbol(raw);
-	if (norm.length < 2 || !looksLikeGeneSymbol(raw)) return false;
-	return row.genes.some((g) => {
-		const sym = normGeneSymbol(g.symbol);
-		const ens = normGeneSymbol(g.ensemblId.split('.')[0]);
-		if (sym === norm || ens === norm) return true;
-		if (sym.startsWith(norm) || ens.startsWith(norm)) return true;
-		return sym.includes(norm) || g.ensemblId.toUpperCase().includes(norm);
-	});
-}
-
-function looksLikeStructuredSearchToken(raw: string): boolean {
-	const s = raw.trim().replace(/,/g, '');
-	if (!s) return true;
-	if (looksLikeLocusToken(s)) return true;
-	if (/^rs\d+/i.test(s)) return true;
-	if (/^\d+$/.test(s)) return true;
-	if (looksLikeGeneSymbol(s)) return true;
-	if (normalizeHgvsSearch(s)) return true;
-	if (/^(?:ga4gh:VA\.)?[A-Za-z0-9_-]{32}$/.test(s)) return true;
-	return false;
-}
-
-function rowMatchesLocusToken(row: Pick<VariantRow, 'chrom' | 'pos'>, raw: string): boolean {
-	const s = raw.trim().replace(/,/g, '');
-	if (!s) return false;
-	let m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:]\s?(\d+)\s*-\s*(\d+)$/i.exec(s);
-	if (m) {
-		const c = chromToCode(m[1]);
-		if (c && row.chrom === c && row.pos >= Number(m[2]) && row.pos <= Number(m[3])) return true;
-	}
-	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:]$/i.exec(s);
-	if (m) {
-		const c = chromToCode(m[1]);
-		if (c && row.chrom === c) return true;
-	}
-	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:]\s?(\d+)$/i.exec(s);
-	if (m) {
-		const c = chromToCode(m[1]);
-		const posStr = m[2];
-		if (c && row.chrom === c) {
-			if (posStr.length >= LOCUS_EXACT_POS_MIN_LEN) return row.pos === Number(posStr);
-			return String(row.pos).startsWith(posStr);
-		}
-	}
-	m = /^(?:chr)?([0-9]+|x|y|mt|m)$/i.exec(s);
-	if (m) {
-		const c = chromToCode(m[1]);
-		if (c && row.chrom === c) return true;
-	}
-	return false;
-}
-
-function cachedRowMatchesToken(row: VariantRow, raw: string): boolean {
-	const s = raw.trim().replace(/,/g, '');
-	if (!s) return false;
-	if (variantTokenMatchesRow(row, s)) return true;
-	if (rowMatchesRsidToken(row, s)) return true;
-	const hgvs = normalizeHgvsSearch(s);
-	if (hgvs && (row.hgvsConsequence ?? '').toLowerCase() === hgvs.toLowerCase()) return true;
-	if (rowMatchesLocusToken(row, s)) return true;
-	if (looksLikeLocusToken(s)) return false;
-	if (rowMatchesGeneToken(row, s)) return true;
-	if (looksLikeStructuredSearchToken(s)) return false;
-	const variantKey = `${row.chromName}-${row.pos}-${row.ref}-${row.alt}`.toLowerCase();
-	const rsKey = row.rsid ? `rs${row.rsid}` : '';
-	const needle = s.toLowerCase();
-	if (variantKey.includes(needle) || rsKey.toLowerCase().includes(needle)) return true;
-	return row.genes.some(
-		(g) => g.symbol.toLowerCase().includes(needle) || g.ensemblId.toLowerCase().includes(needle)
-	);
-}
-
 function cachedRowMatchesQuery(row: VariantRow, q: string): boolean {
-	const groups = q
-		.trim()
-		.replace(/\s*-\s*/g, '-')
-		.replace(/:\s+/g, ':')
-		.split(/\s+/)
-		.map((t) => t.trim())
-		.filter(Boolean);
-	if (!groups.length) return true;
-	return groups.every((group) => {
-		const terms = group
-			.split('|')
-			.map((t) => t.trim())
-			.filter(Boolean);
-		return terms.some((term) => cachedRowMatchesToken(row, term));
-	});
+	return rowMatchesSearchQuery(row, q);
 }
 
 function cachedRowMatchesGene(row: VariantRow, gene: string): boolean {
@@ -1257,34 +1074,15 @@ export function canonicalVariantId(v: VariantRow): string {
 	return publicVariantId(v);
 }
 
-function variantTokenMatchesRow(
-	row: Pick<VariantRow, 'id' | 'chrom' | 'pos' | 'ref' | 'alt' | 'rsid' | 'vrsDigest'>,
-	token: string
-): boolean {
-	if (/^\d+$/.test(token)) return row.id === Number(token);
-
-	let m = /^rs(\d+)$/i.exec(token);
-	if (m) return row.rsid === Number(m[1]);
-
-	m = /^(?:ga4gh:VA\.)?([A-Za-z0-9_-]{32})$/.exec(token);
-	if (m) return row.vrsDigest === m[1];
-
-	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:](\d+)-([A-Za-z]+)-([A-Za-z]+)$/i.exec(token.replace(/,/g, ''));
-	if (!m) return false;
-	const chrom = chromToCode(m[1]);
-	if (!chrom) return false;
-	return row.chrom === chrom && row.pos === Number(m[2]) && row.ref === m[3].toUpperCase() && row.alt === m[4].toUpperCase();
-}
-
 // When the explore stats cache is populated but the variants table is empty (common
 // in local dev after baking stats without seeding), fall back to the cached rows.
 async function resolveVariantFromExploreCache(db: QueryDb, raw: string, scopeSlug: string | null): Promise<VariantRow | null> {
-	const token = decodeURIComponent(raw).trim();
+	const token = normalizeVariantSearchInput(decodeURIComponent(raw));
 	if (!token) return null;
 	const cached = await getStats(db, `explore:${scopeSlug ?? 'global'}`);
 	if (!cached?.rows?.length) return null;
 	const rows = sanitizeVariantRowsForPublic(cached.rows) as VariantRow[];
-	const hit = rows.find((row) => cachedRowMatchesToken(row, token));
+	const hit = rows.find((row) => rowMatchesSearchToken(row, token));
 	if (!hit) return null;
 	if (scopeSlug) {
 		const frequencies = hit.frequencies.filter((f) => f.biobankSlug === scopeSlug);
@@ -1295,10 +1093,10 @@ async function resolveVariantFromExploreCache(db: QueryDb, raw: string, scopeSlu
 }
 
 export async function resolveVariantIdentifier(db: QueryDb, raw: string, scopeSlug: string | null): Promise<VariantRow | null> {
-	const token = decodeURIComponent(raw).trim();
+	const token = normalizeVariantSearchInput(decodeURIComponent(raw));
 	if (!token) return null;
 
-	const termCond = parseTerm(token);
+	const termCond = parseVariantSearchTerm(token);
 	if (termCond) {
 		const variant = await getVariantBySql(db, termCond.sql, termCond.args, scopeSlug);
 		if (variant) return variant;

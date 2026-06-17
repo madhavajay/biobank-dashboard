@@ -15,16 +15,19 @@
 	let {
 		data,
 		part = 'all',
+		exploreReturnHref = undefined,
 		onExploreNavigate = undefined
 	}: {
 		data: VariantDetailData;
 		part?: VariantDetailPart;
+		exploreReturnHref?: string;
 		onExploreNavigate?: (href: string) => void;
 	} = $props();
 	const showPanel = $derived(part === 'all' || part === 'panel');
 	const showTables = $derived(part === 'all' || part === 'tables');
 	const exploreBase = $derived(page.data.tenant?.slug === 'biovault' ? '/' : '/explore');
 	const exploreBackHref = $derived.by(() => {
+		if (exploreReturnHref) return exploreReturnHref;
 		const sp = new URLSearchParams();
 		if (data.forceTenant) sp.set('tenant', data.forceTenant);
 		const qs = sp.toString();
@@ -954,93 +957,96 @@
 
 {#if showPanel}
 	{#if part === 'panel'}
-		<aside class="variant-detail-panel" aria-label="Variant detail">
-			<a href={exploreBackHref} class="variant-detail-back" onclick={(event) => openExploreLink(exploreBackHref, event)}>← {tr($lang, 'explore')}</a>
-			<h2 class="variant-detail-title">{title}</h2>
-			<div class="variant-detail-links">
-				{#if v.rsid}
-					<a href={`https://www.ncbi.nlm.nih.gov/snp/rs${v.rsid}`} target="_blank" rel="noreferrer">
-						<img src={dbsnpIconUrl} alt="" />
-						<span>dbSNP</span>
-					</a>
-				{/if}
-				<a href={gnomadUrl} target="_blank" rel="noopener">
-					<img src="/icons/gnomad.png" alt="" />
-					<span>gnomAD</span>
-				</a>
-				<a href={clinvarSearchUrl} target="_blank" rel="noreferrer">
-					<img src="/icons/clinvar.svg" alt="" />
-					<span>ClinVar</span>
-				</a>
-				{#if v.rsid}
-					<a href={clinpgxSearchHref(`rs${v.rsid}`)} target="_blank" rel="noreferrer">
-						<img src="/icons/clinpgx.svg" alt="" />
-						<span>ClinPGx</span>
-					</a>
-				{/if}
-				<a href={apiUrl}>
-					<Code strokeWidth={1.8} />
-					<span>API</span>
-				</a>
+		<aside class="explore-side-panel variant-detail-side-panel" aria-label="Variant detail">
+			<div class="panel-heading detail-heading country-panel-header">
+				<div class="detail-heading-main country-panel-titleblock">
+					<h2>{rsidSummary || 'Variant'}</h2>
+					<p class="detail-context">{rsidSummary ? title : 'No rsID'}</p>
+				</div>
 			</div>
-			<div class="variant-detail-summary">
-				<h3>Variant detail</h3>
-				<dl>
-					<div>
-						<dt>Assembly</dt>
-						<dd>GRCh38</dd>
-					</div>
-					<div>
-						<dt>rsID</dt>
-						<dd>{rsidSummary || '-'}</dd>
-					</div>
-					<div class="span-all">
-						<dt>Genes</dt>
-						<dd>
-							{#if geneSymbols.length}
-								<div class="variant-gene-list">
-									{#each geneSymbols as symbol}
-										<a href={geneHref(symbol)} onclick={(event) => openExploreLink(geneHref(symbol), event)}>{symbol}</a>
-									{/each}
-								</div>
-							{:else}
-								{geneSummary}
-							{/if}
-						</dd>
-					</div>
-					<div>
-						<dt>HGVS consequence</dt>
-						<dd class="mono">{v.hgvsConsequence || '-'}</dd>
-					</div>
-					<div>
-						<dt>Worst VEP annotation</dt>
-						<dd>
-							{#if v.vepLabel}
-								<a href={explorerFilterHref('vepConsequence', v.vepLabel)} onclick={(event) => openExploreLink(explorerFilterHref('vepConsequence', v.vepLabel), event)} class={`vep-chip ${vepImpactClass(v.vepImpact)}`} title={vepSummaryTitle}>
-									{v.vepLabel}{#if v.vepHasMultipleConsequences}+{/if}
-								</a>
-							{:else}
-								-
-							{/if}
-						</dd>
-					</div>
-					<div>
-						<dt>VEP category</dt>
-						<dd>
-							{#if v.vepImpact}
-								<a href={explorerFilterHref('vepImpact', v.vepImpact)} onclick={(event) => openExploreLink(explorerFilterHref('vepImpact', v.vepImpact), event)} class={`vep-chip ${vepImpactClass(v.vepImpact)}`}>
-									{v.vepImpact}
-								</a>
-							{:else}
-								-
-							{/if}
-						</dd>
-					</div>
-					<div>
-						<dt>Multiple consequences</dt>
-						<dd>{v.vepHasMultipleConsequences ? 'Yes' : 'No'}</dd>
-					</div>
-				</dl>
+			<div class="variant-detail-side-scroll explore-side-panel-scroll">
+				<a href={exploreBackHref} class="variant-detail-back" onclick={(event) => openExploreLink(exploreBackHref, event)}>← {tr($lang, 'explore')}</a>
+				<div class="variant-detail-links">
+					{#if v.rsid}
+						<a href={`https://www.ncbi.nlm.nih.gov/snp/rs${v.rsid}`} target="_blank" rel="noreferrer">
+							<img src={dbsnpIconUrl} alt="" />
+							<span>dbSNP</span>
+						</a>
+					{/if}
+					<a href={gnomadUrl} target="_blank" rel="noopener">
+						<img src="/icons/gnomad.png" alt="" />
+						<span>gnomAD</span>
+					</a>
+					<a href={clinvarSearchUrl} target="_blank" rel="noreferrer">
+						<img src="/icons/clinvar.svg" alt="" />
+						<span>ClinVar</span>
+					</a>
+					{#if v.rsid}
+						<a href={clinpgxSearchHref(`rs${v.rsid}`)} target="_blank" rel="noreferrer">
+							<img src="/icons/clinpgx.svg" alt="" />
+							<span>ClinPGx</span>
+						</a>
+					{/if}
+					<a href={apiUrl}>
+						<Code strokeWidth={1.8} />
+						<span>API</span>
+					</a>
+				</div>
+				<div class="variant-detail-summary">
+					<p class="detail-card-label">Variant summary</p>
+					<dl>
+						<div>
+							<dt>Assembly</dt>
+							<dd>GRCh38</dd>
+						</div>
+						<div>
+							<dt>Genes</dt>
+							<dd>
+								{#if geneSymbols.length}
+									<div class="variant-gene-list">
+										{#each geneSymbols as symbol}
+											<a href={geneHref(symbol)} onclick={(event) => openExploreLink(geneHref(symbol), event)}>{symbol}</a>
+										{/each}
+									</div>
+								{:else}
+									{geneSummary}
+								{/if}
+							</dd>
+						</div>
+						<div>
+							<dt>HGVS consequence</dt>
+							<dd class="mono">{v.hgvsConsequence || '-'}</dd>
+						</div>
+						<div>
+							<dt>Worst VEP annotation</dt>
+							<dd>
+								{#if v.vepLabel}
+									<a href={explorerFilterHref('vepConsequence', v.vepLabel)} onclick={(event) => openExploreLink(explorerFilterHref('vepConsequence', v.vepLabel), event)} class={`vep-chip ${vepImpactClass(v.vepImpact)}`} title={vepSummaryTitle}>
+										{v.vepLabel}{#if v.vepHasMultipleConsequences}+{/if}
+									</a>
+								{:else}
+									-
+								{/if}
+							</dd>
+						</div>
+						<div>
+							<dt>VEP category</dt>
+							<dd>
+								{#if v.vepImpact}
+									<a href={explorerFilterHref('vepImpact', v.vepImpact)} onclick={(event) => openExploreLink(explorerFilterHref('vepImpact', v.vepImpact), event)} class={`vep-chip ${vepImpactClass(v.vepImpact)}`}>
+										{v.vepImpact}
+									</a>
+								{:else}
+									-
+								{/if}
+							</dd>
+						</div>
+						<div>
+							<dt>Multiple consequences</dt>
+							<dd>{v.vepHasMultipleConsequences ? 'Yes' : 'No'}</dd>
+						</div>
+					</dl>
+				</div>
 			</div>
 		</aside>
 	{:else}
@@ -1188,9 +1194,15 @@
 		class:mb-5={!useTableTabs}
 		hidden={useTableTabs && activeTableTab !== 'populations'}
 	>
+	{#if !useTableTabs}
 	<div class="border-b px-4 py-3">
 		<h2 class="text-base font-semibold">Population Frequencies</h2>
 	</div>
+	{:else}
+	<div class="variant-detail-section-bar">
+		<span class="variant-detail-toolbar-meta">{sortedPopulationFrequencyRows.length} populations</span>
+	</div>
+	{/if}
 		<div class="relative overflow-x-auto">
 			<table class="w-full text-sm">
 				<thead class="bg-muted/60 text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -1277,11 +1289,15 @@
 		class:mb-5={!useTableTabs}
 		hidden={useTableTabs && activeTableTab !== 'gnomad'}
 	>
-		<div class="relative z-[90] flex items-center justify-between gap-3 border-b px-4 py-3">
+		<div class="variant-detail-section-bar relative z-[90] flex items-center justify-between gap-3 border-b px-4 py-3">
+			{#if !useTableTabs}
 			<h2 class="inline-flex items-center gap-2 text-base font-semibold">
 				<img src="/icons/gnomad.png" alt="" class="size-4 opacity-75" />
 				<span>gnomAD Ethnicity Frequencies</span>
 			</h2>
+			{:else}
+			<span class="variant-detail-toolbar-meta">{sortedAncestryFrequencyRows.length} ancestries</span>
+			{/if}
 			<a href={gnomadUrl} target="_blank" rel="noopener" class="inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">
 				<img src="/icons/gnomad.png" alt="" class="size-3.5 opacity-75" />
 				<span>Open gnomAD</span>
@@ -1396,11 +1412,15 @@
 		class:mb-5={!useTableTabs}
 		hidden={useTableTabs && activeTableTab !== 'clinvar'}
 	>
-		<div class="relative z-[300] flex items-center justify-between gap-3 border-b px-4 py-3">
+		<div class="variant-detail-section-bar relative z-[300] flex items-center justify-between gap-3 border-b px-4 py-3">
+			{#if !useTableTabs}
 			<h2 class="inline-flex items-center gap-2 text-base font-semibold">
 				<img src="/icons/clinvar.svg" alt="" class="h-4 w-auto" />
 				<span>ClinVar</span>
 			</h2>
+			{:else}
+			<span class="variant-detail-toolbar-meta">{sortedClinvarRows.length} records</span>
+			{/if}
 			<div class="flex shrink-0 items-center gap-2">
 				{#if clinvarSignificanceOptions.length}
 					<details class="relative z-[100]" data-external-filter-menu>
@@ -1582,11 +1602,15 @@
 		class:mb-5={!useTableTabs}
 		hidden={useTableTabs && activeTableTab !== 'clinpgx'}
 	>
-		<div class="relative z-[300] flex items-center justify-between gap-3 border-b px-4 py-3">
+		<div class="variant-detail-section-bar relative z-[300] flex items-center justify-between gap-3 border-b px-4 py-3">
+			{#if !useTableTabs}
 			<h2 class="inline-flex items-center gap-2 text-base font-semibold">
 				<img src="/icons/clinpgx.svg" alt="" class="size-4" />
 				<span>ClinPGx</span>
 			</h2>
+			{:else}
+			<span class="variant-detail-toolbar-meta">{filteredClinpgxRows.length} annotations</span>
+			{/if}
 			<div class="flex shrink-0 items-center gap-2">
 				{#if clinpgxLevelOptions.length}
 					<details class="relative z-[100]" data-external-filter-menu>
@@ -1735,9 +1759,15 @@
 		class:mb-5={!useTableTabs}
 		hidden={useTableTabs && activeTableTab !== 'genes'}
 	>
+		{#if !useTableTabs}
 		<div class="border-b px-4 py-3">
 			<h2 class="text-base font-semibold">Overlapping Genes</h2>
 		</div>
+		{:else}
+		<div class="variant-detail-section-bar">
+			<span class="variant-detail-toolbar-meta">{v.genes.length} gene{v.genes.length === 1 ? '' : 's'}</span>
+		</div>
+		{/if}
 	{#if v.genes.length}
 		<div class="overflow-x-auto">
 			<table class="w-full text-sm">
@@ -1780,8 +1810,12 @@
 		class:mb-5={!useTableTabs}
 		hidden={useTableTabs && activeTableTab !== 'vrs'}
 	>
-		<div class="flex items-center justify-between gap-3 border-b px-4 py-3">
+		<div class="variant-detail-section-bar flex items-center justify-between gap-3 border-b px-4 py-3">
+			{#if !useTableTabs}
 			<h2 class="text-base font-semibold">GA4GH VRS Allele</h2>
+			{:else}
+			<span class="variant-detail-toolbar-meta">GA4GH VRS allele</span>
+			{/if}
 			<button onclick={copyVrsAllele} class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">
 				{copiedVrs ? 'copied!' : 'Copy VRS'}
 			</button>

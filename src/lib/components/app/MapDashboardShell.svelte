@@ -6,6 +6,7 @@
 		ExpressionSpecification,
 		GeoJSONSource,
 		Map as MapboxMap,
+		MapMouseEvent,
 		Popup,
 		StyleSpecification,
 	} from 'mapbox-gl'
@@ -16,11 +17,13 @@
 	import { biobankSlugForDatasetSlug, cohortIdsForDatasetSlug } from '$lib/datasets'
 	import { BRAZIL_STATES } from '$lib/data/brazil-states'
 	import { lang } from '$lib/i18n'
+	import { isIncompleteVariantSearchQuery, normalizeVariantSearchInput } from '$lib/search/variant-search'
 	import AtlasHome from '$lib/templates/AtlasHome.svelte'
 	import VariantBrowser from '$lib/components/widgets/VariantBrowser.svelte'
 	import VariantDetailPage from '$lib/components/app/VariantDetailPage.svelte'
+	import SiteModal from '$lib/components/app/SiteModal.svelte'
 	import type { PageServerData as VariantPageData } from '../../routes/explore/variant/[id]/$types'
-	import { goto, replaceState } from '$app/navigation'
+	import { afterNavigate, goto, replaceState } from '$app/navigation'
 	import * as Drawer from '$lib/components/ui/drawer/index.js'
 
 	type Population = {
@@ -120,6 +123,13 @@
 		subtitle: string
 		center: [number, number]
 	}
+	type CollectionCountryProperties = {
+		code: string
+		name: string
+		samples: number
+		label: string
+		sources: string
+	}
 
 	const COUNTRY_CENTERS: Record<string, [number, number]> = {
 		BB: [-59.543, 13.194],
@@ -218,6 +228,9 @@
 
 	let { data, children } = $props()
 	const isHome = $derived(page.url.pathname === '/' || page.url.pathname === '/explore')
+	const siteModalRoute = $derived(
+		['/about', '/contact', '/api'].includes(page.url.pathname) ? page.url.pathname : null
+	)
 	const isVariantRoute = $derived(page.url.pathname.startsWith('/explore/variant/'))
 	const variantDetailData = $derived.by((): VariantPageData | null => {
 		if (!isVariantRoute) return null
@@ -281,8 +294,9 @@
 	let filterPopulationMatchMode = $state<'any' | 'all'>('any')
 	let filterStateHydrated = $state(false)
 	let lastHydratedExploreUrl = $state('')
+	let lastHydratedPathname = $state('')
 	let resultsDrawerOpen = $state(false)
-	let resultsDrawerExpanded = $state(false)
+	let exploreDrawerDismissed = $state(false)
 	let resultsTableQueryString = $state('')
 	let liveExploreStats = $state<{
 		variants: number
@@ -297,13 +311,24 @@
 	let shareCopied = $state(false)
 	let routerReady = $state(false)
 	let pendingResultsUrlOpen: boolean | null = null
+	let mapStyleLoaded = $state(false)
 
 	onMount(() => {
 		routerReady = true
+		lastHydratedPathname = page.url.pathname
 		if (pendingResultsUrlOpen !== null) {
 			syncResultsUrl(pendingResultsUrlOpen)
 			pendingResultsUrlOpen = null
 		}
+
+		const onKeyDown = (event: KeyboardEvent) => {
+			if (event.key === 'Escape' && resultsDrawerOpen && !isVariantRoute) {
+				event.preventDefault()
+				closeResultsDrawer()
+			}
+		}
+		window.addEventListener('keydown', onKeyDown)
+		return () => window.removeEventListener('keydown', onKeyDown)
 	})
 
 	setContext(key, {
@@ -313,6 +338,15 @@
 	const fmt = (n: number | null | undefined) => (n ?? 0).toLocaleString()
 	const pct = (n: number, d: number) => (d ? `${Math.round((n / d) * 100)}%` : '0%')
 	const tx = (en: string, pt: string) => ($lang === 'pt' ? pt : en)
+	const siteModalLabel = $derived(
+		siteModalRoute === '/about'
+			? tx('About', 'Sobre')
+			: siteModalRoute === '/contact'
+				? tx('Contact', 'Contato')
+				: siteModalRoute === '/api'
+					? 'API'
+					: ''
+	)
 	function countryFlagEmoji(code: string) {
 		const normalized = code.trim().toUpperCase()
 		if (normalized.length !== 2 || !/^[A-Z]{2}$/.test(normalized)) return '🌐'
@@ -420,6 +454,11 @@
 		return false
 	}
 
+	function drawerOpenFromUrl(sp: URLSearchParams) {
+		if (exploreDrawerDismissed) return false
+		return hasExploreQueryContextFromParams(sp)
+	}
+
 	let selfUrlSync = false
 
 	function hydrateExploreFiltersFromUrl(
@@ -484,19 +523,38 @@
 				sp.has('vepConsequence') ? urlConsequences.has(value) : true,
 			])
 		)
-		resultsDrawerOpen = hasExploreQueryContextFromParams(sp)
+		if (sp.get('results') === '0') exploreDrawerDismissed = true
+		resultsDrawerOpen = drawerOpenFromUrl(sp)
+	}
+
+	function restoreExploreDrawerAfterVariantReturn() {
+		if (page.url.searchParams.get('results') === '0') return
+		exploreDrawerDismissed = false
+		resultsDrawerOpen = true
 	}
 
 	$effect(() => {
 		if (!filterBiobankOptions.length) return
-		const path = page.url.pathname === '/explore' ? '/' : page.url.pathname
-		if (path !== '/') return
-		const urlKey = exploreUrlKey(path, page.url.searchParams)
-		if (selfUrlSync) {
-			selfUrlSync = false
+		const pathname = page.url.pathname
+		const path = pathname === '/explore' ? '/' : pathname
+		if (path !== '/') {
+			lastHydratedPathname = pathname
 			return
 		}
-		if (urlKey === lastHydratedExploreUrl) return
+
+		const urlKey = exploreUrlKey(path, page.url.searchParams)
+		const returnedFromVariant =
+			lastHydratedPathname.startsWith('/explore/variant/') && path === '/'
+
+		if (selfUrlSync) {
+			selfUrlSync = false
+			lastHydratedPathname = pathname
+			return
+		}
+		if (urlKey === lastHydratedExploreUrl && !returnedFromVariant) {
+			lastHydratedPathname = pathname
+			return
+		}
 
 		const stateParams = buildExploreParams()
 		const urlHasContext = hasExploreQueryContextFromParams(page.url.searchParams)
@@ -506,19 +564,46 @@
 
 		if (urlHasContext && !stateHasContext && lastHydratedExploreUrl && !lastHydratedHasContext) {
 			syncResultsUrl(resultsDrawerOpen, true)
+			lastHydratedPathname = pathname
 			return
 		}
 
 		const prevPath = lastHydratedExploreUrl ? lastHydratedExploreUrl.split('?')[0] : ''
 		const forceFullHydrate = !lastHydratedExploreUrl
 		const pathChanged = Boolean(lastHydratedExploreUrl) && prevPath !== path
+		if (returnedFromVariant) {
+			restoreExploreDrawerAfterVariantReturn()
+		}
 		hydrateExploreFiltersFromUrl(page.url.searchParams, {
-			syncSearch: forceFullHydrate || pathChanged,
+			syncSearch: forceFullHydrate || pathChanged || returnedFromVariant,
 			clearSearch: forceFullHydrate || pathChanged,
-			syncMapSelection: forceFullHydrate || pathChanged,
+			syncMapSelection: true,
 		})
 		lastHydratedExploreUrl = urlKey
+		lastHydratedPathname = pathname
 		filterStateHydrated = true
+		resultsDrawerOpen = drawerOpenFromUrl(page.url.searchParams)
+	})
+
+	afterNavigate(({ from, to }) => {
+		if (!to) return
+		const toPath = to.url.pathname === '/explore' ? '/' : to.url.pathname
+		if (toPath !== '/') return
+		if (!from?.url.pathname.startsWith('/explore/variant/')) return
+
+		restoreExploreDrawerAfterVariantReturn()
+		const sp = to.url.searchParams
+		if (hasExploreQueryContextFromParams(sp)) {
+			hydrateExploreFiltersFromUrl(sp, {
+				syncSearch: true,
+				clearSearch: false,
+				syncMapSelection: true,
+			})
+			lastHydratedExploreUrl = exploreUrlKey(toPath, sp)
+			filterStateHydrated = true
+		}
+		resultsDrawerOpen = drawerOpenFromUrl(sp)
+		lastHydratedPathname = to.url.pathname
 	})
 	const datasetCountValue = (_slug: string, value: unknown, _field: 'participants' | 'variants') =>
 		Number(value ?? 0)
@@ -671,6 +756,13 @@
 			!selectedCountry &&
 			!selectedDataset
 	)
+	const showMapVariantPanel = $derived(
+		isHome &&
+			!isVariantRoute &&
+			!resultsDrawerOpen &&
+			!selectedCountry &&
+			!selectedDataset
+	)
 	const showVariantLeftPanels = $derived(!!variantDetailData)
 	const scopedCountryRows = $derived.by(() => {
 		if (!selectedDataset) return countryRows
@@ -695,6 +787,19 @@
 			subtitle: country.sources.slice(0, 2).join(' + '),
 			center: country.center,
 		}))
+	})
+	const countryCoverageRows = $derived.by((): CoverageRow[] => {
+		if (!selectedCountry || selectedDataset) return []
+		if (selectedCountry.code === 'BR') {
+			return BRAZIL_STATES.map((state) => ({
+				code: state.code,
+				name: state.name,
+				samples: null,
+				subtitle: 'BIPMed',
+				center: state.center,
+			}))
+		}
+		return []
 	})
 	const highlightCountryCodes = $derived.by(() => {
 		if (selectedCountry) return [selectedCountry.code]
@@ -850,28 +955,27 @@
 	]
 	const bubbleStyleVersion = 'large-bubbles-v16'
 	const bubbleSortKey: ExpressionSpecification = ['get', 'samples']
-	const collectionGeoJson = $derived<
-		FeatureCollection<
-			Point,
-			{ code: string; name: string; samples: number; label: string; sources: string }
-		>
-	>({
-		type: 'FeatureCollection',
-		features: countryRows.map((country) => ({
-			type: 'Feature',
-			properties: {
-				code: country.code,
-				name: country.name,
-				samples: country.samples,
-				label: fmt(country.samples),
-				sources: country.sources.join(' + '),
-			},
-			geometry: {
-				type: 'Point',
-				coordinates: country.center,
-			},
-		})),
-	})
+	const collectionGeoJson = $derived(collectionGeoJsonFor())
+
+	function collectionGeoJsonFor(): FeatureCollection<Point, CollectionCountryProperties> {
+		return {
+			type: 'FeatureCollection',
+			features: countryRows.map((country) => ({
+				type: 'Feature',
+				properties: {
+					code: country.code,
+					name: country.name,
+					samples: country.samples,
+					label: fmt(country.samples),
+					sources: country.sources.join(' + '),
+				},
+				geometry: {
+					type: 'Point',
+					coordinates: country.center,
+				},
+			})),
+		}
+	}
 
 	function normalizeSearch(value: string) {
 		return value.trim().toLowerCase()
@@ -939,14 +1043,10 @@
 		})
 	}
 
-	function isIncompleteLocusQuery(query: string) {
-		return /^chr$/i.test(query.trim())
-	}
-
 	function shouldRunVariantLiveSearch(query: string) {
 		const trimmed = query.trim()
 		if (!trimmed) return false
-		if (isIncompleteLocusQuery(trimmed)) return false
+		if (isIncompleteVariantSearchQuery(trimmed)) return false
 		if (isIncompleteLocationQuery(trimmed)) return false
 		const countryMatch = findMapSearchMatch(trimmed)
 		if (countryMatch && isMapLocationQuery(trimmed, countryMatch)) return false
@@ -981,11 +1081,16 @@
 			openResultsDrawer(true)
 			return
 		}
-		appliedSearchQuery = trimmed
+		releaseMapScopeForVariantExplore()
+		appliedSearchQuery = normalizeVariantSearchInput(trimmed)
 		openResultsDrawer(true)
 	}
 
 	const SEARCH_QUERY_DEBOUNCE_MS = 300
+
+	function applyLiveSearchQuery(raw: string) {
+		return normalizeVariantSearchInput(raw.trim())
+	}
 
 	$effect(() => {
 		const query = searchQuery
@@ -993,18 +1098,22 @@
 
 		const trimmed = query.trim()
 		const variantSearch = shouldRunVariantLiveSearch(query)
-		if (trimmed && variantSearch) {
+		const drawerDismissed = exploreDrawerDismissed
+
+		if (trimmed && variantSearch && !drawerDismissed) {
 			resultsDrawerOpen = true
 			countryPickerOpen = false
 			datasetPickerOpen = false
 		}
 
 		const timer = window.setTimeout(() => {
-			if (trimmed === appliedSearchQuery.trim()) return
+			const normalized = applyLiveSearchQuery(query)
+			if (normalized === appliedSearchQuery.trim()) return
 
 			if (!trimmed) {
 				appliedSearchQuery = ''
-				if (resultsDrawerOpen) {
+				resultsTableQueryString = ''
+				if (resultsDrawerOpen && !drawerDismissed) {
 					openResultsDrawer(true)
 				}
 				return
@@ -1012,7 +1121,8 @@
 
 			if (!variantSearch) return
 
-			appliedSearchQuery = trimmed
+			releaseMapScopeForVariantExplore()
+			appliedSearchQuery = normalized
 			openResultsDrawer(true)
 		}, SEARCH_QUERY_DEBOUNCE_MS)
 
@@ -1025,6 +1135,12 @@
 		flyToCountry(country)
 	}
 
+	function pickAllCountries() {
+		countryPickerOpen = false
+		datasetPickerOpen = false
+		clearCountrySelection()
+	}
+
 	function pickDataset(dataset: DisplayDataset) {
 		datasetPickerOpen = false
 		countryPickerOpen = false
@@ -1033,11 +1149,18 @@
 		selectDataset(dataset, { keepCountry })
 	}
 
+	function pickAllDatabases() {
+		datasetPickerOpen = false
+		countryPickerOpen = false
+		if (!selectedDatasetSlug) return
+		clearDatasetFromPicker()
+	}
+
 	function clearDatasetFromPicker() {
 		datasetPickerOpen = false
 		selectedDatasetSlug = null
 		if (selectedCountry) {
-			flyToCountry(selectedCountry, { keepDataset: true })
+			flyToCountry(selectedCountry, { keepDataset: true, keepSearch: true })
 			return
 		}
 		openResultsDrawer(true)
@@ -1181,9 +1304,16 @@
 	}
 
 	function urlExploreParams() {
-		if (hasActiveExploreContext()) return buildExploreParams()
-		const params = new URLSearchParams()
-		if (data.forceTenant) params.set('tenant', data.forceTenant)
+		const params = hasActiveExploreContext()
+			? buildExploreParams()
+			: (() => {
+					const empty = new URLSearchParams()
+					if (data.forceTenant) empty.set('tenant', data.forceTenant)
+					return empty
+				})()
+		if (exploreDrawerDismissed && hasActiveExploreContext()) {
+			params.set('results', '0')
+		}
 		return params
 	}
 
@@ -1192,7 +1322,7 @@
 	}
 
 	const exploreQueryString = $derived(buildExploreParams().toString())
-	const activeResultsQueryString = $derived(resultsTableQueryString || exploreQueryString)
+	const activeResultsQueryString = $derived(exploreQueryString)
 	const mapResultsPath = $derived.by(() => {
 		const params = buildExploreParams()
 		return `/${params.toString() ? `?${params.toString()}` : ''}`
@@ -1271,7 +1401,8 @@
 
 	function openVariantFromDrawer(href: string) {
 		resultsDrawerOpen = true
-		resultsDrawerExpanded = true
+		exploreDrawerDismissed = false
+		syncResultsUrl(true, true)
 		const target = new URL(href, page.url)
 		const tenant = page.url.searchParams.get('tenant') ?? data.forceTenant
 		if (tenant && !target.searchParams.has('tenant')) {
@@ -1282,7 +1413,7 @@
 
 	function openExploreFromVariant(href: string) {
 		resultsDrawerOpen = true
-		resultsDrawerExpanded = true
+		exploreDrawerDismissed = false
 		const target = new URL(href, page.url)
 		const tenant = page.url.searchParams.get('tenant') ?? data.forceTenant
 		if (tenant && !target.searchParams.has('tenant')) {
@@ -1297,6 +1428,7 @@
 		filterStateHydrated = true
 		resultsTableQueryString = ''
 		lastHydratedExploreUrl = exploreUrlKey(path, buildExploreParams())
+		lastHydratedPathname = path
 		selfUrlSync = true
 		void goto(`${path}${target.search}`)
 	}
@@ -1306,6 +1438,7 @@
 			closeResultsDrawer()
 			return
 		}
+		exploreDrawerDismissed = false
 		resultsDrawerOpen = true
 		countryPickerOpen = false
 		datasetPickerOpen = false
@@ -1313,8 +1446,17 @@
 	}
 
 	function closeResultsDrawer() {
+		exploreDrawerDismissed = true
 		resultsDrawerOpen = false
-		syncResultsUrl(false)
+		syncResultsUrl(false, true)
+	}
+
+	function closeSiteModal() {
+		if (typeof history !== 'undefined' && history.length > 1) {
+			history.back()
+			return
+		}
+		void goto('/')
 	}
 
 	function copyDrawerCurl() {
@@ -1335,10 +1477,11 @@
 		if (path !== '/') return
 		const params = urlExploreParams()
 		const urlKey = exploreUrlKey(path, params)
+		const hasLegacyResultsParam = page.url.searchParams.has('results')
 		if (
 			!force &&
-			exploreSearchParamsEqual(params, page.url.searchParams) &&
-			!page.url.searchParams.has('results')
+			!hasLegacyResultsParam &&
+			exploreSearchParamsEqual(params, page.url.searchParams)
 		) {
 			lastHydratedExploreUrl = urlKey
 			return
@@ -1384,6 +1527,10 @@
 		}
 
 		if (urlHasContext && !exploreSearchParamsEqual(stateParams, page.url.searchParams)) {
+			const hydratedUrlKey = exploreUrlKey(path, page.url.searchParams)
+			if (hydratedUrlKey === lastHydratedExploreUrl) {
+				syncResultsUrl(resultsDrawerOpen, true)
+			}
 			return
 		}
 
@@ -1395,7 +1542,6 @@
 	$effect(() => {
 		if (isVariantRoute && variantDetailData) {
 			resultsDrawerOpen = true
-			resultsDrawerExpanded = true
 		}
 	})
 
@@ -1483,6 +1629,7 @@
 
 	function detailPanelCameraPadding() {
 		if (typeof window === 'undefined' || window.innerWidth <= 700) return undefined
+		if (!resultsDrawerOpen || isVariantRoute) return undefined
 		const bottomInset = 28
 		const searchWidth = Math.min(
 			TOP_SEARCH_MAX_WIDTH,
@@ -1530,9 +1677,10 @@
 		}
 	}
 
-	function flyToDatasetView(dataset: DisplayDataset, options: { padding?: boolean } = {}) {
+	function flyToDatasetView(dataset: DisplayDataset, options: { padding?: boolean; animate?: boolean } = {}) {
 		if (!map) return
 		const padding = options.padding ? detailPanelCameraPadding() : undefined
+		const duration = options.animate === false ? 0 : 900
 		const rows = countryRows.filter((country) =>
 			countryCodesForDataset(dataset).includes(country.code)
 		)
@@ -1543,7 +1691,7 @@
 				zoom: DEFAULT_MAP_ZOOM,
 				padding,
 				retainPadding: false,
-				duration: 900,
+				duration,
 				essential: true,
 			})
 			return
@@ -1555,7 +1703,7 @@
 				zoom: Math.max(2, (COUNTRY_ZOOMS[rows[0].code] ?? 4.3) - 1.1),
 				padding,
 				retainPadding: false,
-				duration: 900,
+				duration,
 				essential: true,
 			})
 			return
@@ -1572,17 +1720,75 @@
 
 		map.fitBounds(bounds, {
 			padding: datasetFitPadding(padding),
-			duration: 900,
+			duration,
 			maxZoom,
 			essential: true,
 		})
 	}
 
+	function applyMapCameraForSelection(options: { animate?: boolean } = {}) {
+		if (!map || !mapStyleLoaded || isVariantRoute) return
+		const duration = options.animate === false ? 0 : 900
+		const padding = detailPanelCameraPadding()
+
+		if (selectedCountry) {
+			map.flyTo({
+				center: selectedCountry.center,
+				zoom: COUNTRY_ZOOMS[selectedCountry.code] ?? 4.3,
+				padding,
+				retainPadding: false,
+				duration,
+				essential: true,
+			})
+			return
+		}
+
+		if (selectedDataset) {
+			flyToDatasetView(selectedDataset, { padding: true, animate: options.animate !== false })
+			return
+		}
+
+		map.flyTo({
+			center: DEFAULT_MAP_CENTER,
+			zoom: DEFAULT_MAP_ZOOM,
+			duration,
+			essential: true,
+		})
+	}
+
+	function syncMapSelectionFromSearchQuery(query: string) {
+		const trimmed = query.trim()
+		if (!trimmed || shouldRunVariantLiveSearch(trimmed)) return false
+
+		const countryMatch = findMapSearchMatch(trimmed)
+		if (countryMatch && isMapLocationQuery(trimmed, countryMatch)) {
+			if (selectedCode !== countryMatch.code) {
+				selectedCode = countryMatch.code
+			}
+			return true
+		}
+
+		const populationMatch = findPopulationSearchMatch(trimmed)
+		if (populationMatch) {
+			const country = countryRows.find((row) => row.code === populationMatch.countryCode)
+			if (country && selectedCode !== country.code) {
+				selectedCode = country.code
+				return true
+			}
+		}
+
+		return false
+	}
+
 	function flyToCoverageRow(row: CoverageRow, options?: { keepDataset?: boolean }) {
 		selectedCode = options?.keepDataset ? selectedCode : null
+		const zoom =
+			isBipmedDataset(selectedDataset) || selectedCountry?.code === 'BR' || row.subtitle === 'BIPMed'
+				? 5.4
+				: 5.8
 		map?.flyTo({
 			center: row.center,
-			zoom: isBipmedDataset(selectedDataset) ? 5.4 : 5.8,
+			zoom,
 			duration: 900,
 			essential: true,
 		})
@@ -1595,31 +1801,73 @@
 		} else if (selectedCode && !countryCodesForDataset(dataset).includes(selectedCode)) {
 			selectedCode = null
 		}
-		flyToDatasetView(dataset, { padding: true })
-		resultsDrawerExpanded = true
 		openResultsDrawer(true)
 	}
 
 	function clearDatasetSelection() {
+		if (!selectedDatasetSlug) return
 		selectedDatasetSlug = null
 		selectedCode = null
 		countryPickerOpen = false
 		datasetPickerOpen = false
-		map?.flyTo({
-			center: DEFAULT_MAP_CENTER,
-			zoom: DEFAULT_MAP_ZOOM,
-			duration: 900,
-			essential: true,
-		})
+		syncResultsUrl(resultsDrawerOpen, true)
+	}
+
+	function clearMapSurfaceSelection() {
+		if (!selectedCode && !selectedDatasetSlug) return
+		selectedCode = null
+		selectedDatasetSlug = null
+		countryPickerOpen = false
+		datasetPickerOpen = false
+		syncResultsUrl(resultsDrawerOpen, true)
+	}
+
+	function mapSelectionActive() {
+		return Boolean(selectedCountry || selectedDataset)
+	}
+
+	function isMapBubbleInFocus(code: string) {
+		if (selectedCountry) return selectedCountry.code === code
+		if (selectedDataset) return countryCodesForDataset(selectedDataset).includes(code)
+		return true
+	}
+
+	function handleMapCountryBubbleClick(country: CountryRow) {
+		if (mapSelectionActive() && !isMapBubbleInFocus(country.code)) {
+			clearMapSurfaceSelection()
+			return
+		}
+		flyToCountry(country)
+	}
+
+	function handleMapSurfacePoint(point: MapMouseEvent['point']) {
+		if (!map) return
+		const bubbleHits = map.queryRenderedFeatures(point, { layers: ['collection-country-bubbles'] })
+		if (bubbleHits.length) {
+			const code = bubbleHits[0]?.properties?.code as string | undefined
+			const country = code ? countryRows.find((item) => item.code === code) : undefined
+			if (country) {
+				handleMapCountryBubbleClick(country)
+				return
+			}
+		}
+		resetMapView()
+	}
+
+	function handleMapBackgroundClick(event: MapMouseEvent) {
+		handleMapSurfacePoint(event.point)
 	}
 
 	function resetMapView() {
+		liveExploreStats = null
+		liveExploreStatsKey = ''
+		drawerFiltersOpen = false
 		selectedDatasetSlug = null
 		selectedCode = null
 		countryPickerOpen = false
 		datasetPickerOpen = false
+		exploreDrawerDismissed = false
 		resultsDrawerOpen = false
-		resultsDrawerExpanded = false
 		resetExploreQueriesAndFilters()
 
 		const params = new URLSearchParams()
@@ -1631,20 +1879,69 @@
 		if (isVariantRoute) {
 			void goto(homeUrl, { replaceState: true, noScroll: true, keepFocus: true })
 		} else {
-			syncExploreUrlAfterReset()
+			try {
+				replaceState(homeUrl, {})
+			} catch {
+				void goto(homeUrl, { replaceState: true, noScroll: true, keepFocus: true })
+			}
 		}
 
 		syncMapState({ country: null, dataset: null })
-		map?.flyTo({
-			center: DEFAULT_MAP_CENTER,
-			zoom: DEFAULT_MAP_ZOOM,
-			duration: 900,
-			essential: true,
-		})
 	}
 
 	function handleResetView() {
 		resetMapView()
+	}
+
+	function applyMapHighlight(
+		highlightCodes: string[],
+		focusCodes: string[],
+		hasSelection: boolean
+	) {
+		if (!map?.isStyleLoaded()) return
+		const selectionHighlightExpression: ExpressionSpecification = [
+			'in',
+			['get', 'iso_3166_1'],
+			['literal', highlightCodes],
+		]
+		map.setFilter('selected-country-fill', [
+			'all',
+			...countryMaskFilter.slice(1),
+			selectionHighlightExpression,
+		])
+		map.setFilter('selected-country-outline', [
+			'all',
+			...countryMaskFilter.slice(1),
+			selectionHighlightExpression,
+		])
+		map.setFilter('non-selected-country-mask', [
+			'all',
+			...countryMaskFilter.slice(1),
+			['!', selectionHighlightExpression],
+		])
+
+		const focusExpression: ExpressionSpecification = [
+			'case',
+			['in', ['get', 'code'], ['literal', focusCodes]],
+			0.98,
+			hasSelection ? 0.12 : 0.98,
+		]
+		const haloExpression: ExpressionSpecification = [
+			'case',
+			['in', ['get', 'code'], ['literal', focusCodes]],
+			0.2,
+			hasSelection ? 0.03 : 0.2,
+		]
+		map.setPaintProperty('collection-country-bubbles', 'circle-radius', bubbleRadiusExpression)
+		map.setPaintProperty(
+			'collection-country-bubble-halo',
+			'circle-radius',
+			bubbleHaloRadiusExpression
+		)
+		map.setLayoutProperty('collection-country-labels', 'text-size', bubbleLabelSizeExpression)
+		map.setPaintProperty('collection-country-bubbles', 'circle-opacity', focusExpression)
+		map.setPaintProperty('collection-country-bubble-halo', 'circle-opacity', haloExpression)
+		map.setPaintProperty('collection-country-labels', 'text-opacity', 1)
 	}
 
 	function syncMapState(
@@ -1667,72 +1964,20 @@
 			: selection.dataset
 				? countryCodesForDataset(selection.dataset)
 				: countryRows.map((country) => country.code)
-		const selectionHighlightExpression: ExpressionSpecification = [
-			'in',
-			['get', 'iso_3166_1'],
-			['literal', selectedHighlightCodes],
-		]
 		const hasSelection = Boolean(selection.country || selection.dataset)
-
-		map.setFilter('selected-country-fill', [
-			'all',
-			...countryMaskFilter.slice(1),
-			selectionHighlightExpression,
-		])
-		map.setFilter('selected-country-outline', [
-			'all',
-			...countryMaskFilter.slice(1),
-			selectionHighlightExpression,
-		])
-		map.setFilter('non-selected-country-mask', [
-			'all',
-			...countryMaskFilter.slice(1),
-			['!', selectionHighlightExpression],
-		])
-
-		const focusExpression: ExpressionSpecification = [
-			'case',
-			['in', ['get', 'code'], ['literal', selectedFocusCodes]],
-			0.98,
-			hasSelection ? 0.12 : 0.98,
-		]
-		const haloExpression: ExpressionSpecification = [
-			'case',
-			['in', ['get', 'code'], ['literal', selectedFocusCodes]],
-			0.2,
-			hasSelection ? 0.03 : 0.2,
-		]
-		const labelExpression: ExpressionSpecification = [
-			'case',
-			['in', ['get', 'code'], ['literal', selectedFocusCodes]],
-			1,
-			hasSelection ? 0.18 : 1,
-		]
-
-		map.setPaintProperty('collection-country-bubbles', 'circle-radius', bubbleRadiusExpression)
-		map.setPaintProperty(
-			'collection-country-bubble-halo',
-			'circle-radius',
-			bubbleHaloRadiusExpression
-		)
-		map.setLayoutProperty('collection-country-labels', 'text-size', bubbleLabelSizeExpression)
-		map.setPaintProperty('collection-country-bubbles', 'circle-opacity', focusExpression)
-		map.setPaintProperty('collection-country-bubble-halo', 'circle-opacity', haloExpression)
-		map.setPaintProperty('collection-country-labels', 'text-opacity', labelExpression)
+		applyMapHighlight(selectedHighlightCodes, selectedFocusCodes, hasSelection)
 	}
 
 	function clearCountrySelection() {
+		if (!selectedCode) return
 		selectedCode = null
-		if (selectedDataset) {
-			flyToDatasetView(selectedDataset, { padding: true })
-			return
-		}
-		map?.flyTo({
-			center: DEFAULT_MAP_CENTER,
-			zoom: DEFAULT_MAP_ZOOM,
-			duration: 900,
-			essential: true,
-		})
+		syncResultsUrl(resultsDrawerOpen, true)
+	}
+
+	function releaseMapScopeForVariantExplore() {
+		if (!selectedCode && !selectedDatasetSlug) return
+		selectedCode = null
+		selectedDatasetSlug = null
 	}
 
 	function createStyle(): StyleSpecification {
@@ -1867,38 +2112,38 @@
 						'text-font': ['DIN Offc Pro Medium', 'Arial Unicode MS Bold'],
 						'text-anchor': 'center',
 						'text-offset': [0, 0],
-						'text-allow-overlap': false,
-						'text-ignore-placement': false,
-						'text-optional': true,
+						'text-allow-overlap': true,
+						'text-ignore-placement': true,
+						'text-optional': false,
 					},
 					paint: {
 						'text-color': '#353243',
 						'text-halo-color': 'rgba(255, 255, 255, 0.88)',
 						'text-halo-width': 1,
+						'text-opacity': 1,
 					},
 				},
 			],
 		}
 	}
 
-	function flyToCountry(country: CountryRow, options: { keepDataset?: boolean } = {}) {
+	function flyToCountry(
+		country: CountryRow,
+		options: { keepDataset?: boolean; keepSearch?: boolean } = {}
+	) {
 		selectedCode = country.code
+		if (!options.keepSearch) {
+			searchQuery = ''
+			appliedSearchQuery = ''
+			resultsTableQueryString = ''
+		}
 		if (!options.keepDataset && selectedDatasetSlug) {
 			const datasetCodes = selectedDataset ? countryCodesForDataset(selectedDataset) : []
 			if (!datasetCodes.includes(country.code)) {
 				selectedDatasetSlug = null
 			}
 		}
-		resultsDrawerExpanded = true
 		openResultsDrawer()
-		map?.flyTo({
-			center: country.center,
-			zoom: COUNTRY_ZOOMS[country.code] ?? 4.3,
-			padding: detailPanelCameraPadding(),
-			retainPadding: false,
-			duration: 900,
-			essential: true,
-		})
 	}
 
 	const initMap: Action<HTMLDivElement> = (container) => {
@@ -1908,6 +2153,7 @@
 			center: DEFAULT_MAP_CENTER,
 			zoom: DEFAULT_MAP_ZOOM,
 			minZoom: 2,
+			fadeDuration: 0,
 			// maxBounds: [
 			// 	[-180, -58],
 			// 	[180, 78],
@@ -1934,22 +2180,20 @@
 			map?.setFog(null)
 			map?.setSnow(null)
 			map?.setRain(null)
+			mapStyleLoaded = true
 			syncMapState()
+			applyMapCameraForSelection({ animate: false })
 		})
 
 		map.on('click', 'collection-country-bubbles', (event) => {
 			event.originalEvent.stopPropagation()
 			const code = event.features?.[0]?.properties?.code
 			const country = countryRows.find((item) => item.code === code)
-			if (country) flyToCountry(country)
+			if (country) handleMapCountryBubbleClick(country)
 		})
 
 		map.on('click', (event) => {
-			if (!map) return
-			const bubbleHits = map.queryRenderedFeatures(event.point, {
-				layers: ['collection-country-bubbles'],
-			})
-			if (!bubbleHits.length) handleResetView()
+			handleMapBackgroundClick(event)
 		})
 
 		map.on('mouseenter', 'collection-country-bubbles', (event) => {
@@ -1988,6 +2232,7 @@
 		popup?.remove()
 		map?.remove()
 		map = undefined
+		mapStyleLoaded = false
 	})
 
 	$effect(() => {
@@ -1998,6 +2243,36 @@
 		selectedDatasetSlug
 		selectedCode
 		syncMapState()
+	})
+
+	$effect(() => {
+		if (!filterStateHydrated || !mapStyleLoaded || isVariantRoute) return
+		selectedCode
+		selectedDatasetSlug
+		resultsDrawerOpen
+		applyMapCameraForSelection()
+	})
+
+	$effect(() => {
+		if (!filterStateHydrated || !mapStyleLoaded || isVariantRoute) return
+		if (selectedCode || selectedDatasetSlug) return
+		const query = appliedSearchQuery.trim() || searchQuery.trim()
+		if (!query || shouldRunVariantLiveSearch(query)) return
+		syncMapSelectionFromSearchQuery(query)
+	})
+
+	$effect(() => {
+		if (!selectedCode) return
+		if (countryRows.some((country) => country.code === selectedCode)) return
+		selectedCode = null
+		syncResultsUrl(resultsDrawerOpen, true)
+	})
+
+	$effect(() => {
+		if (!selectedDatasetSlug) return
+		if (displayDatasets.some((dataset) => dataset.slug === selectedDatasetSlug)) return
+		selectedDatasetSlug = null
+		syncResultsUrl(resultsDrawerOpen, true)
 	})
 </script>
 
@@ -2042,12 +2317,29 @@
 							<span class="picker-flag" aria-hidden="true">{countryFlagEmoji(selectedCountry.code)}</span>
 							<span>{tx('In', 'Em')}: {selectedCountry.name}</span>
 						{:else}
-							<span>{tx('Countries', 'Países')}</span>
+							<span class="picker-flag" aria-hidden="true">🌐</span>
+							<span>{tx('All countries', 'Todos os países')}</span>
 							<strong>{countryRows.length}</strong>
 						{/if}
 					</button>
 					{#if countryPickerOpen}
 						<div class="country-picker-menu">
+							<button
+								type="button"
+								class="country-clear"
+								class:active={!selectedCode}
+								onclick={pickAllCountries}
+							>
+								<span class="picker-flag" aria-hidden="true">🌐</span>
+								<span class="country-main">
+									<span>{tx('All countries', 'Todos os países')}</span>
+									<small>{tx('Global view', 'Visão global')}</small>
+								</span>
+								<span class="country-count">
+									<strong>{countryRows.length}</strong>
+									<small>{tx('countries', 'países')}</small>
+								</span>
+							</button>
 							{#each countryRows as country}
 								<button
 									type="button"
@@ -2075,7 +2367,7 @@
 							class="dataset-picker-trigger"
 							class:scoped={!!selectedDataset}
 							aria-expanded={datasetPickerOpen}
-							aria-label={selectedDataset?.title ?? tx('Datasets', 'Conjuntos')}
+							aria-label={selectedDataset?.title ?? tx('All databases', 'Todos os bancos de dados')}
 							onclick={() => {
 								countryPickerOpen = false
 								datasetPickerOpen = !datasetPickerOpen
@@ -2092,17 +2384,30 @@
 									{/if}
 								</span>
 							{:else}
-								<span>{tx('Datasets', 'Conjuntos')}</span>
+								<span>{tx('All databases', 'Todos os bancos de dados')}</span>
 								<strong>{displayDatasets.length}</strong>
 							{/if}
 						</button>
 						{#if datasetPickerOpen}
 							<div class="dataset-picker-menu">
-								{#if selectedDataset}
-									<button type="button" class="dataset-clear" onclick={clearDatasetFromPicker}>
-										<span>{tx('All datasets', 'Todos os conjuntos')}</span>
-									</button>
-								{/if}
+								<button
+									type="button"
+									class="dataset-clear"
+									class:active={!selectedDatasetSlug}
+									onclick={pickAllDatabases}
+								>
+									<span class="picker-logo dataset-logo" aria-hidden="true">
+										<span>DB</span>
+									</span>
+									<span class="dataset-main">
+										<span>{tx('All databases', 'Todos os bancos de dados')}</span>
+										<small>{tx('All sources', 'Todas as fontes')}</small>
+									</span>
+									<span class="dataset-count">
+										<strong>{displayDatasets.length}</strong>
+										<small>{tx('databases', 'bancos')}</small>
+									</span>
+								</button>
 								{#each displayDatasets as dataset}
 									{@const tenant = tenantFor(dataset.biobankSlug)}
 									<button
@@ -2158,7 +2463,7 @@
 				</datalist>
 				<button class="search-submit">{tx('Explore', 'Explorar')}</button>
 			</div>
-			{#if selectedCountry || selectedDataset || searchQuery || mapFilterCount}
+			{#if selectedCountry || selectedDataset || searchQuery || mapFilterCount || resultsDrawerOpen}
 				<button type="button" class="map-reset" onclick={handleResetView}
 					>{tx('Reset', 'Redefinir')}</button
 				>
@@ -2166,31 +2471,41 @@
 		</form>
 
 		<div class="floating-title">
-			<h1>{tx('Global allele-frequency network', 'Rede global de frequência alélica')}</h1>
-			{#if selectedDataset}
-				<p>
-					{#if isBipmedDataset(selectedDataset)}
-						{selectedDataset.title} · {fmt(BRAZIL_STATES.length)}
-						{tx('states', 'estados')} · {fmt(selectedDataset.participants)}
-						{tx('participants', 'participantes')}
-					{:else if isPgpDataset(selectedDataset)}
-						{selectedDataset.title} · {tx('United States', 'Estados Unidos')} · {fmt(
-							selectedDataset.participants
-						)}
-						{tx('participants', 'participantes')}
+			<div class="floating-title-row">
+				<img src="/biovault-logo.png" alt="" class="floating-title-logo" aria-hidden="true" />
+				<div class="floating-title-copy">
+					<h1>{tx('Global allele-frequency network', 'Rede global de frequência alélica')}</h1>
+					{#if selectedDataset}
+						<p>
+							{#if isBipmedDataset(selectedDataset)}
+								{selectedDataset.title} · {fmt(BRAZIL_STATES.length)}
+								{tx('states', 'estados')} · {fmt(selectedDataset.participants)}
+								{tx('participants', 'participantes')}
+							{:else if isPgpDataset(selectedDataset)}
+								{selectedDataset.title} · {tx('United States', 'Estados Unidos')} · {fmt(
+									selectedDataset.participants
+								)}
+								{tx('participants', 'participantes')}
+							{:else}
+								{selectedDataset.title} · {fmt(scopedCountryRows.length)}
+								{tx('countries', 'países')} · {fmt(selectedDataset.participants)}
+								{tx('participants', 'participantes')}
+							{/if}
+						</p>
 					{:else}
-						{selectedDataset.title} · {fmt(scopedCountryRows.length)}
-						{tx('countries', 'países')} · {fmt(selectedDataset.participants)}
-						{tx('participants', 'participantes')}
+						<p>
+							{fmt(dashboard.totals.participants)} {tx('participants across', 'participantes em')}
+							{countryRows.length} {tx('countries', 'países')}
+						</p>
 					{/if}
-				</p>
-			{/if}
+				</div>
+			</div>
 		</div>
 
 		<nav class="top-nav" aria-label={tx('Dashboard navigation', 'Navegação do painel')}>
-			<a href="/about">{tx('About', 'Sobre')}</a>
-			<a href="/contact">{tx('Contact', 'Contato')}</a>
-			<a href="/api">API</a>
+			<a href="/about" class:active={siteModalRoute === '/about'}>{tx('About', 'Sobre')}</a>
+			<a href="/contact" class:active={siteModalRoute === '/contact'}>{tx('Contact', 'Contato')}</a>
+			<a href="/api" class:active={siteModalRoute === '/api'}>API</a>
 			<!-- Language picker hidden for now.
 		<label class="language-switcher" aria-label={tx('Language', 'Idioma')}>
 			<select bind:value={$lang}>
@@ -2205,108 +2520,35 @@
 		<Drawer.Root
 			bind:open={resultsDrawerOpen}
 			onOpenChange={(open) => {
-				if (!open) syncResultsUrl(false)
+				if (open) return
+				if (isVariantRoute) {
+					void goto(mapResultsPath, { noScroll: true, keepFocus: true })
+					return
+				}
+				closeResultsDrawer()
 			}}
 			shouldScaleBackground={false}
+			modal={false}
 			direction="right"
 		>
 			<Drawer.Content
-				class={`map-results-drawer ${resultsDrawerExpanded ? 'expanded' : ''}`}
+				class="map-results-drawer"
 				aria-label={tx('Variant results', 'Resultados de variantes')}
 				interactOutsideBehavior="ignore"
 				trapFocus={false}
 			>
-				<div class="drawer-copy-ears" aria-label={tx('Share tools', 'Ferramentas de compartilhamento')}>
-					{#if !isVariantRoute}
-						<button
-							type="button"
-							class:active={drawerFiltersOpen}
-							onclick={() => (drawerFiltersOpen = !drawerFiltersOpen)}
-						>
-							{tx('Filters', 'Filtros')}{#if mapFilterCount} <strong>{mapFilterCount}</strong>{/if}
-						</button>
-						<button type="button" onclick={copyDrawerCurl} title={drawerCurlCmd}
-							>{curlCopied ? tx('Copied', 'Copiado') : 'curl'}</button
-						>
-						<button type="button" onclick={copyShareUrl}
-							>{shareCopied ? tx('Copied', 'Copiado') : tx('link', 'link')}</button
-						>
-					{/if}
-				</div>
-				{#if drawerFiltersOpen && !isVariantRoute}
-					<div class="map-filter-menu drawer-filter-menu">
-						<div class="map-filter-grid">
-							<label>
-								<span>{tx('Gene', 'Gene')}</span>
-								<input bind:value={filterGene} placeholder="ISG15" />
-							</label>
-							<label>
-								<span>{tx('Allele freq', 'Freq. alélica')}</span>
-								<div class="range-inputs">
-									<input bind:value={filterAfMin} placeholder="min" />
-									<input bind:value={filterAfMax} placeholder="max" />
-								</div>
-							</label>
-							<label>
-								<span>{tx('Allele count', 'Contagem alélica')}</span>
-								<div class="range-inputs">
-									<input bind:value={filterAcMin} type="number" placeholder="min" />
-									<input bind:value={filterAcMax} type="number" placeholder="max" />
-								</div>
-							</label>
-							<label>
-								<span>{tx('Per page', 'Por página')}</span>
-								<select bind:value={filterPageSize}>
-									{#each [25, 50, 100, 200, 500] as n}<option value={n}>{n}</option>{/each}
-								</select>
-							</label>
-						</div>
-						<div class="map-filter-columns">
-							<div>
-								<div class="map-filter-heading">VEP impact</div>
-								<div class="map-filter-options compact">
-									{#each VEP_IMPACT_OPTIONS as impact}
-										<label>
-											<input
-												type="checkbox"
-												checked={filterVepImpacts[impact]}
-												onchange={() => toggleFilterVepImpact(impact)}
-											/>
-											<span>{impact}</span>
-										</label>
-									{/each}
-								</div>
-							</div>
-							<div>
-								<div class="map-filter-heading">VEP consequence</div>
-								<div class="map-filter-options">
-									{#each VEP_CONSEQUENCE_OPTIONS as consequence}
-										<label>
-											<input
-												type="checkbox"
-												checked={filterVepConsequences[consequence]}
-												onchange={() => toggleFilterVepConsequence(consequence)}
-											/>
-											<span>{consequence}</span>
-										</label>
-									{/each}
-								</div>
-							</div>
-						</div>
-						<div class="map-filter-actions">
-							<button type="button" onclick={resetMapFilters}
-								>{tx('Clear search & filters', 'Limpar pesquisa e filtros')}</button
-							>
-						</div>
-					</div>
-				{/if}
 				<div class="map-results-body">
 					{#if isVariantRoute && variantDetailData}
-						<VariantDetailPage data={variantDetailData} part="tables" onExploreNavigate={openExploreFromVariant} />
+						<VariantDetailPage
+							data={variantDetailData}
+							part="tables"
+							exploreReturnHref={mapResultsPath}
+							onExploreNavigate={openExploreFromVariant}
+						/>
 					{:else if variantRouteError}
 						<div class="variant-route-error">
 							<p>{variantRouteError}</p>
-							<button type="button" onclick={() => history.back()}>
+							<button type="button" onclick={() => void goto(mapResultsPath, { noScroll: true, keepFocus: true })}>
 								{tx('Back to results', 'Voltar aos resultados')}
 							</button>
 						</div>
@@ -2318,11 +2560,22 @@
 								options={filterBiobankOptions}
 								populations={filterPopulationOptions}
 								initialParams={activeResultsQueryString}
+								syncFromParentParams={true}
 								syncToUrl={false}
 								showApiBar={false}
 								showTitle={false}
+								embedded={true}
 								onParamsChange={(params) => (resultsTableQueryString = params)}
 								onVariantNavigate={openVariantFromDrawer}
+								onShareQuery={copyShareUrl}
+								shareQueryCopied={shareCopied}
+								shareQueryLabel={tx('Share this query!', 'Compartilhar esta consulta!')}
+								shareQueryCopiedLabel={tx('Copied!', 'Copiado!')}
+								filtersOpen={drawerFiltersOpen}
+								filterCount={mapFilterCount}
+								filterLabel={tx('Filters', 'Filtros')}
+								onFilterToggle={() => (drawerFiltersOpen = !drawerFiltersOpen)}
+								filterPanel={drawerFilterPanel}
 								showGenotypeCounts={data.showGenotypeCounts}
 								display={data.display}
 								title={tx('Variants', 'Variantes')}
@@ -2335,32 +2588,82 @@
 		</Drawer.Root>
 
 		{#if showVariantLeftPanels && variantDetailData}
-			<VariantDetailPage data={variantDetailData} part="panel" onExploreNavigate={openExploreFromVariant} />
-		{:else if showExploreLeftPanels}
-			<section class="explore-stat-row" aria-label={tx('Network summary', 'Resumo da rede')}>
-				<div class="explore-stat-box">
-					<strong>{explorePanelCountryCount}</strong>
-					<span>{tx('countries', 'países')}</span>
-				</div>
-				<div class="explore-stat-box">
-					<strong>{fmt(explorePanelParticipantCount)}</strong>
-					<span>{tx('participants', 'participantes')}</span>
-				</div>
-			</section>
+			<VariantDetailPage
+				data={variantDetailData}
+				part="panel"
+				exploreReturnHref={mapResultsPath}
+				onExploreNavigate={openExploreFromVariant}
+			/>
+		{/if}
 
-			<section class="variant-mix explore-variant-panel" aria-label={tx('Variants', 'Variantes')}>
+		{#if showExploreLeftPanels}
+			<aside
+				class="explore-side-panel explore-datasets-side-panel"
+				aria-label={tx('Databases', 'Bancos de dados')}
+			>
+				<div class="panel-heading detail-heading country-panel-header">
+					<div class="detail-heading-main country-panel-titleblock">
+						<h2>{tx('Databases', 'Bancos de dados')}</h2>
+						<p class="detail-context">
+							{displayDatasets.length}
+							{tx('databases', 'bancos')}
+						</p>
+					</div>
+				</div>
+
+				<div class="explore-datasets-scroll explore-side-panel-scroll">
+					{#each displayDatasets as dataset}
+						{@const tenant = tenantFor(dataset.biobankSlug)}
+						<button
+							type="button"
+							class="database-row"
+							class:active={selectedDatasetSlug === dataset.slug}
+							onclick={() => selectDataset(dataset)}
+						>
+							<span class="dataset-logo" aria-hidden="true">
+								{#if tenant?.logoImg}
+									<img src={tenant.logoImg} alt="" />
+								{:else}
+									<span>{tenant?.logoEmoji ?? 'DB'}</span>
+								{/if}
+							</span>
+							<span class="database-row-main">
+								<span class="database-row-title">{dataset.title}</span>
+								<small
+									>{dataset.release} · {fmt(dataset.participants)}
+									{tx('participants', 'participantes')} · {dataset.assay}</small
+								>
+								{#if dataset.description}
+									<span class="database-row-desc">{dataset.description}</span>
+								{/if}
+							</span>
+						</button>
+					{/each}
+					<a href="/contact" class="dataset-cta"
+						>{tx('Want to contribute data?', 'Quer contribuir com dados?')}
+						<strong>{tx('Get in touch', 'Entre em contato')}</strong></a
+					>
+				</div>
+			</aside>
+		{/if}
+
+		{#if showMapVariantPanel}
+			<section
+				class="variant-mix explore-variant-panel explore-variant-panel-centered"
+				aria-label={tx('Variants', 'Variantes')}
+			>
 				<div class="variant-head">
 					<h2>{tx('Variants', 'Variantes')}</h2>
-					<strong>{fmt(explorePanelVariantTotal)}</strong>
+					<strong>{fmt(variantMixTotal)}</strong>
 				</div>
 
 				<div class="variant-bar" aria-hidden="true">
-					{#each explorePanelVariantClassRows as row (row.key)}
-						<span style={`width:${pct(row.count, explorePanelVariantTotal)}; background:${row.color}`}></span>
+					{#each variantClassRows as row (row.key)}
+						<span style={`width:${pct(row.count, variantMixTotal)}; background:${row.color}`}></span>
 					{/each}
 				</div>
 				<div class="variant-key">
-					{#each explorePanelVariantClassRows as row (row.key)}
+					{#each variantClassRows as row (row.key)}
 						<div class="variant-key-slot">
 							<div class="variant-key-item">
 								<span class="variant-key-label">
@@ -2373,6 +2676,7 @@
 					{/each}
 				</div>
 			</section>
+		{/if}
 
 			<!-- Temporarily hidden per design pass.
 			<section class="bottom-panel explore-datasets-panel" aria-label={tx('Databases', 'Bancos de dados')}>
@@ -2416,7 +2720,6 @@
 				</div>
 			</section>
 			-->
-		{/if}
 
 		{#if isHome}
 			{#if selectedCountry || selectedDataset}
@@ -2439,10 +2742,17 @@
 					{/snippet}
 
 					{#if selectedCountry}
-						<div class="panel-heading detail-heading">
-							<div>
-								<p>{tx('Selected country', 'País selecionado')}</p>
-								<h2>{selectedCountry.name}</h2>
+						<div class="panel-heading detail-heading country-panel-header">
+							<div class="detail-heading-main country-panel-titleblock">
+								<h2 class="country-name-heading">
+									<span class="picker-flag" aria-hidden="true"
+										>{countryFlagEmoji(selectedCountry.code)}</span
+									>
+									{selectedCountry.name}
+								</h2>
+								{#if countryContextLine(selectedCountry)}
+									<p class="detail-context">{countryContextLine(selectedCountry)}</p>
+								{/if}
 							</div>
 							{#if selectedDataset}
 								<button type="button" class="panel-action secondary" onclick={clearCountrySelection}
@@ -2452,13 +2762,9 @@
 						</div>
 
 						<div class="country-detail">
-							{#if countryContextLine(selectedCountry)}
-								<p class="detail-context">{countryContextLine(selectedCountry)}</p>
-							{/if}
-
 							{#if caribbeanPeerCountries(selectedCountry).length}
-								<div class="detail-section">
-									<p>{tx('Caribbean breakdown', 'Detalhamento do Caribe')}</p>
+								<div class="detail-section detail-card">
+									<p class="detail-card-label">{tx('Caribbean breakdown', 'Detalhamento do Caribe')}</p>
 									<div class="detail-list">
 										{#each caribbeanPeerCountries(selectedCountry) as peer}
 											<button
@@ -2476,8 +2782,8 @@
 							{/if}
 
 							{#if countryMappingsForCode(selectedCountry.code).length}
-								<div class="detail-section">
-									<p>{tx('1KGP subpopulations', 'Subpopulações 1KGP')}</p>
+								<div class="detail-section detail-card">
+									<p class="detail-card-label">{tx('1KGP subpopulations', 'Subpopulações 1KGP')}</p>
 									<div class="detail-list">
 										{#each countryMappingsForCode(selectedCountry.code) as mapping}
 											<div class="detail-list-row static">
@@ -2489,17 +2795,33 @@
 								</div>
 							{/if}
 
+							{#if countryCoverageRows.length}
+								<div class="detail-section detail-card">
+									<p class="detail-card-label">{tx('Brazil states', 'Estados do Brasil')}</p>
+									<div class="detail-list">
+										{#each countryCoverageRows as row}
+											<button
+												type="button"
+												class="detail-list-row"
+												onclick={() => flyToCoverageRow(row, { keepDataset: true })}
+											>
+												<span>{row.name}</span>
+												<strong>{row.samples == null ? '—' : fmt(row.samples)}</strong>
+											</button>
+										{/each}
+									</div>
+								</div>
+							{/if}
+
 							{#each datasetsForCountry(selectedCountry) as dataset}
-								<article class="meta-dataset compact">
-									<div class="meta-dataset-intro">
+								<article class="meta-dataset compact detail-card">
+									<div class="meta-dataset-top">
 										{@render panelLogo(dataset.biobankSlug)}
 										<div class="meta-dataset-copy">
-											<div class="meta-dataset-head">
-												<p>{tx('Dataset', 'Conjunto de dados')}</p>
-												{#if dataset.release}<span class="meta-release">{dataset.release}</span
-													>{/if}
+											<div class="meta-dataset-title-row">
+												<h3>{dataset.title}</h3>
+												{#if dataset.release}<span class="meta-release">{dataset.release}</span>{/if}
 											</div>
-											<h3>{dataset.title}</h3>
 											{#if dataset.description}<p class="meta-desc">{dataset.description}</p>{/if}
 										</div>
 									</div>
@@ -2525,29 +2847,23 @@
 							{/each}
 						</div>
 					{:else if selectedDataset}
-						<div class="panel-heading detail-heading">
-							<div class="detail-heading-main">
-								{@render panelLogo(selectedDataset.biobankSlug)}
-								<div>
-									<p>{tx('Dataset', 'Conjunto de dados')}</p>
+						<div class="panel-heading detail-heading country-panel-header">
+							<div class="detail-heading-main country-panel-titleblock">
+								<div class="meta-dataset-title-row dataset-panel-title">
+									{@render panelLogo(selectedDataset.biobankSlug)}
 									<h2>{selectedDataset.title}</h2>
+									{#if selectedDataset.release}<span class="meta-release">{selectedDataset.release}</span>{/if}
 								</div>
+								{#if selectedDataset.description}
+									<p class="detail-context">{selectedDataset.description}</p>
+								{/if}
 							</div>
 						</div>
 
 						<div class="country-detail">
-							{#if selectedDataset.description}
-								<p class="detail-context">{selectedDataset.description}</p>
-							{/if}
-
-							<article class="meta-dataset compact">
-								<div class="meta-dataset-head">
-									<p>{tx('Dataset stats', 'Estatísticas do conjunto')}</p>
-									{#if selectedDataset.release}<span class="meta-release"
-											>{selectedDataset.release}</span
-										>{/if}
-								</div>
-								<dl class="meta-grid">
+							<article class="meta-dataset compact detail-card">
+								<p class="detail-card-label">{tx('Dataset stats', 'Estatísticas do conjunto')}</p>
+								<dl class="meta-grid meta-grid-flush">
 									<div>
 										<dt>{tx('Participants', 'Participantes')}</dt>
 										<dd>{fmt(selectedDataset.participants)}</dd>
@@ -2567,22 +2883,17 @@
 								</dl>
 							</article>
 
-							<div class="detail-section">
-								<p>{datasetCoverageLabel(selectedDataset)}</p>
-								<div class="country-list inset">
+							<div class="detail-section detail-card">
+								<p class="detail-card-label">{datasetCoverageLabel(selectedDataset)}</p>
+								<div class="detail-list">
 									{#each scopedCoverageRows as row}
 										<button
 											type="button"
+											class="detail-list-row"
 											onclick={() => flyToCoverageRow(row, { keepDataset: true })}
 										>
-											<span class="country-main">
-												<span>{row.name}</span>
-												<small>{row.subtitle}</small>
-											</span>
-											<span class="country-count">
-												<strong>{row.samples == null ? '—' : fmt(row.samples)}</strong>
-												<small>{row.code}</small>
-											</span>
+											<span>{row.name}</span>
+											<strong>{row.samples == null ? '—' : fmt(row.samples)}</strong>
 										</button>
 									{/each}
 								</div>
@@ -2658,7 +2969,17 @@
 	-->
 
 			<p class="site-footer">© BioVault GA4GH VRS · <a href="/api">Beacon v2</a></p>
-		{:else if !isVariantRoute}
+		{/if}
+
+		{#if siteModalRoute}
+			<SiteModal
+				label={siteModalLabel}
+				wide={siteModalRoute === '/api'}
+				onclose={closeSiteModal}
+			>
+				{@render children?.()}
+			</SiteModal>
+		{:else if !isHome && !isVariantRoute}
 			<main class="route-overlay" class:with-left-panels={showExploreLeftPanels || showVariantLeftPanels}>
 				{@render children?.()}
 			</main>
@@ -2667,6 +2988,78 @@
 {:else}
 	<AtlasHome {data} />
 {/if}
+
+{#snippet drawerFilterPanel()}
+	<div class="map-filter-menu drawer-filter-menu">
+		<div class="map-filter-grid">
+			<label>
+				<span>{tx('Gene', 'Gene')}</span>
+				<input bind:value={filterGene} placeholder="ISG15" />
+			</label>
+			<label>
+				<span>{tx('Allele freq', 'Freq. alélica')}</span>
+				<div class="range-inputs">
+					<input bind:value={filterAfMin} placeholder="min" />
+					<input bind:value={filterAfMax} placeholder="max" />
+				</div>
+			</label>
+			<label>
+				<span>{tx('Allele count', 'Contagem alélica')}</span>
+				<div class="range-inputs">
+					<input bind:value={filterAcMin} type="number" placeholder="min" />
+					<input bind:value={filterAcMax} type="number" placeholder="max" />
+				</div>
+			</label>
+			<label>
+				<span>{tx('Per page', 'Por página')}</span>
+				<select bind:value={filterPageSize}>
+					{#each [25, 50, 100, 200, 500] as n}<option value={n}>{n}</option>{/each}
+				</select>
+			</label>
+		</div>
+		<div class="map-filter-columns">
+			<div>
+				<div class="map-filter-heading">VEP impact</div>
+				<div class="map-filter-options compact">
+					{#each VEP_IMPACT_OPTIONS as impact}
+						<label>
+							<input
+								type="checkbox"
+								checked={filterVepImpacts[impact]}
+								onchange={() => toggleFilterVepImpact(impact)}
+							/>
+							<span>{impact}</span>
+						</label>
+					{/each}
+				</div>
+			</div>
+			<div>
+				<div class="map-filter-heading">VEP consequence</div>
+				<div class="map-filter-options">
+					{#each VEP_CONSEQUENCE_OPTIONS as consequence}
+						<label>
+							<input
+								type="checkbox"
+								checked={filterVepConsequences[consequence]}
+								onchange={() => toggleFilterVepConsequence(consequence)}
+							/>
+							<span>{consequence}</span>
+						</label>
+					{/each}
+				</div>
+			</div>
+		</div>
+		<div class="map-filter-curl">
+			<div class="map-filter-heading">{tx('API query', 'Consulta API')}</div>
+			<div class="map-filter-curl-row">
+				<code>{drawerCurlCmd}</code>
+				<button type="button" onclick={copyDrawerCurl}>
+					{curlCopied ? tx('Copied', 'Copiado') : tx('Copy curl', 'Copiar curl')}
+				</button>
+			</div>
+		</div>
+	</div>
+{/snippet}
 
 <style>
 	:global(body:has(.dashboard-shell)) {
@@ -2711,7 +3104,31 @@
 		--side-panel-width: calc(var(--layout-left-width) - var(--screen-inset) - 8px);
 		--top-search-left: 49.5vw;
 		--top-search-width: clamp(560px, 52vw, 920px);
-		--panel-surface: color-mix(in srgb, var(--om-white) 85%, transparent);
+		--results-drawer-top: 84px;
+		--results-drawer-bottom: 28px;
+		--drawer-track-height: calc(100vh - var(--results-drawer-top) - var(--results-drawer-bottom));
+		--explore-side-panel-gap: var(--screen-inset);
+		--explore-side-panel-padding-x: 16px;
+		--explore-side-panel-max-height: min(680px, calc(var(--drawer-track-height) * 0.8));
+		--explore-side-panel-min-height: min(300px, calc(var(--drawer-track-height) * 0.4));
+		--explore-side-panel-width: calc(
+			var(--results-drawer-left-edge) - (2 * var(--screen-inset))
+		);
+		--explore-datasets-panel-height: var(--explore-side-panel-max-height);
+		--results-drawer-left-edge: calc(var(--top-search-left) - (var(--top-search-width) / 2));
+		--panel-surface: color-mix(in srgb, var(--om-white) 92%, transparent);
+		--left-panel-surface: color-mix(in srgb, var(--om-teal-100) 24%, var(--om-white) 76%);
+		--left-panel-card-bg: color-mix(in srgb, var(--om-teal-100) 42%, var(--om-white) 58%);
+		--left-panel-card-border: color-mix(in srgb, var(--om-teal-600) 11%, var(--om-gray-400) 38%);
+		--column-header-bg: var(--om-gray-100);
+		--column-header-color: var(--om-gray-600);
+		--column-header-size: 11px;
+		--column-header-weight: 600;
+		--column-header-tracking: 0.06em;
+		--column-header-padding-y: 10px;
+		--column-header-padding-x: 12px;
+		--column-header-height: 32px;
+		--drawer-toolbar-height: 42px;
 		--panel-shadow: 0 10px 28px rgb(46 43 59 / 0.08);
 		position: relative;
 		height: 100vh;
@@ -2726,6 +3143,7 @@
 	.map {
 		position: absolute;
 		inset: 0;
+		z-index: 0;
 	}
 
 	.dashboard-shell :global(.mapboxgl-ctrl-bottom-left .mapboxgl-ctrl),
@@ -2751,17 +3169,54 @@
 		text-shadow: 0 1px 2px rgb(255 255 255 / 0.72);
 	}
 
+	.dashboard-shell :global(.mapboxgl-popup-content) {
+		border-radius: var(--om-radius-s);
+	}
+
 	.country-panel,
 	.bottom-panel,
 	.variant-mix,
 	.explore-intro-panel,
-	:global(.variant-detail-panel) {
+	.explore-datasets-side-panel,
+	.explore-side-panel {
 		position: absolute;
 		z-index: 2;
 		border: 0;
 		border-radius: var(--om-radius-m);
-		background: var(--panel-surface);
 		box-shadow: var(--panel-shadow);
+	}
+
+	:global(.variant-detail-side-panel.explore-side-panel) {
+		position: fixed;
+		z-index: 2;
+		top: 50%;
+		left: var(--screen-inset);
+		right: auto;
+		bottom: auto;
+		width: var(--explore-side-panel-width);
+		max-width: var(--explore-side-panel-width);
+		height: auto;
+		min-height: var(--explore-side-panel-min-height);
+		max-height: var(--explore-side-panel-max-height);
+		transform: translateY(-50%);
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		border: 0;
+		border-radius: var(--om-radius-m);
+		box-shadow: var(--panel-shadow);
+		pointer-events: auto;
+		background: var(--left-panel-surface);
+	}
+
+	.country-panel,
+	.explore-side-panel,
+	.explore-datasets-side-panel,
+	:global(.variant-detail-side-panel),
+	.variant-mix,
+	.explore-intro-panel,
+	.explore-stat-box {
+		background: var(--left-panel-surface);
 	}
 
 	.floating-title {
@@ -2769,11 +3224,28 @@
 		z-index: 2;
 		left: var(--screen-inset);
 		top: var(--screen-inset);
-		max-width: min(360px, calc(100vw - 32px));
+		max-width: min(420px, calc(100vw - 32px));
 		color: var(--om-gray-850);
 		text-shadow:
 			0 1px 0 rgb(255 255 255 / 0.78),
 			0 8px 24px rgb(255 255 255 / 0.72);
+	}
+
+	.floating-title-row {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+	}
+
+	.floating-title-logo {
+		width: 40px;
+		height: 40px;
+		flex-shrink: 0;
+		object-fit: contain;
+	}
+
+	.floating-title-copy {
+		min-width: 0;
 	}
 
 	.floating-title h1 {
@@ -2826,6 +3298,11 @@
 		background: color-mix(in srgb, var(--om-white) 58%, transparent);
 		color: var(--om-teal-700);
 		text-decoration: none;
+	}
+
+	.top-nav a.active {
+		background: color-mix(in srgb, var(--om-teal-100) 72%, var(--om-white));
+		color: var(--om-teal-700);
 	}
 
 	/* Language picker hidden for now.
@@ -3041,6 +3518,20 @@
 		cursor: pointer;
 	}
 
+	.dataset-picker-menu .picker-logo.dataset-logo {
+		width: 72px;
+		height: 36px;
+	}
+
+	.dataset-picker-menu .picker-logo.dataset-logo img {
+		max-width: 66px;
+		max-height: 30px;
+	}
+
+	.dataset-picker-menu .picker-logo.dataset-logo > span {
+		font-size: 22px;
+	}
+
 	.picker-flag {
 		display: grid;
 		width: 24px;
@@ -3086,12 +3577,13 @@
 	}
 
 	.dataset-picker-menu .dataset-clear {
-		grid-template-columns: 1fr;
 		margin-bottom: 2px;
 		border-bottom: 1px solid color-mix(in srgb, var(--om-gray-700) 10%, transparent);
 		border-radius: 0;
 		padding-bottom: 10px;
-		font-size: 12px;
+	}
+
+	.dataset-picker-menu .dataset-clear .dataset-main span:first-child {
 		font-weight: 700;
 		color: var(--om-teal-700);
 	}
@@ -3216,6 +3708,18 @@
 		background: color-mix(in srgb, var(--om-teal-100) 72%, var(--om-white));
 	}
 
+	.country-picker-menu .country-clear {
+		margin-bottom: 2px;
+		border-bottom: 1px solid color-mix(in srgb, var(--om-gray-700) 10%, transparent);
+		border-radius: 0;
+		padding-bottom: 10px;
+	}
+
+	.country-picker-menu .country-clear .country-main span:first-child {
+		font-weight: 700;
+		color: var(--om-teal-700);
+	}
+
 	.map-filter-menu {
 		display: grid;
 		max-height: min(44vh, 520px);
@@ -3225,7 +3729,32 @@
 	}
 
 	.drawer-filter-menu {
-		border-radius: 0;
+		border-radius: var(--om-radius-s);
+		background: color-mix(in srgb, var(--om-gray-100) 55%, var(--om-white));
+	}
+
+	.drawer-filter-menu .map-filter-options {
+		border: 0;
+		background: transparent;
+		padding: 0;
+	}
+
+	.drawer-filter-menu .map-filter-columns > div {
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+	}
+
+	.drawer-filter-menu .map-filter-options,
+	.drawer-filter-menu .map-filter-options.compact {
+		max-height: 112px;
+		overflow-y: auto;
+		overscroll-behavior: contain;
+	}
+
+	.drawer-filter-menu .map-filter-curl {
+		border-top: 0;
+		padding-top: 0;
 	}
 
 	.map-filter-section {
@@ -3427,6 +3956,55 @@
 		padding-top: var(--om-space-s);
 	}
 
+	.map-filter-curl {
+		display: grid;
+		gap: var(--om-space-s);
+		border-top: 1px solid color-mix(in srgb, var(--om-gray-300) 80%, transparent);
+		padding-top: var(--om-space-s);
+	}
+
+	.map-filter-curl-row {
+		display: flex;
+		align-items: center;
+		gap: var(--om-space-s);
+	}
+
+	.map-filter-curl-row code {
+		min-width: 0;
+		flex: 1;
+		overflow: hidden;
+		border: 1px solid color-mix(in srgb, var(--om-gray-400) 55%, transparent);
+		border-radius: var(--om-radius-s);
+		background: color-mix(in srgb, var(--om-white) 76%, transparent);
+		padding: 8px 10px;
+		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+		font-size: 11px;
+		line-height: 1.35;
+		color: var(--om-gray-700);
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.map-filter-curl-row button {
+		display: inline-flex;
+		height: 34px;
+		flex-shrink: 0;
+		align-items: center;
+		border: 1px solid color-mix(in srgb, var(--om-gray-400) 65%, transparent);
+		border-radius: var(--om-radius-s);
+		background: color-mix(in srgb, var(--om-white) 84%, transparent);
+		padding: 0 12px;
+		font-size: 12px;
+		font-weight: 800;
+		color: var(--om-gray-700);
+		cursor: pointer;
+	}
+
+	.map-filter-curl-row button:hover {
+		background: color-mix(in srgb, var(--om-teal-100) 70%, var(--om-white));
+		color: var(--om-teal-700);
+	}
+
 	.map-filter-actions button {
 		display: inline-flex;
 		height: 34px;
@@ -3500,14 +4078,19 @@
 	}
 
 	.map-reset {
+		display: flex;
+		align-items: center;
+		justify-content: center;
 		flex-shrink: 0;
+		align-self: stretch;
+		height: var(--search-control-height);
 		border-radius: var(--om-radius-m);
 		background: var(--panel-surface);
 		box-shadow: var(--topbar-shadow);
-		padding: 0 12px;
+		padding: 0 18px;
 		font-family: 'Inter', system-ui, sans-serif;
-		font-size: 13px;
-		font-weight: 800;
+		font-size: 15px;
+		font-weight: 700;
 		line-height: 1;
 		color: var(--om-gray-700);
 		cursor: pointer;
@@ -3543,6 +4126,8 @@
 		width: var(--side-panel-width);
 		gap: 3px;
 		padding: 14px var(--om-space-l);
+		border-radius: var(--om-radius-m);
+		box-shadow: var(--panel-shadow);
 	}
 
 	.explore-intro-panel h2 {
@@ -3568,21 +4153,115 @@
 		color: var(--om-gray-600);
 	}
 
-	:global(.variant-detail-panel) {
-		top: var(--results-drawer-top);
-		left: var(--screen-inset);
+	:global(.variant-detail-side-panel .panel-heading) {
 		display: flex;
-		width: var(--side-panel-width);
-		max-height: calc(100vh - var(--results-drawer-top) - var(--bottom-inset));
+		align-items: center;
+		justify-content: space-between;
+		gap: 16px;
+		margin: 0;
+	}
+
+	:global(.variant-detail-side-panel .country-panel-header) {
+		flex-shrink: 0;
+		padding: 16px var(--explore-side-panel-padding-x, 16px) 12px;
+		border-bottom: 1px solid color-mix(in srgb, var(--om-teal-600) 10%, var(--om-gray-400) 28%);
+		background: color-mix(in srgb, var(--om-teal-100) 18%, transparent);
+	}
+
+	:global(.variant-detail-side-panel .detail-heading-main) {
+		display: flex;
+		align-items: center;
+		gap: var(--om-space-m);
+		min-width: 0;
+	}
+
+	:global(.variant-detail-side-panel .country-panel-titleblock) {
 		flex-direction: column;
-		gap: var(--om-space-s);
-		overflow: auto;
-		padding: 14px var(--om-space-l) var(--om-space-l);
+		align-items: flex-start;
+		gap: 3px;
+		min-width: 0;
+	}
+
+	:global(.variant-detail-side-panel .detail-context) {
+		margin: 0;
+		font-size: 11px;
+		font-weight: 500;
+		line-height: 1.35;
+		color: var(--om-gray-600);
+	}
+
+	:global(.variant-detail-side-panel .country-panel-header h2) {
+		font-family: 'Rubik', 'Inter', system-ui, sans-serif;
+		font-size: 17px;
+		font-weight: 700;
+		line-height: 1.15;
+		color: var(--om-gray-850);
+	}
+
+	:global(.variant-detail-side-scroll),
+	:global(.variant-detail-side-panel .explore-side-panel-scroll) {
+		flex: 1 1 auto;
+		min-height: 0;
+		overflow-x: hidden;
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		padding: 12px var(--explore-side-panel-padding-x, 16px) 16px;
+		display: grid;
+		gap: var(--om-space-m);
+	}
+
+	:global(.variant-detail-summary) {
+		display: grid;
+		gap: 8px;
+		margin: 0;
+	}
+
+	:global(.variant-detail-summary .detail-card-label) {
+		display: block;
+		margin: 0 0 7px;
+		font-size: 9px;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--om-teal-700);
+	}
+
+	:global(.variant-detail-summary dl) {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr);
+		gap: 4px;
+		margin: 0;
+	}
+
+	:global(.variant-detail-summary dl > div) {
+		display: grid;
+		gap: 3px;
+		border-radius: var(--om-radius-s);
+		background: color-mix(in srgb, var(--om-teal-100) 24%, transparent);
+		padding: 8px 10px;
+	}
+
+	:global(.variant-detail-summary dt) {
+		font-size: 9px;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--om-teal-700);
+	}
+
+	:global(.variant-detail-summary dd) {
+		margin: 0;
+		font-size: 12px;
+		font-weight: 700;
+		line-height: 1.35;
+		color: var(--om-gray-850);
+		word-break: break-word;
 	}
 
 	:global(.variant-detail-back) {
-		font-size: 12px;
-		font-weight: 700;
+		font-size: 11px;
+		font-weight: 650;
+		line-height: 1.2;
 		color: var(--om-gray-600);
 		text-decoration: none;
 	}
@@ -3592,41 +4271,45 @@
 		text-decoration: underline;
 	}
 
-	:global(.variant-detail-title) {
+	:global(.variant-detail-id) {
 		margin: 0;
 		overflow: hidden;
 		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-		font-size: 18px;
-		font-weight: 800;
-		line-height: 1.15;
+		font-size: 13px;
+		font-weight: 700;
+		line-height: 1.35;
 		color: var(--om-gray-850);
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 
 	:global(.variant-detail-links) {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 6px;
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+		gap: 4px;
 	}
 
 	:global(.variant-detail-links a) {
 		display: inline-flex;
+		min-width: 0;
 		align-items: center;
+		justify-content: center;
 		gap: 4px;
-		border: 1px solid color-mix(in srgb, var(--om-gray-400) 70%, transparent);
+		border: 1px solid color-mix(in srgb, var(--om-teal-600) 11%, var(--om-gray-400) 38%);
 		border-radius: var(--om-radius-s);
 		background: color-mix(in srgb, var(--om-white) 84%, transparent);
-		padding: 4px 8px;
-		font-size: 11px;
+		padding: 6px 4px;
+		font-size: 10px;
 		font-weight: 700;
 		color: var(--om-gray-700);
 		text-decoration: none;
+		white-space: nowrap;
 	}
 
 	:global(.variant-detail-links a:hover) {
 		border-color: color-mix(in srgb, var(--om-teal-600) 42%, transparent);
 		color: var(--om-teal-700);
+		background: color-mix(in srgb, var(--om-teal-100) 60%, var(--om-white));
 	}
 
 	:global(.variant-detail-links img),
@@ -3635,50 +4318,10 @@
 		height: 14px;
 	}
 
-	:global(.variant-detail-summary) {
-		display: grid;
-		gap: var(--om-space-s);
-	}
-
-	:global(.variant-detail-summary h3) {
-		margin: 0;
-		font-size: 11px;
-		font-weight: 700;
-		letter-spacing: 0.04em;
-		text-transform: uppercase;
-		color: var(--om-teal-700);
-	}
-
-	:global(.variant-detail-summary dl) {
-		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: 10px 12px;
-		margin: 0;
-	}
-
-	:global(.variant-detail-summary dl .span-all) {
-		grid-column: 1 / -1;
-	}
-
-	:global(.variant-detail-summary dt) {
-		font-size: 10px;
-		font-weight: 700;
-		letter-spacing: 0.04em;
-		text-transform: uppercase;
-		color: var(--om-gray-550);
-	}
-
-	:global(.variant-detail-summary dd) {
-		margin: 2px 0 0;
-		font-size: 12px;
-		font-weight: 600;
-		line-height: 1.35;
-		color: var(--om-gray-850);
-	}
-
 	:global(.variant-detail-summary dd.mono) {
 		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 		font-size: 11px;
+		font-weight: 600;
 	}
 
 	:global(.variant-gene-list) {
@@ -3728,7 +4371,6 @@
 		gap: 2px;
 		border: 0;
 		border-radius: var(--om-radius-m);
-		background: var(--panel-surface);
 		box-shadow: var(--panel-shadow);
 		padding: var(--om-space-m);
 	}
@@ -3762,6 +4404,13 @@
 		transform: none;
 	}
 
+	.explore-variant-panel.explore-variant-panel-centered {
+		top: auto;
+		bottom: var(--bottom-inset);
+		left: max(16px, calc((100vw - 480px) / 2));
+		width: min(480px, calc(100vw - 32px));
+	}
+
 	.variant-head {
 		display: flex;
 		align-items: center;
@@ -3771,8 +4420,12 @@
 	}
 
 	.variant-head h2 {
-		font-size: 18px;
-		line-height: 1.2;
+		margin: 0;
+		font-family: 'Rubik', 'Inter', system-ui, sans-serif;
+		font-size: 17px;
+		font-weight: 700;
+		line-height: 1.15;
+		color: var(--om-gray-850);
 	}
 
 	.variant-head > strong {
@@ -3917,7 +4570,7 @@
 		--om-space-s: 8px;
 		--om-space-m: 12px;
 		--om-space-l: 16px;
-		--panel-surface: color-mix(in srgb, var(--om-white) 85%, transparent);
+		--panel-surface: color-mix(in srgb, var(--om-white) 92%, transparent);
 		--panel-shadow: 0 10px 28px rgb(46 43 59 / 0.08);
 		--screen-inset: 24px;
 		--top-search-left: 49.5vw;
@@ -3925,6 +4578,16 @@
 		--results-drawer-top: 84px;
 		--results-drawer-bottom: 28px;
 		--results-drawer-left-edge: calc(var(--top-search-left) - (var(--top-search-width) / 2));
+		--column-header-bg: var(--om-gray-100);
+		--column-header-color: var(--om-gray-600);
+		--column-header-size: 11px;
+		--column-header-weight: 600;
+		--column-header-tracking: 0.06em;
+		--column-header-padding-y: 10px;
+		--column-header-padding-x: 12px;
+		--column-header-height: 32px;
+		--drawer-toolbar-height: 42px;
+		pointer-events: none;
 		top: var(--results-drawer-top) !important;
 		right: var(--screen-inset) !important;
 		bottom: var(--results-drawer-bottom) !important;
@@ -3934,7 +4597,9 @@
 		height: calc(100vh - var(--results-drawer-top) - var(--results-drawer-bottom)) !important;
 		max-height: none !important;
 		min-height: 0;
-		overflow: visible;
+		display: flex !important;
+		flex-direction: column;
+		overflow: hidden;
 		border: 0 !important;
 		border-radius: var(--om-radius-m) 0 0 var(--om-radius-m);
 		background: var(--panel-surface);
@@ -3945,67 +4610,10 @@
 		transform: none !important;
 	}
 
-	:global(.map-results-drawer.expanded) {
-		--results-drawer-bottom: 28px;
-		top: var(--results-drawer-top) !important;
-		right: var(--screen-inset) !important;
-		bottom: var(--results-drawer-bottom) !important;
-		left: auto !important;
-		width: calc(100vw - var(--results-drawer-left-edge) - var(--screen-inset)) !important;
-		height: calc(100vh - var(--results-drawer-top) - var(--results-drawer-bottom)) !important;
-		min-height: 0;
-	}
-
-	.drawer-copy-ears {
-		position: absolute;
-		z-index: 3;
-		top: -30px;
-		right: 10px;
-		display: flex;
-		gap: 4px;
-		align-items: flex-end;
-	}
-
-	.drawer-copy-ears button {
-		display: inline-flex;
-		height: 30px;
-		align-items: center;
-		justify-content: center;
-		gap: 6px;
-		border: 0;
-		border-radius: var(--om-radius-s) var(--om-radius-s) 0 0;
-		background: color-mix(in srgb, var(--om-white) 88%, transparent);
-		box-shadow: 0 -4px 14px rgb(46 43 59 / 0.06);
-		padding: 0 11px;
-		font-family: 'Inter', system-ui, sans-serif;
-		font-size: 12px;
-		font-weight: 800;
-		line-height: 1;
-		color: var(--om-gray-700);
-		cursor: pointer;
-	}
-
-	.drawer-copy-ears button:hover {
-		background: color-mix(in srgb, var(--om-teal-100) 64%, var(--om-white));
-		color: var(--om-teal-700);
-	}
-
-	.drawer-copy-ears button.active {
-		background: var(--om-gray-850);
-		color: var(--om-white);
-	}
-
-	.drawer-copy-ears button strong {
-		display: grid;
-		min-width: 18px;
-		height: 18px;
-		place-items: center;
-		border-radius: 999px;
-		background: currentColor;
-		padding: 0 5px;
-		font-size: 10px;
-		line-height: 1;
-		color: var(--panel-surface);
+	.drawer-filter-menu,
+	.map-results-body,
+	.variant-route-error {
+		pointer-events: auto;
 	}
 
 	.map-results-body {
@@ -4055,32 +4663,56 @@
 		display: flex;
 		flex-shrink: 0;
 		gap: 0;
-		overflow-x: auto;
-		border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
-		background: color-mix(in srgb, var(--om-gray-100) 60%, transparent);
+		box-sizing: border-box;
+		width: 100%;
+		height: var(--column-header-height);
+		min-height: var(--column-header-height);
+		max-height: var(--column-header-height);
+		border-bottom: 1px solid color-mix(in srgb, var(--om-gray-400) 28%, transparent);
+		background: color-mix(in srgb, var(--om-teal-100) 14%, var(--column-header-bg));
 	}
 
 	.map-results-body :global(.variant-detail-tabs button) {
-		flex-shrink: 0;
+		flex: 1 1 0;
+		min-width: 0;
+		box-sizing: border-box;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		height: var(--column-header-height);
 		border: 0;
+		border-right: 1px solid color-mix(in srgb, var(--om-gray-400) 22%, transparent);
 		border-bottom: 2px solid transparent;
+		border-radius: 0;
 		background: transparent;
-		padding: 10px 14px;
-		font-size: 0.8125rem;
-		font-weight: 600;
-		color: var(--muted-foreground);
+		padding: 0 4px;
+		font-family: 'Inter', system-ui, sans-serif;
+		font-size: 10px;
+		font-weight: var(--column-header-weight);
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		line-height: 1.1;
+		color: var(--column-header-color);
 		cursor: pointer;
 		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.map-results-body :global(.variant-detail-tabs button:last-child) {
+		border-right: 0;
 	}
 
 	.map-results-body :global(.variant-detail-tabs button:hover) {
-		color: var(--foreground);
+		color: var(--om-gray-850);
+		background: color-mix(in srgb, var(--om-white) 55%, var(--column-header-bg));
 	}
 
 	.map-results-body :global(.variant-detail-tabs button.active),
 	.map-results-body :global(.variant-detail-tabs button[aria-selected='true']) {
-		color: var(--foreground);
-		border-bottom-color: var(--primary);
+		color: var(--om-gray-850);
+		border-bottom-color: var(--om-teal-600);
+		background: color-mix(in srgb, var(--om-white) 88%, var(--left-panel-surface));
 	}
 
 	.map-results-body :global(.variant-detail-tab-panels) {
@@ -4101,6 +4733,78 @@
 		background: transparent;
 		box-shadow: none;
 		margin-bottom: 0 !important;
+	}
+
+	.map-results-body :global(.variant-detail-tables.is-tabbed .variant-detail-section-bar) {
+		display: flex;
+		flex-shrink: 0;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+		min-height: var(--drawer-toolbar-height);
+		padding: 0 var(--column-header-padding-x);
+		border-bottom: 1px solid color-mix(in srgb, var(--om-gray-400) 24%, transparent);
+		background: color-mix(in srgb, var(--om-white) 88%, var(--column-header-bg));
+	}
+
+	.map-results-body :global(.variant-detail-toolbar-meta) {
+		min-width: 0;
+		font-size: 12px;
+		font-weight: 600;
+		line-height: 1.2;
+		color: var(--om-gray-600);
+		white-space: nowrap;
+	}
+
+	.map-results-body :global(.variant-detail-tables.is-tabbed thead) {
+		position: sticky;
+		top: 0;
+		z-index: 1;
+		background: var(--column-header-bg);
+	}
+
+	.map-results-body :global(.variant-detail-tables.is-tabbed thead tr) {
+		height: var(--column-header-height);
+		background: var(--column-header-bg);
+	}
+
+	.map-results-body :global(.variant-detail-tables.is-tabbed thead th) {
+		box-sizing: border-box;
+		height: var(--column-header-height);
+		min-height: var(--column-header-height);
+		max-height: var(--column-header-height);
+		padding: 0 var(--column-header-padding-x);
+		border: 0;
+		vertical-align: middle;
+		background: var(--column-header-bg);
+		font-family: 'Inter', system-ui, sans-serif;
+		font-size: var(--column-header-size);
+		font-weight: var(--column-header-weight);
+		letter-spacing: var(--column-header-tracking);
+		text-transform: uppercase;
+		color: var(--column-header-color);
+		line-height: 1;
+		white-space: nowrap;
+	}
+
+	.map-results-body :global(.variant-detail-tables.is-tabbed thead th button) {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 0;
+		margin: 0;
+		border: 0;
+		background: transparent;
+		font: inherit;
+		color: inherit;
+		letter-spacing: inherit;
+		text-transform: inherit;
+		line-height: 1;
+		cursor: pointer;
+	}
+
+	.map-results-body :global(.variant-detail-tables.is-tabbed thead th button:hover) {
+		color: var(--om-gray-850);
 	}
 
 	.variant-route-error {
@@ -4125,19 +4829,41 @@
 		background: var(--muted);
 	}
 
-	.map-results-body > :global(.card-surface > .mb-3) {
-		order: 2;
+	.map-results-body > :global(.card-surface > .vb-drawer-controls) {
+		flex-shrink: 0;
+		border-bottom: 1px solid color-mix(in srgb, var(--om-gray-300) 72%, transparent);
+		background: color-mix(in srgb, var(--om-white) 88%, transparent);
+	}
+
+	.map-results-body > :global(.card-surface > .vb-drawer-controls > .mb-3) {
 		flex-shrink: 0;
 		margin: 0 !important;
 		padding: 10px var(--om-space-m);
+		min-height: var(--drawer-toolbar-height);
+		align-items: center;
 	}
 
-	.map-results-body > :global(.card-surface > .mb-3 button:not(:disabled)) {
+	.map-results-body > :global(.card-surface > .vb-drawer-controls > .mb-3 button:not(:disabled)) {
 		cursor: pointer;
 	}
 
+	.map-results-body :global(.vb-embedded .vb-filter-panel) {
+		flex-shrink: 0;
+		min-height: 0;
+		margin: 0;
+		padding: 0 var(--om-space-m) var(--om-space-s);
+	}
+
+	.map-results-body :global(.vb-embedded .drawer-filter-menu) {
+		width: 100%;
+		box-sizing: border-box;
+		max-height: min(34vh, 340px);
+		overflow: auto;
+		overscroll-behavior: contain;
+		background: var(--om-white);
+	}
+
 	.map-results-body :global(.variant-results-shell) {
-		order: 1;
 		min-height: 0;
 		flex: 1;
 		overflow: auto;
@@ -4149,11 +4875,31 @@
 		min-height: 100%;
 	}
 
-	.map-results-body :global(.variant-results-shell thead) {
+	.map-results-body :global(.vb-embedded .vb-table-head) {
 		position: sticky;
 		z-index: 1;
 		top: 0;
-		background: color-mix(in srgb, var(--om-gray-100) 72%, transparent) !important;
+		background: var(--column-header-bg) !important;
+	}
+
+	.map-results-body :global(.vb-embedded .vb-table-head tr) {
+		height: var(--column-header-height) !important;
+		background: var(--column-header-bg) !important;
+	}
+
+	.map-results-body :global(.vb-embedded .vb-table-head th) {
+		box-sizing: border-box !important;
+		height: var(--column-header-height) !important;
+		min-height: var(--column-header-height) !important;
+		max-height: var(--column-header-height) !important;
+		padding-top: 0 !important;
+		padding-bottom: 0 !important;
+		background: var(--column-header-bg) !important;
+		vertical-align: middle !important;
+	}
+
+	.map-results-body :global(.vb-embedded .variant-results-shell tbody tr:first-child) {
+		border-top-width: 0;
 	}
 
 	.country-panel {
@@ -4166,6 +4912,24 @@
 		width: var(--side-panel-width);
 		flex-direction: column;
 		overflow: hidden;
+	}
+
+	.country-panel.drawer-open {
+		top: auto;
+		bottom: var(--results-drawer-bottom);
+		left: var(--screen-inset);
+		width: calc(var(--results-drawer-left-edge) - (2 * var(--screen-inset)));
+		max-width: calc(var(--results-drawer-left-edge) - (2 * var(--screen-inset)));
+		height: calc((100vh - var(--results-drawer-top) - var(--results-drawer-bottom)) / 2);
+		max-height: none;
+	}
+
+	.country-name-heading {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin: 0;
+		min-width: 0;
 	}
 
 	.panel-heading {
@@ -4215,24 +4979,73 @@
 	}
 
 	.country-detail {
-		display: grid;
-		gap: var(--om-space-m);
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
 		overflow: auto;
-		padding: 0 var(--om-space-m) var(--om-space-s);
+		padding: 10px 12px 12px;
+	}
+
+	.country-panel-header {
+		flex-shrink: 0;
+		padding: 14px 14px 10px;
+		border-bottom: 1px solid color-mix(in srgb, var(--om-teal-600) 10%, var(--om-gray-400) 28%);
+		background: color-mix(in srgb, var(--om-teal-100) 18%, transparent);
+	}
+
+	.country-panel-titleblock {
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 3px;
+		min-width: 0;
+	}
+
+	.country-panel .detail-heading .country-name-heading,
+	.country-panel .dataset-panel-title h2 {
+		font-size: 17px;
+		line-height: 1.15;
+	}
+
+	.dataset-panel-title {
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	.dataset-panel-title h2 {
+		margin: 0;
+		font-family: 'Rubik', 'Inter', system-ui, sans-serif;
+		font-size: 17px;
+		font-weight: 700;
+		line-height: 1.15;
+		color: var(--om-gray-850);
+	}
+
+	.detail-card {
+		border: 0;
+		border-radius: 0;
+		background: transparent;
+		box-shadow: none;
+		padding: 0 0 4px;
+	}
+
+	.detail-card-label,
+	.meta-dataset-head p,
+	.detail-section p {
+		display: block;
+		margin: 0 0 7px;
+		font-size: 9px;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--om-teal-700);
+	}
+
+	.detail-section {
+		margin: 0;
 	}
 
 	.meta-dataset-head p {
 		margin: 0;
-	}
-
-	.meta-dataset-head p,
-	.detail-section p {
-		display: block;
-		font-size: 10px;
-		font-weight: 700;
-		letter-spacing: 0;
-		text-transform: uppercase;
-		color: var(--om-teal-700);
 	}
 
 	.country-list {
@@ -4300,10 +5113,177 @@
 		max-height: none;
 	}
 
+	.explore-side-panel {
+		position: fixed;
+		z-index: 2;
+		top: calc(
+			var(--results-drawer-top) +
+				(var(--drawer-track-height) - var(--explore-side-panel-max-height)) / 2
+		);
+		bottom: auto;
+		left: var(--screen-inset);
+		right: auto;
+		width: var(--explore-side-panel-width);
+		max-width: var(--explore-side-panel-width);
+		height: var(--explore-side-panel-max-height);
+		max-height: var(--explore-side-panel-max-height);
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		border: 0;
+		border-radius: var(--om-radius-m);
+		box-shadow: var(--panel-shadow);
+		pointer-events: auto;
+	}
+
+	.explore-side-panel .panel-heading.country-panel-header {
+		padding: 16px var(--explore-side-panel-padding-x) 12px;
+	}
+
+	.explore-datasets-side-panel .country-panel-header h2 {
+		font-family: 'Rubik', 'Inter', system-ui, sans-serif;
+		font-size: 17px;
+		font-weight: 700;
+		line-height: 1.15;
+		color: var(--om-gray-850);
+	}
+
+	.explore-side-panel .explore-side-panel-scroll,
+	.explore-side-panel-scroll,
+	.explore-datasets-scroll {
+		flex: 1 1 auto;
+		min-height: 0;
+		overflow-x: hidden;
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		padding: 12px var(--explore-side-panel-padding-x) 16px;
+	}
+
+	.explore-datasets-scroll {
+		display: grid;
+		gap: 6px;
+	}
+
+	.explore-datasets-side-panel .dataset-logo {
+		display: flex;
+		width: 100%;
+		height: 48px;
+		flex-shrink: 0;
+		align-items: center;
+		justify-content: center;
+		border: 0;
+		border-radius: var(--om-radius-s);
+		background: color-mix(in srgb, var(--om-white) 82%, transparent);
+	}
+
+	.explore-datasets-side-panel .dataset-logo img {
+		max-width: min(100%, 180px);
+		max-height: 36px;
+		object-fit: contain;
+	}
+
+	.explore-datasets-side-panel .dataset-logo > span {
+		font-size: 26px;
+		line-height: 1;
+	}
+
+	.explore-datasets-side-panel .database-row {
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+		gap: 8px;
+		width: 100%;
+		box-sizing: border-box;
+		padding: 10px;
+		border: 1px solid color-mix(in srgb, var(--om-gray-400) 24%, transparent);
+		border-radius: var(--om-radius-m);
+		background: color-mix(in srgb, var(--om-white) 76%, var(--left-panel-surface));
+		text-align: left;
+		cursor: pointer;
+		font-family: 'Inter', system-ui, sans-serif;
+		transition:
+			border-color 0.15s ease,
+			background 0.15s ease,
+			box-shadow 0.15s ease;
+	}
+
+	.explore-datasets-side-panel .database-row:hover {
+		border-color: color-mix(in srgb, var(--om-teal-600) 30%, transparent);
+		background: color-mix(in srgb, var(--om-teal-100) 38%, var(--om-white));
+		box-shadow: 0 2px 10px rgb(46 43 59 / 0.05);
+	}
+
+	.explore-datasets-side-panel .database-row.active {
+		border-color: color-mix(in srgb, var(--om-teal-600) 48%, transparent);
+		background: color-mix(in srgb, var(--om-teal-100) 52%, var(--om-white));
+		box-shadow: 0 0 0 1px color-mix(in srgb, var(--om-teal-600) 16%, transparent);
+	}
+
+	.explore-datasets-side-panel .database-row-title {
+		overflow: visible;
+		font-size: 14px;
+		font-weight: 700;
+		line-height: 1.25;
+		color: var(--om-gray-850);
+		white-space: normal;
+		text-overflow: unset;
+	}
+
+	.explore-datasets-side-panel .database-row-main small {
+		overflow: visible;
+		font-size: 11px;
+		font-weight: 600;
+		line-height: 1.35;
+		color: var(--om-gray-550);
+		letter-spacing: 0.02em;
+		text-transform: uppercase;
+		white-space: normal;
+		text-overflow: unset;
+	}
+
+	.explore-datasets-side-panel .database-row-main {
+		display: grid;
+		width: 100%;
+		gap: 3px;
+		min-width: 0;
+	}
+
+	.explore-datasets-side-panel .database-row-desc {
+		display: block;
+		margin: 2px 0 0;
+		font-size: 12px;
+		font-weight: 500;
+		line-height: 1.5;
+		color: var(--om-gray-600);
+		overflow: visible;
+		white-space: normal;
+		word-break: break-word;
+		text-overflow: unset;
+	}
+
+	.database-row-desc {
+		display: block;
+		margin-top: 4px;
+		font-size: 11px;
+		font-weight: 500;
+		line-height: 1.45;
+		color: var(--om-gray-600);
+		white-space: normal;
+	}
+
+	.explore-datasets-side-panel .dataset-cta {
+		margin-top: var(--om-space-m);
+		padding: var(--om-space-s) 0 4px;
+		font-size: 13px;
+		font-weight: 600;
+		line-height: 1.35;
+		color: var(--om-gray-600);
+	}
+
 	.database-scroll {
 		display: grid;
 		gap: var(--om-space-s);
-		overflow: auto;
 		padding: 0 var(--om-space-m) var(--om-space-m);
 	}
 
@@ -4384,23 +5364,31 @@
 	.meta-dataset {
 		border-radius: var(--om-radius-m);
 		background: transparent;
-		padding: var(--om-space-m);
+		padding: 0;
 	}
 
 	.meta-dataset.compact {
-		padding: var(--om-space-s) var(--om-space-m);
+		padding: 10px 11px;
 	}
 
+	.meta-dataset-top,
 	.meta-dataset-intro {
 		display: flex;
 		align-items: flex-start;
-		gap: var(--om-space-m);
-		margin-bottom: var(--om-space-s);
+		gap: 10px;
+		margin-bottom: 0;
 	}
 
 	.meta-dataset-copy {
 		min-width: 0;
 		flex: 1;
+	}
+
+	.meta-dataset-title-row {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 6px 8px;
 	}
 
 	.meta-dataset-head {
@@ -4413,20 +5401,21 @@
 
 	.meta-release {
 		border-radius: 999px;
-		background: color-mix(in srgb, var(--om-teal-100) 80%, var(--om-white));
-		padding: 2px 8px;
-		font-size: 10px;
+		background: color-mix(in srgb, var(--om-teal-100) 72%, var(--om-white));
+		padding: 2px 7px;
+		font-size: 9px;
 		font-weight: 700;
-		line-height: 1.3;
+		line-height: 1.35;
 		color: var(--om-teal-700);
+		white-space: nowrap;
 	}
 
 	.meta-dataset h3 {
-		margin-top: 6px;
+		margin: 0;
 		font-family: 'Rubik', 'Inter', system-ui, sans-serif;
-		font-size: 14px;
+		font-size: 13px;
 		font-weight: 700;
-		line-height: 1.25;
+		line-height: 1.2;
 		color: var(--om-gray-850);
 	}
 
@@ -4434,42 +5423,60 @@
 		margin-top: 4px;
 		font-size: 11px;
 		font-weight: 500;
-		line-height: 1.45;
+		line-height: 1.4;
 		color: var(--om-gray-600);
 	}
 
 	.meta-grid {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
-		gap: 8px var(--om-space-m);
-		margin-top: var(--om-space-s);
+		gap: 6px;
+		margin-top: 10px;
+		padding-top: 0;
+		border-top: 0;
+	}
+
+	.meta-grid-flush {
+		margin-top: 0;
+		padding-top: 0;
+		border-top: 0;
+	}
+
+	.meta-grid > div {
+		border-radius: var(--om-radius-s);
+		border: 0;
+		background: color-mix(in srgb, var(--om-teal-100) 24%, transparent);
+		padding: 6px 8px;
 	}
 
 	.meta-grid dt {
-		font-size: 10px;
+		font-size: 9px;
 		font-weight: 600;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
 		color: var(--om-gray-600);
 	}
 
 	.meta-grid dd {
-		margin: 1px 0 0;
-		font-size: 11px;
+		margin: 2px 0 0;
+		font-size: 12px;
 		font-weight: 700;
+		line-height: 1.2;
 		color: var(--om-gray-850);
 	}
 
 	.detail-context {
 		margin: 0;
-		font-size: 12px;
-		font-weight: 600;
-		line-height: 1.4;
+		font-size: 11px;
+		font-weight: 500;
+		line-height: 1.35;
 		color: var(--om-gray-600);
 	}
 
 	.detail-list {
 		display: grid;
-		gap: 4px;
-		margin-top: var(--om-space-xs);
+		gap: 2px;
+		margin-top: 0;
 	}
 
 	.detail-list-row {
@@ -4480,11 +5487,11 @@
 		border: 0;
 		border-radius: var(--om-radius-s);
 		background: transparent;
-		padding: 5px 7px;
+		padding: 6px 8px;
 		font-family: 'Inter', system-ui, sans-serif;
-		font-size: 11px;
+		font-size: 12px;
 		font-weight: 600;
-		line-height: 1.35;
+		line-height: 1.3;
 		color: var(--om-gray-850);
 		text-align: left;
 		cursor: pointer;
@@ -4496,7 +5503,7 @@
 
 	.detail-list-row:hover,
 	.detail-list-row.active {
-		background: color-mix(in srgb, var(--om-teal-100) 42%, transparent);
+		background: color-mix(in srgb, var(--om-teal-100) 62%, var(--om-white));
 	}
 
 	.detail-list-row span {
@@ -4506,8 +5513,26 @@
 	}
 
 	.detail-list-row strong {
-		font-size: 11px;
+		font-size: 12px;
 		font-weight: 800;
+		font-variant-numeric: tabular-nums;
+		color: var(--om-gray-700);
+	}
+
+	.country-panel .dataset-logo {
+		width: 52px;
+		height: 28px;
+		border: 1px solid color-mix(in srgb, var(--om-gray-400) 28%, transparent);
+		background: color-mix(in srgb, var(--om-white) 92%, transparent);
+	}
+
+	.country-panel .dataset-logo img {
+		max-width: 46px;
+		max-height: 22px;
+	}
+
+	.country-panel .dataset-logo > span {
+		font-size: 16px;
 	}
 
 	.dataset-heading {
@@ -4596,13 +5621,8 @@
 			min-height: 0;
 		}
 
-		:global(.map-results-drawer.expanded) {
-			right: var(--screen-inset) !important;
-			left: auto !important;
-			top: var(--results-drawer-top) !important;
-			bottom: 28px !important;
-			width: calc(100vw - var(--screen-inset) - var(--screen-inset)) !important;
-			height: calc(100vh - var(--results-drawer-top) - 28px) !important;
+		.explore-datasets-side-panel {
+			display: none;
 		}
 	}
 
@@ -4643,19 +5663,8 @@
 			border-radius: var(--om-radius-m);
 		}
 
-		:global(.map-results-drawer.expanded) {
-			left: 0 !important;
-			right: 0 !important;
-			top: 0 !important;
-			bottom: 0 !important;
-			width: auto !important;
-			height: 100vh !important;
-			border-radius: 0;
-		}
-
-		.drawer-copy-ears {
-			top: 8px;
-			right: 8px;
+		.explore-datasets-side-panel {
+			display: none;
 		}
 	}
 </style>
