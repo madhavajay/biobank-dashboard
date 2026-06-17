@@ -3,6 +3,8 @@ import { biobanksOverview, tenantStats, getDatasets, getStats } from '$lib/serve
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals, platform }) => {
+	if (locals.tenant.slug === 'biovault') return {};
+
 	const db = platform?.env?.DB;
 	if (!db) throw error(500, 'D1 binding unavailable — run with wrangler/vite dev');
 

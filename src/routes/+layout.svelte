@@ -3,11 +3,13 @@
 	import { page } from '$app/state';
 	import { lang, LANGS, tr } from '$lib/i18n';
 	import { tenantContent } from '$lib/content';
+	import MapDashboardShell from '$lib/components/app/MapDashboardShell.svelte';
 
 	let { children, data } = $props();
 	const tenant = $derived(data.tenant);
 	const forceTenant = $derived(data.forceTenant);
 	const hasTeam = $derived(!!tenantContent(tenant.slug)?.team);
+	const useMapShell = $derived(tenant.slug === 'biovault');
 
 	const link = (path: string) => (forceTenant ? `${path}?tenant=${forceTenant}` : path);
 	let dark = $state(false);
@@ -57,6 +59,13 @@
 	{/if}
 </svelte:head>
 
+{#if useMapShell}
+	<div style={data.themeStyle}>
+		<MapDashboardShell {data}>
+			{@render children()}
+		</MapDashboardShell>
+	</div>
+{:else}
 <div style={data.themeStyle} class="flex min-h-screen flex-col">
 	<header class="sticky top-0 z-30 border-b bg-background/85 backdrop-blur">
 		<div class="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-3">
@@ -120,3 +129,4 @@
 		</div>
 	</footer>
 </div>
+{/if}
