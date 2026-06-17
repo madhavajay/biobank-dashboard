@@ -501,7 +501,6 @@
 	}
 
 	function pickCountry(country: CountryRow) {
-		searchQuery = country.name;
 		countryPickerOpen = false;
 		flyToCountry(country);
 	}
@@ -659,6 +658,20 @@
 	function clearDatasetSelection() {
 		selectedDatasetSlug = null;
 		selectedCode = null;
+		countryPickerOpen = false;
+		map?.flyTo({
+			center: DEFAULT_MAP_CENTER,
+			zoom: DEFAULT_MAP_ZOOM,
+			duration: 900,
+			essential: true
+		});
+	}
+
+	function resetMapView() {
+		selectedDatasetSlug = null;
+		selectedCode = null;
+		searchQuery = '';
+		countryPickerOpen = false;
 		map?.flyTo({
 			center: DEFAULT_MAP_CENTER,
 			zoom: DEFAULT_MAP_ZOOM,
@@ -702,9 +715,6 @@
 	}
 
 	function clearCountrySelection() {
-		if (selectedCountry && normalizeSearch(searchQuery) === normalizeSearch(selectedCountry.name)) {
-			searchQuery = '';
-		}
 		selectedCode = null;
 		if (selectedDataset) {
 			flyToDatasetView(selectedDataset);
@@ -859,7 +869,6 @@
 
 	function flyToCountry(country: CountryRow, options: { keepDataset?: boolean } = {}) {
 		selectedCode = country.code;
-		searchQuery = country.name;
 		if (!options.keepDataset && selectedDatasetSlug) {
 			const datasetCodes = selectedDataset ? countryCodesForDataset(selectedDataset) : [];
 			if (!datasetCodes.includes(country.code)) {
@@ -980,11 +989,12 @@
 			<button
 				type="button"
 				class="country-picker-trigger"
+				class:scoped={!!selectedCountry}
 				aria-expanded={countryPickerOpen}
 				onclick={() => (countryPickerOpen = !countryPickerOpen)}
 			>
-				<span>{tx('Countries', 'Países')}</span>
-				<strong>{countryRows.length}</strong>
+				<span>{selectedCountry ? `${tx('In', 'Em')}: ${selectedCountry.name}` : tx('Countries', 'Países')}</span>
+				<strong>{selectedCountry ? selectedCountry.code : countryRows.length}</strong>
 			</button>
 			{#if countryPickerOpen}
 				<div class="country-picker-menu">
@@ -1007,7 +1017,7 @@
 			bind:value={searchQuery}
 			list="dashboard-search-suggestions"
 			name="q"
-			placeholder={tx('Search country, cohort, gene, rsID, or position', 'Pesquisar país, coorte, gene, rsID ou posição')}
+			placeholder={selectedCountry ? tx('Search gene, rsID, or position', 'Pesquisar gene, rsID ou posição') : tx('Search country, cohort, gene, rsID, or position', 'Pesquisar país, coorte, gene, rsID ou posição')}
 		/>
 		<datalist id="dashboard-search-suggestions">
 			{#each countryRows as country}
@@ -1022,6 +1032,9 @@
 			<option value="chr17:43078520">{tx('Position', 'Posição')}</option>
 		</datalist>
 		<button class="search-submit">{tx('Explore', 'Explorar')}</button>
+		{#if selectedCountry || selectedDataset || searchQuery}
+			<button type="button" class="map-reset" onclick={resetMapView}>{tx('Reset view', 'Redefinir vista')}</button>
+		{/if}
 	</form>
 
 	<div class="floating-title">
@@ -1080,7 +1093,9 @@
 					<p>{tx('Selected country', 'País selecionado')}</p>
 					<h2>{selectedCountry.name}</h2>
 				</div>
-				<button type="button" class="panel-action secondary" onclick={clearCountrySelection}>{selectedDataset ? tx('Back', 'Voltar') : tx('Reset view', 'Redefinir vista')}</button>
+				{#if selectedDataset}
+					<button type="button" class="panel-action secondary" onclick={clearCountrySelection}>{tx('Back', 'Voltar')}</button>
+				{/if}
 			</div>
 
 			<div class="country-detail">
@@ -1147,7 +1162,6 @@
 						<h2>{selectedDataset.title}</h2>
 					</div>
 				</div>
-				<button type="button" class="panel-action secondary" onclick={clearDatasetSelection}>{tx('Reset view', 'Redefinir vista')}</button>
 			</div>
 
 			<div class="country-detail">
@@ -1455,7 +1469,8 @@
 
 	.global-search input,
 	.search-submit,
-	.country-picker-trigger {
+	.country-picker-trigger,
+	.map-reset {
 		box-sizing: border-box;
 		height: var(--search-control-height);
 		margin: 0;
@@ -1486,10 +1501,20 @@
 		color: var(--om-teal-700);
 	}
 
+	.country-picker-trigger.scoped {
+		border: 1px solid color-mix(in srgb, var(--om-teal-600) 38%, transparent);
+		background: color-mix(in srgb, var(--om-teal-100) 74%, var(--om-white));
+		color: var(--om-teal-700);
+	}
+
 	.country-picker-trigger span {
+		max-width: min(180px, 20vw);
+		overflow: hidden;
 		font-size: 13px;
 		font-weight: 800;
 		line-height: 1;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.country-picker-trigger strong {
@@ -1591,6 +1616,25 @@
 
 	.search-submit:active {
 		background: var(--om-teal-700);
+	}
+
+	.map-reset {
+		flex-shrink: 0;
+		border-radius: var(--om-radius-s);
+		background: color-mix(in srgb, var(--om-white) 86%, transparent);
+		box-shadow: var(--search-shadow);
+		padding: 0 13px;
+		font-family: 'Inter', system-ui, sans-serif;
+		font-size: 13px;
+		font-weight: 800;
+		line-height: 1;
+		color: var(--om-gray-700);
+		cursor: pointer;
+	}
+
+	.map-reset:hover {
+		background: color-mix(in srgb, var(--om-teal-100) 70%, var(--om-white));
+		color: var(--om-teal-700);
 	}
 
 	.country-main small,
