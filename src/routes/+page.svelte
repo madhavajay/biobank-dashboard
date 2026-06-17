@@ -232,6 +232,8 @@
 	};
 	const DEFAULT_MAP_CENTER: [number, number] = [0, 22];
 	const DEFAULT_MAP_ZOOM = 2;
+	const SCROLL_ZOOM_RATE = 1 / 32;
+	const WHEEL_ZOOM_RATE = 1 / 150;
 
 	let { data } = $props();
 	const rawDashboard = $derived(data.dashboard ?? data ?? fallbackDashboard);
@@ -872,6 +874,8 @@
 			],
 			renderWorldCopies: false
 		});
+		map.scrollZoom.setZoomRate(SCROLL_ZOOM_RATE);
+		map.scrollZoom.setWheelZoomRate(WHEEL_ZOOM_RATE);
 
 		const resizeMap = () => map?.resize();
 		const resizeObserver = new ResizeObserver(resizeMap);
