@@ -99,7 +99,6 @@
 	const explorerFilterHref = (key: 'vepConsequence' | 'vepImpact', value: string) => {
 		const sp = new URLSearchParams({ [key]: value });
 		if (forceTenant) sp.set('tenant', forceTenant);
-		sp.set('results', '1');
 		return `/?${sp.toString()}`;
 	};
 	const VEP_IMPACT_OPTIONS = ['HIGH', 'MODERATE', 'LOW', 'MODIFIER'];
@@ -296,6 +295,7 @@
 
 	let q = $state(sp0.get('q') ?? initialQuery); // bound to the text input
 	let gene = $state(sp0.get('gene') ?? '');
+	let countryA = $state(sp0.get('country') ?? '');
 	let afMin = $state(sp0.get('afMin') ?? '');
 	let afMax = $state(sp0.get('afMax') ?? '');
 	let acMin = $state(sp0.get('acMin') ?? '');
@@ -338,6 +338,7 @@
 		const p = new URLSearchParams();
 		if (qA.trim()) p.set('q', qA.trim());
 		if (geneA.trim()) p.set('gene', geneA.trim());
+		if (countryA.trim()) p.set('country', countryA.trim());
 		if (afMinA) p.set('afMin', afMinA);
 		if (afMaxA) p.set('afMax', afMaxA);
 		if (acMinA) p.set('acMin', acMinA);
@@ -465,6 +466,7 @@
 		const sp = new URLSearchParams();
 		if (qA.trim()) sp.set('q', qA.trim());
 		if (geneA.trim()) sp.set('gene', geneA.trim());
+		if (countryA.trim()) sp.set('country', countryA.trim());
 		if (afMinA) sp.set('afMin', afMinA);
 		if (afMaxA) sp.set('afMax', afMaxA);
 		if (acMinA) sp.set('acMin', acMinA);
@@ -552,6 +554,7 @@
 	$effect(() => {
 		void qA;
 		void geneA;
+		void countryA;
 		void afMinA;
 		void afMaxA;
 		void acMinA;

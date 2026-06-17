@@ -13,7 +13,7 @@
 	import 'mapbox-gl/dist/mapbox-gl.css'
 	import { key, mapboxgl } from '$lib/mapboxgl'
 	import { TENANTS } from '$lib/tenants'
-	import { DATASETS, biobankSlugForDatasetSlug } from '$lib/datasets'
+	import { biobankSlugForDatasetSlug } from '$lib/datasets'
 	import { BRAZIL_STATES } from '$lib/data/brazil-states'
 	import { lang } from '$lib/i18n'
 	import AtlasHome from '$lib/templates/AtlasHome.svelte'
@@ -59,17 +59,49 @@
 		superPopulation?: string
 	}
 
-	const CARIBBEAN_CODES = new Set(['BS', 'BB', 'BM', 'VG', 'LC', 'TT'])
-	const FALLBACK_DATASET_STATS: Record<string, { participants: number; variants: number }> = {
-		'cari-caribbean': { participants: 1475, variants: 1053817 },
-		'bipmed-wes': { participants: 203, variants: 708719 },
-		'pgp-usa': { participants: 463, variants: 2907156 },
-		'1kgp-afr': { participants: 893, variants: 1932985 },
-		'1kgp-amr': { participants: 490, variants: 1932985 },
-		'1kgp-eas': { participants: 585, variants: 1932985 },
-		'1kgp-eur': { participants: 633, variants: 1932985 },
-		'1kgp-sas': { participants: 601, variants: 1932985 },
+	type DashboardData = {
+		biobanks?: Array<Record<string, unknown>>
+		populations?: Population[]
+		datasets?: Array<Record<string, unknown>>
+		totals?: {
+			participants?: number
+			datasetCount?: number
+			variants?: number
+			populations?: number
+		}
+		variantClasses?: {
+			common?: number
+			lowFreq?: number
+			rare?: number
+		}
 	}
+
+	type ResolvedDashboard = {
+		biobanks: Array<Record<string, unknown>>
+		populations: Population[]
+		datasets: Array<Record<string, unknown>>
+		totals: {
+			participants: number
+			datasetCount: number
+			variants: number
+			populations: number
+		}
+		variantClasses: {
+			common: number
+			lowFreq: number
+			rare: number
+		}
+	}
+
+	const emptyDashboard: ResolvedDashboard = {
+		biobanks: [],
+		populations: [],
+		datasets: [],
+		totals: { participants: 0, datasetCount: 0, variants: 0, populations: 0 },
+		variantClasses: { common: 0, lowFreq: 0, rare: 0 },
+	}
+
+	const CARIBBEAN_CODES = new Set(['BS', 'BB', 'BM', 'VG', 'LC', 'TT'])
 
 	type CountryRow = {
 		code: string
@@ -86,409 +118,6 @@
 		samples: number | null
 		subtitle: string
 		center: [number, number]
-	}
-
-	const fallbackDashboard = {
-		biobanks: [
-			{
-				slug: 'carigenetics',
-				name: 'CariGenetics',
-				description: 'Caribbean population allele-frequency reference.',
-				website: 'https://carigenetics.com',
-				totalSamples: 1475,
-				totalVariants: 1053817,
-			},
-			{
-				slug: 'bipmed',
-				name: 'BIPMed',
-				description: 'Brazilian Initiative on Precision Medicine — Brazil.',
-				website: 'https://bipmed.org',
-				totalSamples: 203,
-				totalVariants: 708719,
-			},
-			{
-				slug: 'pgp-harvard',
-				name: 'PGP Harvard',
-				description: 'Harvard Personal Genome Project — United States.',
-				website: 'https://pgp.med.harvard.edu',
-				totalSamples: 463,
-				totalVariants: 2907156,
-			},
-			{
-				slug: '1kgp',
-				name: '1000 Genomes Project',
-				description: '1000 Genomes Project super-population allele frequencies.',
-				website: 'https://www.internationalgenome.org',
-				totalSamples: 3202,
-				totalVariants: 1932985,
-			},
-		],
-		populations: [
-			{
-				name: 'Bermuda',
-				country: 'Bermuda',
-				countryCode: 'BM',
-				lat: 32.308,
-				lon: -64.751,
-				sampleCount: 610,
-				variantCount: 1053817,
-				biobankSlug: 'carigenetics',
-				biobankName: 'CariGenetics',
-			},
-			{
-				name: 'USA',
-				country: 'United States',
-				countryCode: 'US',
-				lat: 39.83,
-				lon: -98.58,
-				sampleCount: 463,
-				variantCount: 2907156,
-				biobankSlug: 'pgp-harvard',
-				biobankName: 'PGP Harvard',
-			},
-			{
-				name: 'Saint Lucia',
-				country: 'Saint Lucia',
-				countryCode: 'LC',
-				lat: 13.909,
-				lon: -60.979,
-				sampleCount: 249,
-				variantCount: 1053817,
-				biobankSlug: 'carigenetics',
-				biobankName: 'CariGenetics',
-			},
-			{
-				name: 'Brazil',
-				country: 'Brazil',
-				countryCode: 'BR',
-				lat: -14.235,
-				lon: -51.925,
-				sampleCount: 203,
-				variantCount: 708719,
-				biobankSlug: 'bipmed',
-				biobankName: 'BIPMed',
-			},
-			{
-				name: 'Trinidad & Tobago',
-				country: 'Trinidad and Tobago',
-				countryCode: 'TT',
-				lat: 10.692,
-				lon: -61.222,
-				sampleCount: 193,
-				variantCount: 1053817,
-				biobankSlug: 'carigenetics',
-				biobankName: 'CariGenetics',
-			},
-			{
-				name: 'Bahamas',
-				country: 'Bahamas',
-				countryCode: 'BS',
-				lat: 25.034,
-				lon: -77.396,
-				sampleCount: 169,
-				variantCount: 1053817,
-				biobankSlug: 'carigenetics',
-				biobankName: 'CariGenetics',
-			},
-			{
-				name: 'Barbados',
-				country: 'Barbados',
-				countryCode: 'BB',
-				lat: 13.194,
-				lon: -59.543,
-				sampleCount: 146,
-				variantCount: 1053817,
-				biobankSlug: 'carigenetics',
-				biobankName: 'CariGenetics',
-			},
-			{
-				name: 'British Virgin Islands',
-				country: 'British Virgin Islands',
-				countryCode: 'VG',
-				lat: 18.421,
-				lon: -64.64,
-				sampleCount: 108,
-				variantCount: 1053817,
-				biobankSlug: 'carigenetics',
-				biobankName: 'CariGenetics',
-			},
-			{
-				name: 'AFR',
-				country: 'Multiple countries',
-				countryCode: 'XK',
-				lat: 7,
-				lon: 18,
-				sampleCount: 893,
-				variantCount: 1932985,
-				biobankSlug: '1kgp',
-				biobankName: '1000 Genomes Project',
-				countryMappings: [
-					{
-						country: 'Barbados',
-						countryCode: 'BB',
-						regionGroup: 'Caribbean',
-						subpopulationCode: 'ACB',
-						subpopulationName: 'African Caribbean in Barbados',
-						sampleCount: 120,
-					},
-					{
-						country: 'Kenya',
-						countryCode: 'KE',
-						regionGroup: 'East Africa',
-						subpopulationCode: 'LWK',
-						subpopulationName: 'Luhya in Webuye, Kenya',
-						sampleCount: 120,
-					},
-					{
-						country: 'United States',
-						countryCode: 'US',
-						regionGroup: 'North America',
-						subpopulationCode: 'ASW',
-						subpopulationName: 'African Ancestry in SW USA',
-						sampleCount: 62,
-					},
-					{
-						country: 'Nigeria',
-						countryCode: 'NG',
-						regionGroup: 'West Africa',
-						subpopulationCode: 'ESN',
-						subpopulationName: 'Esan in Nigeria',
-						sampleCount: 173,
-					},
-					{
-						country: 'Nigeria',
-						countryCode: 'NG',
-						regionGroup: 'West Africa',
-						subpopulationCode: 'YRI',
-						subpopulationName: 'Yoruba in Ibadan, Nigeria',
-						sampleCount: 120,
-					},
-					{
-						country: 'Sierra Leone',
-						countryCode: 'SL',
-						regionGroup: 'West Africa',
-						subpopulationCode: 'MSL',
-						subpopulationName: 'Mende in Sierra Leone',
-						sampleCount: 128,
-					},
-					{
-						country: 'The Gambia',
-						countryCode: 'GM',
-						regionGroup: 'West Africa',
-						subpopulationCode: 'GWD',
-						subpopulationName: 'Gambian in Western Division - Mandinka',
-						sampleCount: 179,
-					},
-				],
-			},
-			{
-				name: 'AMR',
-				country: 'Multiple countries',
-				countryCode: 'XK',
-				lat: 2,
-				lon: -74,
-				sampleCount: 490,
-				variantCount: 1932985,
-				biobankSlug: '1kgp',
-				biobankName: '1000 Genomes Project',
-				countryMappings: [
-					{
-						country: 'Puerto Rico',
-						countryCode: 'PR',
-						regionGroup: 'Caribbean',
-						subpopulationCode: 'PUR',
-						subpopulationName: 'Puerto Rican in Puerto Rico',
-						sampleCount: 139,
-					},
-					{
-						country: 'United States',
-						countryCode: 'US',
-						regionGroup: 'Latin American diaspora',
-						subpopulationCode: 'MXL',
-						subpopulationName: 'Mexican Ancestry in Los Angeles CA USA',
-						sampleCount: 71,
-					},
-					{
-						country: 'Colombia',
-						countryCode: 'CO',
-						regionGroup: 'South America',
-						subpopulationCode: 'CLM',
-						subpopulationName: 'Colombian in Medellin, Colombia',
-						sampleCount: 136,
-					},
-					{
-						country: 'Peru',
-						countryCode: 'PE',
-						regionGroup: 'South America',
-						subpopulationCode: 'PEL',
-						subpopulationName: 'Peruvian in Lima Peru',
-						sampleCount: 122,
-					},
-				],
-			},
-			{
-				name: 'EAS',
-				country: 'Multiple countries',
-				countryCode: 'XK',
-				lat: 30,
-				lon: 112,
-				sampleCount: 585,
-				variantCount: 1932985,
-				biobankSlug: '1kgp',
-				biobankName: '1000 Genomes Project',
-				countryMappings: [
-					{
-						country: 'China',
-						countryCode: 'CN',
-						regionGroup: 'East Asia',
-						subpopulationCode: 'CDX',
-						subpopulationName: 'Chinese Dai in Xishuangbanna, China',
-						sampleCount: 102,
-					},
-					{
-						country: 'China',
-						countryCode: 'CN',
-						regionGroup: 'East Asia',
-						subpopulationCode: 'CHB',
-						subpopulationName: 'Han Chinese in Beijing, China',
-						sampleCount: 120,
-					},
-					{
-						country: 'China',
-						countryCode: 'CN',
-						regionGroup: 'East Asia',
-						subpopulationCode: 'CHS',
-						subpopulationName: 'Han Chinese South',
-						sampleCount: 163,
-					},
-					{
-						country: 'Japan',
-						countryCode: 'JP',
-						regionGroup: 'East Asia',
-						subpopulationCode: 'JPT',
-						subpopulationName: 'Japanese in Tokyo, Japan',
-						sampleCount: 120,
-					},
-					{
-						country: 'Vietnam',
-						countryCode: 'VN',
-						regionGroup: 'Southeast Asia',
-						subpopulationCode: 'KHV',
-						subpopulationName: 'Kinh in Ho Chi Minh City, Vietnam',
-						sampleCount: 124,
-					},
-				],
-			},
-			{
-				name: 'EUR',
-				country: 'Multiple countries',
-				countryCode: 'XK',
-				lat: 50,
-				lon: 9,
-				sampleCount: 633,
-				variantCount: 1932985,
-				biobankSlug: '1kgp',
-				biobankName: '1000 Genomes Project',
-				countryMappings: [
-					{
-						country: 'Finland',
-						countryCode: 'FI',
-						regionGroup: 'Europe',
-						subpopulationCode: 'FIN',
-						subpopulationName: 'Finnish in Finland',
-						sampleCount: 103,
-					},
-					{
-						country: 'Italy',
-						countryCode: 'IT',
-						regionGroup: 'Europe',
-						subpopulationCode: 'TSI',
-						subpopulationName: 'Toscani in Italia',
-						sampleCount: 114,
-					},
-					{
-						country: 'Spain',
-						countryCode: 'ES',
-						regionGroup: 'Europe',
-						subpopulationCode: 'IBS',
-						subpopulationName: 'Iberian Populations in Spain',
-						sampleCount: 157,
-					},
-					{
-						country: 'United Kingdom',
-						countryCode: 'GB',
-						regionGroup: 'Europe',
-						subpopulationCode: 'GBR',
-						subpopulationName: 'British From England and Scotland',
-						sampleCount: 100,
-					},
-					{
-						country: 'United States',
-						countryCode: 'US',
-						regionGroup: 'European diaspora',
-						subpopulationCode: 'CEU',
-						subpopulationName:
-							'Utah residents with Northern and Western European ancestry from the CEPH collection',
-						sampleCount: 0,
-					},
-				],
-			},
-			{
-				name: 'SAS',
-				country: 'Multiple countries',
-				countryCode: 'XK',
-				lat: 22,
-				lon: 76,
-				sampleCount: 601,
-				variantCount: 1932985,
-				biobankSlug: '1kgp',
-				biobankName: '1000 Genomes Project',
-				countryMappings: [
-					{
-						country: 'Bangladesh',
-						countryCode: 'BD',
-						regionGroup: 'South Asia',
-						subpopulationCode: 'BEB',
-						subpopulationName: 'Bengali in Bangladesh',
-						sampleCount: 144,
-					},
-					{
-						country: 'Pakistan',
-						countryCode: 'PK',
-						regionGroup: 'South Asia',
-						subpopulationCode: 'PJL',
-						subpopulationName: 'Punjabi in Lahore, Pakistan',
-						sampleCount: 158,
-					},
-					{
-						country: 'United Kingdom',
-						countryCode: 'GB',
-						regionGroup: 'South Asian diaspora',
-						subpopulationCode: 'ITU',
-						subpopulationName: 'Indian Telugu in the U.K.',
-						sampleCount: 118,
-					},
-					{
-						country: 'United Kingdom',
-						countryCode: 'GB',
-						regionGroup: 'South Asian diaspora',
-						subpopulationCode: 'STU',
-						subpopulationName: 'Sri Lankan Tamil in the UK',
-						sampleCount: 128,
-					},
-					{
-						country: 'United States',
-						countryCode: 'US',
-						regionGroup: 'South Asian diaspora',
-						subpopulationCode: 'GIH',
-						subpopulationName: 'Gujarati Indians in Houston, Texas, USA',
-						sampleCount: 109,
-					},
-				],
-			},
-		],
-		totals: { participants: 5343, datasetCount: 8, variants: 1966448, populations: 13 },
-		variantClasses: { common: 1735446, lowFreq: 191949, rare: 11904 },
 	}
 
 	const COUNTRY_CENTERS: Record<string, [number, number]> = {
@@ -602,48 +231,26 @@
 					: 'Variant not found')
 			: null
 	)
-	const rawDashboard = $derived(data.dashboard ?? data ?? fallbackDashboard)
-	const dashboard = $derived.by(() => {
-		const source = (rawDashboard ?? fallbackDashboard) as typeof fallbackDashboard & {
-			datasets?: Array<Record<string, unknown>>
-		}
+	const dashboard = $derived.by((): ResolvedDashboard => {
+		const source = (data.dashboard ?? emptyDashboard) as DashboardData
 		const totals = source.totals ?? {}
 		const variantClasses = source.variantClasses ?? {}
-		const common = Number(variantClasses.common ?? 0)
-		const lowFreq = Number(variantClasses.lowFreq ?? 0)
-		const rare = Number(variantClasses.rare ?? 0)
-		const hasVariantClasses = common + lowFreq + rare > 0
 
 		return {
-			...source,
-			biobanks: source.biobanks?.length ? source.biobanks : fallbackDashboard.biobanks,
-			populations: source.populations?.length ? source.populations : fallbackDashboard.populations,
+			biobanks: source.biobanks ?? [],
+			populations: source.populations ?? [],
 			datasets: source.datasets ?? [],
 			totals: {
-				participants:
-					Number(totals.participants ?? 0) > 0
-						? Number(totals.participants)
-						: fallbackDashboard.totals.participants,
-				datasetCount:
-					Number(totals.datasetCount ?? 0) > 0
-						? Number(totals.datasetCount)
-						: fallbackDashboard.totals.datasetCount,
-				variants:
-					Number(totals.variants ?? 0) > 0
-						? Number(totals.variants)
-						: fallbackDashboard.totals.variants,
-				populations:
-					Number(totals.populations ?? 0) > 0
-						? Number(totals.populations)
-						: fallbackDashboard.totals.populations,
+				participants: Number(totals.participants ?? 0),
+				datasetCount: Number(totals.datasetCount ?? 0),
+				variants: Number(totals.variants ?? 0),
+				populations: Number(totals.populations ?? 0),
 			},
-			variantClasses: hasVariantClasses
-				? {
-						common,
-						lowFreq,
-						rare,
-					}
-				: fallbackDashboard.variantClasses,
+			variantClasses: {
+				common: Number(variantClasses.common ?? 0),
+				lowFreq: Number(variantClasses.lowFreq ?? 0),
+				rare: Number(variantClasses.rare ?? 0),
+			},
 		}
 	})
 	let map: MapboxMap | undefined
@@ -780,6 +387,7 @@
 	function exploreUrlKey(pathname: string, sp: URLSearchParams) {
 		const sorted = new URLSearchParams()
 		for (const key of [...new Set(sp.keys())].sort()) {
+			if (key === 'results') continue
 			const value = sp.get(key)
 			if (value !== null) sorted.set(key, value)
 		}
@@ -790,6 +398,7 @@
 	function exploreSearchParamsEqual(a: URLSearchParams, b: URLSearchParams) {
 		const keys = new Set([...a.keys(), ...b.keys()])
 		for (const key of keys) {
+			if (key === 'results') continue
 			if (a.get(key) !== b.get(key)) return false
 		}
 		return true
@@ -873,15 +482,25 @@
 
 	$effect(() => {
 		if (!filterBiobankOptions.length) return
-		const path = page.url.pathname
-		if (path !== '/' && path !== '/explore') return
+		const path = page.url.pathname === '/explore' ? '/' : page.url.pathname
+		if (path !== '/') return
 		const urlKey = exploreUrlKey(path, page.url.searchParams)
 		if (selfUrlSync) {
 			selfUrlSync = false
-			lastHydratedExploreUrl = urlKey
 			return
 		}
 		if (urlKey === lastHydratedExploreUrl) return
+
+		const stateParams = buildExploreParams()
+		const urlHasContext = hasExploreQueryContextFromParams(page.url.searchParams)
+		const stateHasContext = hasExploreQueryContextFromParams(stateParams)
+		const lastHydratedParams = new URLSearchParams(lastHydratedExploreUrl.split('?')[1] ?? '')
+		const lastHydratedHasContext = hasExploreQueryContextFromParams(lastHydratedParams)
+
+		if (urlHasContext && !stateHasContext && lastHydratedExploreUrl && !lastHydratedHasContext) {
+			syncResultsUrl(resultsDrawerOpen, true)
+			return
+		}
 
 		const prevPath = lastHydratedExploreUrl ? lastHydratedExploreUrl.split('?')[0] : ''
 		const forceFullHydrate = !lastHydratedExploreUrl
@@ -894,10 +513,8 @@
 		lastHydratedExploreUrl = urlKey
 		filterStateHydrated = true
 	})
-	const datasetCountValue = (slug: string, value: unknown, field: 'participants' | 'variants') => {
-		const live = Number(value ?? 0)
-		return live > 0 ? live : (FALLBACK_DATASET_STATS[slug]?.[field] ?? 0)
-	}
+	const datasetCountValue = (_slug: string, value: unknown, _field: 'participants' | 'variants') =>
+		Number(value ?? 0)
 
 	const countryRows = $derived.by<CountryRow[]>(() => {
 		const byCode = new Map<string, CountryRow>()
@@ -961,21 +578,7 @@
 			})
 		}
 
-		return DATASETS.map((dataset) => {
-			const stats = FALLBACK_DATASET_STATS[dataset.id] ?? { participants: 0, variants: 0 }
-			return {
-				slug: dataset.id,
-				title: dataset.title,
-				description: dataset.description,
-				release: dataset.release,
-				assay: dataset.assay,
-				genomeBuild: dataset.genomeBuild,
-				participants: stats.participants,
-				variants: stats.variants,
-				biobankSlug: dataset.biobankSlug,
-				superPopulation: dataset.superPopulation,
-			}
-		})
+		return []
 	})
 
 	function isBipmedDataset(dataset?: DisplayDataset | null) {
@@ -1012,17 +615,19 @@
 	}
 
 	function cohortIdsForCountryCode(code: string) {
-		const ids = new Set<number>()
+		const direct = new Set<number>()
+		const mapped = new Set<number>()
 		for (const population of dashboard.populations as Population[]) {
 			if (typeof population.cohortId !== 'number') continue
-			if (
-				population.countryCode === code ||
-				population.countryMappings?.some((mapping) => mapping.countryCode === code)
-			) {
-				ids.add(population.cohortId)
+			if (population.countryCode === code) {
+				direct.add(population.cohortId)
+			} else if (population.countryMappings?.some((mapping) => mapping.countryCode === code)) {
+				mapped.add(population.cohortId)
 			}
 		}
-		return [...ids]
+		// Prefer biobanks pinned to this country (e.g. PGP → US). Fall back to 1KGP-style
+		// country mappings only when there is no direct population for the country.
+		return direct.size ? [...direct] : [...mapped]
 	}
 
 	const selectedCountry = $derived(
@@ -1038,7 +643,8 @@
 	)
 	const showExploreLeftPanels = $derived(
 		!isVariantRoute &&
-			(page.url.pathname === '/explore' || (page.url.pathname === '/' && resultsDrawerOpen)) &&
+			page.url.pathname === '/' &&
+			resultsDrawerOpen &&
 			!selectedCountry &&
 			!selectedDataset
 	)
@@ -1250,6 +856,16 @@
 				return
 			}
 		}
+		if (
+			!trimmed &&
+			resultsDrawerOpen &&
+			!isVariantRoute &&
+			trimmed === appliedSearchQuery.trim() &&
+			!hasActiveExploreContext()
+		) {
+			closeResultsDrawer()
+			return
+		}
 		appliedSearchQuery = trimmed
 		openResultsDrawer(true)
 	}
@@ -1296,7 +912,11 @@
 		}
 	}
 
-	function resetMapFilters() {
+	function resetExploreQueriesAndFilters() {
+		searchQuery = ''
+		appliedSearchQuery = ''
+		resultsTableQueryString = ''
+		lastExploreQueryString = ''
 		filterGene = ''
 		filterAfMin = ''
 		filterAfMax = ''
@@ -1313,6 +933,15 @@
 			filterPopulationOptions.map((population) => [population.cohortId, true])
 		)
 		filterPopulationMatchMode = 'any'
+	}
+
+	function syncExploreUrlAfterReset() {
+		syncResultsUrl(resultsDrawerOpen, true)
+	}
+
+	function resetMapFilters() {
+		resetExploreQueriesAndFilters()
+		syncExploreUrlAfterReset()
 	}
 
 	function buildExploreParams() {
@@ -1364,10 +993,10 @@
 		return params
 	}
 
-	function buildResultsSearchParams(open: boolean) {
-		const params = buildExploreParams()
-		if (open) params.set('results', '1')
-		else params.delete('results')
+	function urlExploreParams() {
+		if (hasActiveExploreContext()) return buildExploreParams()
+		const params = new URLSearchParams()
+		if (data.forceTenant) params.set('tenant', data.forceTenant)
 		return params
 	}
 
@@ -1379,9 +1008,7 @@
 	const activeResultsQueryString = $derived(resultsTableQueryString || exploreQueryString)
 	const mapResultsPath = $derived.by(() => {
 		const params = buildExploreParams()
-		params.set('results', '1')
-		const base = page.url.pathname === '/explore' || page.url.pathname.startsWith('/explore/variant') ? '/explore' : '/'
-		return `${base}${params.toString() ? `?${params.toString()}` : ''}`
+		return `/${params.toString() ? `?${params.toString()}` : ''}`
 	})
 	const mapResultsUrl = $derived(
 		`${typeof location !== 'undefined' ? location.origin : ''}${mapResultsPath}`
@@ -1428,11 +1055,17 @@
 		if (tenant && !target.searchParams.has('tenant')) {
 			target.searchParams.set('tenant', tenant)
 		}
-		if (!target.searchParams.has('results')) {
-			target.searchParams.set('results', '1')
-		}
-		lastHydratedExploreUrl = ''
-		void goto(`${target.pathname}${target.search}`)
+		const path = target.pathname === '/explore' ? '/' : target.pathname
+		hydrateExploreFiltersFromUrl(target.searchParams, {
+			syncSearch: true,
+			clearSearch: true,
+			syncMapSelection: true,
+		})
+		filterStateHydrated = true
+		resultsTableQueryString = ''
+		lastHydratedExploreUrl = exploreUrlKey(path, buildExploreParams())
+		selfUrlSync = true
+		void goto(`${path}${target.search}`)
 	}
 
 	function openResultsDrawer(force = false) {
@@ -1462,29 +1095,33 @@
 		setTimeout(() => (shareCopied = false), 1200)
 	}
 
-	function syncResultsUrl(drawerOpen: boolean) {
+	function syncResultsUrl(_drawerOpen: boolean, force = false) {
 		if (typeof location === 'undefined') return
-		const path = page.url.pathname
-		if (path !== '/' && path !== '/explore') return
-		// Keep drawer UI separate from URL: only write results=1 when there is shareable context.
-		const includeResultsInUrl = drawerOpen && hasActiveExploreContext()
-		const params = buildResultsSearchParams(includeResultsInUrl)
+		const path = page.url.pathname === '/explore' ? '/' : page.url.pathname
+		if (path !== '/') return
+		const params = urlExploreParams()
 		const urlKey = exploreUrlKey(path, params)
-		if (exploreSearchParamsEqual(params, page.url.searchParams)) {
+		if (
+			!force &&
+			exploreSearchParamsEqual(params, page.url.searchParams) &&
+			!page.url.searchParams.has('results')
+		) {
 			lastHydratedExploreUrl = urlKey
 			return
 		}
 		if (!routerReady) {
-			pendingResultsUrlOpen = drawerOpen
+			pendingResultsUrlOpen = _drawerOpen
+			lastHydratedExploreUrl = urlKey
 			return
 		}
 		selfUrlSync = true
+		lastHydratedExploreUrl = urlKey
 		try {
 			replaceState(urlKey, {})
-			lastHydratedExploreUrl = urlKey
 		} catch {
 			selfUrlSync = false
-			pendingResultsUrlOpen = drawerOpen
+			pendingResultsUrlOpen = _drawerOpen
+			void goto(urlKey, { replaceState: true, noScroll: true, keepFocus: true })
 		}
 	}
 
@@ -1497,9 +1134,26 @@
 		void resultsDrawerOpen
 		void exploreQueryString
 		if (isVariantRoute) return
-		const path = page.url.pathname
-		if (path !== '/' && path !== '/explore') return
-		const params = buildResultsSearchParams(resultsDrawerOpen && hasActiveExploreContext())
+		const path = page.url.pathname === '/explore' ? '/' : page.url.pathname
+		if (path !== '/') return
+
+		const stateParams = buildExploreParams()
+		const urlHasContext = hasExploreQueryContextFromParams(page.url.searchParams)
+		const stateHasContext = hasExploreQueryContextFromParams(stateParams)
+
+		if (urlHasContext && !stateHasContext && lastHydratedExploreUrl) {
+			const lastHydratedParams = new URLSearchParams(lastHydratedExploreUrl.split('?')[1] ?? '')
+			if (!hasExploreQueryContextFromParams(lastHydratedParams)) {
+				syncResultsUrl(resultsDrawerOpen, true)
+				return
+			}
+		}
+
+		if (urlHasContext && !exploreSearchParamsEqual(stateParams, page.url.searchParams)) {
+			return
+		}
+
+		const params = urlExploreParams()
 		if (exploreUrlKey(path, params) === lastHydratedExploreUrl) return
 		syncResultsUrl(resultsDrawerOpen)
 	})
@@ -1689,14 +1343,23 @@
 	function resetMapView() {
 		selectedDatasetSlug = null
 		selectedCode = null
-		searchQuery = ''
-		appliedSearchQuery = ''
 		countryPickerOpen = false
 		resultsDrawerOpen = false
 		resultsDrawerExpanded = false
-		resultsTableQueryString = ''
-		resetMapFilters()
-		syncResultsUrl(false)
+		resetExploreQueriesAndFilters()
+
+		const params = new URLSearchParams()
+		if (data.forceTenant) params.set('tenant', data.forceTenant)
+		const homeUrl = exploreUrlKey('/', params)
+		lastHydratedExploreUrl = homeUrl
+		selfUrlSync = true
+
+		if (isVariantRoute) {
+			void goto(homeUrl, { replaceState: true, noScroll: true, keepFocus: true })
+		} else {
+			syncExploreUrlAfterReset()
+		}
+
 		syncMapState({ country: null, dataset: null })
 		map?.flyTo({
 			center: DEFAULT_MAP_CENTER,
@@ -2110,7 +1773,7 @@
 
 		<form
 			method="GET"
-			action={page.url.pathname === '/explore' ? '/explore' : '/'}
+			action="/"
 			class="global-search"
 			class:dropdown-open={countryPickerOpen}
 			onsubmit={handleSearchSubmit}
@@ -2228,6 +1891,9 @@
 
 		<Drawer.Root
 			bind:open={resultsDrawerOpen}
+			onOpenChange={(open) => {
+				if (!open) syncResultsUrl(false)
+			}}
 			shouldScaleBackground={false}
 			direction="right"
 			modal={false}
@@ -2446,7 +2112,7 @@
 						</div>
 						<div class="map-filter-actions">
 							<button type="button" onclick={resetMapFilters}
-								>{tx('Clear filters', 'Limpar filtros')}</button
+								>{tx('Clear search & filters', 'Limpar pesquisa e filtros')}</button
 							>
 						</div>
 					</div>

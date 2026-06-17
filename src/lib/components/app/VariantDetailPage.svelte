@@ -23,10 +23,12 @@
 	} = $props();
 	const showPanel = $derived(part === 'all' || part === 'panel');
 	const showTables = $derived(part === 'all' || part === 'tables');
+	const exploreBase = $derived(page.data.tenant?.slug === 'biovault' ? '/' : '/explore');
 	const exploreBackHref = $derived.by(() => {
-		const sp = new URLSearchParams({ results: '1' });
+		const sp = new URLSearchParams();
 		if (data.forceTenant) sp.set('tenant', data.forceTenant);
-		return `/explore?${sp.toString()}`;
+		const qs = sp.toString();
+		return qs ? `${exploreBase}?${qs}` : exploreBase;
 	});
 
 	interface ClinVarTableRow {
@@ -303,8 +305,7 @@
 	const exploreHref = (params: Record<string, string>) => {
 		const sp = new URLSearchParams(params);
 		if (data.forceTenant) sp.set('tenant', data.forceTenant);
-		sp.set('results', '1');
-		return `/explore?${sp.toString()}`;
+		return `${exploreBase}?${sp.toString()}`;
 	};
 	const geneHref = (symbol: string) => exploreHref({ gene: symbol });
 	const explorerFilterHref = (key: 'vepConsequence' | 'vepImpact', value: string) =>

@@ -63,7 +63,7 @@
 	const tenantFor = (slug: string) => TENANTS.find((t) => t.slug === slug);
 	const go = (slug: string) => `/?tenant=${slug}`;
 	const exploreLink = (q = '') =>
-		`/${q || data.forceTenant ? '?' : ''}${q ? `q=${encodeURIComponent(q)}&results=1` : 'results=1'}${data.forceTenant ? `&tenant=${data.forceTenant}` : ''}`;
+		`/${q || data.forceTenant ? '?' : ''}${q ? `q=${encodeURIComponent(q)}` : ''}${data.forceTenant ? `${q ? '&' : ''}tenant=${data.forceTenant}` : ''}`;
 	const fmt = (n: number) => n.toLocaleString();
 	const tryQueries = ['BRCA1', 'rs1050828', 'p.Arg124His', 'G6PD', 'chr17:43078520'];
 	const sampleTotalFor = (slug: string) =>
@@ -110,7 +110,6 @@
 </div>
 
 <form method="GET" action="/" class="mb-6 flex items-center gap-2 rounded-[var(--radius)] border bg-card p-2.5 shadow-sm">
-	<input type="hidden" name="results" value="1" />
 	{#if data.forceTenant}<input type="hidden" name="tenant" value={data.forceTenant} />{/if}
 	<svg viewBox="0 0 24 24" class="ml-2 size-5 text-muted-foreground" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
 	<input name="q" placeholder="Search variants, genes, rsIDs, regions, or HGVS consequences" class="flex-1 bg-transparent px-1 py-2 text-sm outline-none" />

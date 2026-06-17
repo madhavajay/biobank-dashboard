@@ -80,6 +80,7 @@ export interface SearchParams {
 	vepImpacts?: string[];
 	vepConsequences?: string[];
 	vrs?: string;
+	country?: string;
 	cohorts?: number[]; // restrict to these cohort/population ids (display + existence)
 	cohortMatch?: 'any' | 'all';
 	limit?: number;
@@ -318,6 +319,52 @@ export function sanitizeVariantRowsForPublic<T extends { frequencies?: any[] }>(
 	return rows.map((row) => ({ ...row, frequencies: (row.frequencies ?? []).map(publicCellFromCached) }));
 }
 
+async function cohortIdsForCountryCode(db: QueryDb, countryCode: string): Promise<number[]> {
+	const code = countryCode.trim().toUpperCase();
+	if (!code) return [];
+
+	const direct = await db
+		.prepare(
+			`SELECT DISTINCT c.id
+			 FROM cohorts c
+			 JOIN populations p ON p.id = c.population_id
+			 WHERE p.country_code = ?`
+		)
+		.bind(code)
+		.all<{ id: number }>();
+
+	if (direct.results.length) {
+		return direct.results.map((row) => row.id);
+	}
+
+	const mapped = await db
+		.prepare(
+			`SELECT DISTINCT c.id
+			 FROM cohorts c
+			 JOIN populations p ON p.id = c.population_id
+			 JOIN population_country_mappings m ON m.population_id = p.id
+			 WHERE m.country_code = ?`
+		)
+		.bind(code)
+		.all<{ id: number }>();
+
+	return mapped.results.map((row) => row.id);
+}
+
+async function resolveSearchCohortIds(db: QueryDb, params: SearchParams): Promise<number[]> {
+	let cohortIds = params.cohorts ?? [];
+	const country = params.country?.trim().toUpperCase();
+	if (!country) return cohortIds;
+
+	const countryCohorts = await cohortIdsForCountryCode(db, country);
+	if (!countryCohorts.length) return [];
+
+	if (cohortIds.length) {
+		return cohortIds.filter((id) => countryCohorts.includes(id));
+	}
+	return countryCohorts;
+}
+
 export async function searchVariants(
 	db: QueryDb,
 	scopeSlug: string | null,
@@ -332,7 +379,8 @@ export async function searchVariants(
 	const biobankIds = requested.length ? await biobankIdsForSlugs(db, requested) : [];
 	if (scopeSlug && !biobankIds.length) return { rows: [], total: 0 };
 	const match = params.match === 'all' ? 'all' : 'any';
-	const cohortIds = params.cohorts ?? [];
+	const cohortIds = await resolveSearchCohortIds(db, params);
+	if (params.country?.trim() && !cohortIds.length) return { rows: [], total: 0 };
 	const cohortMatch = params.cohortMatch === 'all' ? 'all' : 'any';
 	const where: string[] = [];
 	const args: unknown[] = [];
@@ -802,6 +850,10 @@ async function searchExploreCacheFallback(
 	const cached = await getStats(db, `explore:${scopeSlug ?? 'global'}`);
 	if (!cached?.rows?.length) return null;
 
+	const cohortIds = await resolveSearchCohortIds(db, params);
+	if (params.country?.trim() && !cohortIds.length) return null;
+	const freqParams = cohortIds.length ? { ...params, cohorts: cohortIds } : params;
+
 	const limit = Math.min(Math.max(params.limit ?? 50, 1), 500);
 	const offset = Math.max(params.offset ?? 0, 0);
 	const biobankSlugs = scopeSlug
@@ -821,7 +873,7 @@ async function searchExploreCacheFallback(
 		if (params.rsid != null && row.rsid !== params.rsid) return false;
 		if (vepImpacts.length && (!row.vepImpact || !vepImpacts.includes(row.vepImpact.toUpperCase()))) return false;
 		if (vepConsequences.length && (!row.vepLabel || !vepConsequences.includes(row.vepLabel))) return false;
-		return rowQualifiesFrequencies(row, params, biobankSlugs);
+		return rowQualifiesFrequencies(row, freqParams, biobankSlugs);
 	});
 
 	rows = sortCachedRows(rows, params);
@@ -1053,7 +1105,7 @@ export async function biobanksOverview(db: QueryDb, scopeSlug: string | null): P
 			.prepare(
 				`SELECT p.id, p.name, p.country, p.country_code, p.lat, p.lon,
 				        c.id cohort_id, c.sample_count,
-				        (SELECT COUNT(*) FROM frequencies f WHERE f.cohort_id=c.id) variant_count
+				        (SELECT COUNT(DISTINCT f.variant_id) FROM frequencies f WHERE f.cohort_id=c.id AND f.ac > 0) variant_count
 				 FROM populations p
 				 JOIN cohorts c ON c.population_id=p.id
 				 WHERE p.biobank_id=? ORDER BY p.name`
@@ -1106,7 +1158,7 @@ export async function biobanksOverview(db: QueryDb, scopeSlug: string | null): P
 		}));
 		const totalSamples = populations.reduce((s, p) => s + p.sampleCount, 0);
 		const tv = await db
-			.prepare('SELECT COUNT(DISTINCT variant_id) n FROM frequencies WHERE biobank_id=?')
+			.prepare('SELECT COUNT(DISTINCT variant_id) n FROM frequencies WHERE biobank_id=? AND ac > 0')
 			.bind(b.id)
 			.first<{ n: number }>();
 		out.push({

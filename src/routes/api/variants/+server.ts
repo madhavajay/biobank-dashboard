@@ -4,7 +4,7 @@ import { ALLELE_COUNT_REPORTING_THRESHOLD } from '$lib/privacy';
 import type { RequestHandler } from './$types';
 
 // params that, if present, mean this is NOT an unfiltered listing → must compute its total live.
-const FILTER_KEYS = ['q', 'gene', 'chrom', 'posMin', 'posMax', 'rsid', 'afMin', 'afMax', 'acMin', 'acMax', 'vepImpact', 'vepConsequence', 'cohorts', 'cohortMatch', 'biobanks', 'sort'];
+const FILTER_KEYS = ['q', 'gene', 'country', 'chrom', 'posMin', 'posMax', 'rsid', 'afMin', 'afMax', 'acMin', 'acMax', 'vepImpact', 'vepConsequence', 'cohorts', 'cohortMatch', 'biobanks', 'sort'];
 const TOTAL_FILTER_KEYS = FILTER_KEYS.filter((key) => key !== 'sort');
 const MAX_PAGE_BROWSABLE_ROWS = 10_000;
 
@@ -73,6 +73,7 @@ export const GET: RequestHandler = async ({ url, locals, platform }) => {
 		posMax: num('posMax'),
 		rsid: num('rsid'),
 		gene: url.searchParams.get('gene') ?? undefined,
+		country: url.searchParams.get('country') ?? undefined,
 		afMin: num('afMin'),
 		afMax: num('afMax'),
 		acMin: num('acMin'),

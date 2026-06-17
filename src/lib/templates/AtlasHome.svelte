@@ -99,7 +99,7 @@
 
 	const tryQueries = ['BRCA1', 'rs2465136', 'p.Arg124His', '1:1000000-1100000', 'chr7'];
 	const exploreLink = (q: string) =>
-		`/?q=${encodeURIComponent(q)}&results=1${data.forceTenant ? `&tenant=${data.forceTenant}` : ''}`;
+		`/?q=${encodeURIComponent(q)}${data.forceTenant ? `&tenant=${data.forceTenant}` : ''}`;
 </script>
 
 <!-- try bar -->
@@ -112,7 +112,6 @@
 
 <!-- search band -->
 <form method="GET" action="/" class="mb-6 flex items-center gap-2 rounded-[var(--radius)] border bg-card p-2.5 shadow-sm">
-	<input type="hidden" name="results" value="1" />
 	{#if data.forceTenant}<input type="hidden" name="tenant" value={data.forceTenant} />{/if}
 	<svg viewBox="0 0 24 24" class="ml-2 size-5 text-muted-foreground" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
 	<input name="q" placeholder={tr(L, 'search')} class="flex-1 bg-transparent px-1 py-2 text-sm outline-none" />
