@@ -229,7 +229,7 @@
 	}
 
 	function tooltipClass() {
-		const base = 'pointer-events-none absolute rounded-lg border bg-popover/95 px-3 py-2 text-xs shadow-lg backdrop-blur';
+		const base = 'pointer-events-none absolute rounded-lg border bg-popover/95 px-3 py-2 text-xs shadow-lg';
 		const positions = {
 			'top-left': 'left-3 top-3',
 			'open-water': 'left-[27%] top-[70%] -translate-x-1/2 -translate-y-1/2',

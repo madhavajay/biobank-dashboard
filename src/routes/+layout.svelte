@@ -67,7 +67,7 @@
 	</div>
 {:else}
 <div style={data.themeStyle} class="flex min-h-screen flex-col">
-	<header class="sticky top-0 z-30 border-b bg-background/85 backdrop-blur">
+	<header class="sticky top-0 z-30 border-b bg-background/85">
 		<div class="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-3">
 			<a href={link('/')} class="flex items-center gap-2.5">
 				{#if tenant.logoImg}

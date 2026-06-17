@@ -635,6 +635,7 @@
 	let selectedDatasetSlug = $state<string | null>(null)
 	let searchQuery = $state('')
 	let countryPickerOpen = $state(false)
+	let drawerFiltersOpen = $state(false)
 	let filterGene = $state('')
 	let filterAfMin = $state('')
 	let filterAfMax = $state('')
@@ -1034,100 +1035,30 @@
 		'#f79763',
 	]
 	const bubbleRadiusExpression: ExpressionSpecification = [
-		'interpolate',
-		['linear'],
-		['zoom'],
-		2,
-		[
-			'interpolate',
-			['linear'],
-			['sqrt', ['max', ['get', 'samples'], 1]],
-			1,
-			7,
-			10,
-			11,
-			25,
-			14,
-			55,
-			19,
-		],
-		4,
-		[
-			'interpolate',
-			['linear'],
-			['sqrt', ['max', ['get', 'samples'], 1]],
-			1,
-			8,
-			10,
-			13,
-			25,
-			17,
-			55,
-			23,
-		],
-		6,
-		[
-			'interpolate',
-			['linear'],
-			['sqrt', ['max', ['get', 'samples'], 1]],
-			1,
-			9,
-			10,
-			14,
-			25,
-			19,
-			55,
-			25,
-		],
+		'+',
+		8.3,
+		['*', 0.66, ['sqrt', ['max', ['to-number', ['get', 'samples']], 1]]],
 	]
 	const bubbleHaloRadiusExpression: ExpressionSpecification = [
+		'+',
+		10.5,
+		['*', 0.74, ['sqrt', ['max', ['to-number', ['get', 'samples']], 1]]],
+	]
+	const bubbleLabelSizeExpression: ExpressionSpecification = [
 		'interpolate',
 		['linear'],
-		['zoom'],
-		2,
-		[
-			'interpolate',
-			['linear'],
-			['sqrt', ['max', ['get', 'samples'], 1]],
-			1,
-			9,
-			10,
-			13,
-			25,
-			17,
-			55,
-			22,
-		],
-		4,
-		[
-			'interpolate',
-			['linear'],
-			['sqrt', ['max', ['get', 'samples'], 1]],
-			1,
-			11,
-			10,
-			15,
-			25,
-			21,
-			55,
-			26,
-		],
-		6,
-		[
-			'interpolate',
-			['linear'],
-			['sqrt', ['max', ['get', 'samples'], 1]],
-			1,
-			12,
-			10,
-			17,
-			25,
-			23,
-			55,
-			29,
-		],
+		['sqrt', ['max', ['to-number', ['get', 'samples']], 1]],
+		1,
+		10.2,
+		12,
+		11.2,
+		25,
+		12.6,
+		55,
+		14.5,
 	]
-	const smallerBubbleSortKey: ExpressionSpecification = ['-', 0, ['get', 'samples']]
+	const bubbleStyleVersion = 'large-bubbles-v16'
+	const bubbleSortKey: ExpressionSpecification = ['get', 'samples']
 	const collectionGeoJson = $derived<
 		FeatureCollection<
 			Point,
@@ -1635,6 +1566,13 @@
 			hasSelection ? 0.18 : 1,
 		]
 
+		map.setPaintProperty('collection-country-bubbles', 'circle-radius', bubbleRadiusExpression)
+		map.setPaintProperty(
+			'collection-country-bubble-halo',
+			'circle-radius',
+			bubbleHaloRadiusExpression
+		)
+		map.setLayoutProperty('collection-country-labels', 'text-size', bubbleLabelSizeExpression)
 		map.setPaintProperty('collection-country-bubbles', 'circle-opacity', focusExpression)
 		map.setPaintProperty('collection-country-bubble-halo', 'circle-opacity', haloExpression)
 		map.setPaintProperty('collection-country-labels', 'text-opacity', labelExpression)
@@ -1753,7 +1691,7 @@
 					type: 'circle',
 					source: 'collection-countries',
 					layout: {
-						'circle-sort-key': smallerBubbleSortKey,
+						'circle-sort-key': bubbleSortKey,
 					},
 					paint: {
 						'circle-color': bubbleColorExpression,
@@ -1766,7 +1704,7 @@
 					type: 'circle',
 					source: 'collection-countries',
 					layout: {
-						'circle-sort-key': smallerBubbleSortKey,
+						'circle-sort-key': bubbleSortKey,
 					},
 					paint: {
 						'circle-color': bubbleColorExpression,
@@ -1780,19 +1718,9 @@
 					type: 'symbol',
 					source: 'collection-countries',
 					layout: {
-						'symbol-sort-key': smallerBubbleSortKey,
+						'symbol-sort-key': bubbleSortKey,
 						'text-field': ['get', 'label'],
-						'text-size': [
-							'interpolate',
-							['linear'],
-							['sqrt', ['max', ['get', 'samples'], 1]],
-							1,
-							11,
-							25,
-							12.5,
-							55,
-							14,
-						],
+						'text-size': bubbleLabelSizeExpression,
 						'text-font': ['DIN Offc Pro Medium', 'Arial Unicode MS Bold'],
 						'text-anchor': 'center',
 						'text-offset': [0, 0],
@@ -1801,9 +1729,9 @@
 						'text-optional': true,
 					},
 					paint: {
-						'text-color': '#23202c',
-						'text-halo-color': 'rgba(255, 255, 255, 0.9)',
-						'text-halo-width': 1.1,
+						'text-color': '#353243',
+						'text-halo-color': 'rgba(255, 255, 255, 0.88)',
+						'text-halo-width': 1,
 					},
 				},
 			],
@@ -1952,6 +1880,7 @@
 		collectionGeoJson
 		countryHighlightExpression
 		bubbleFocusCodes
+		bubbleStyleVersion
 		selectedDatasetSlug
 		selectedCode
 		syncMapState()
@@ -2099,22 +2028,22 @@
 				class={`map-results-drawer ${resultsDrawerExpanded ? 'expanded' : ''}`}
 				aria-label={tx('Variant results', 'Resultados de variantes')}
 			>
-				<div class="map-results-command">
-					<code>{drawerCurlCmd}</code>
-					<div>
-						<button type="button" onclick={copyDrawerCurl}
-							>{curlCopied ? tx('Copied', 'Copiado') : tx('Copy curl', 'Copiar curl')}</button
-						>
-						<button type="button" onclick={copyShareUrl}
-							>{shareCopied ? tx('Copied', 'Copiado') : tx('Copy link', 'Copiar link')}</button
-						>
-					</div>
+				<div class="drawer-copy-ears" aria-label={tx('Share tools', 'Ferramentas de compartilhamento')}>
+					<button
+						type="button"
+						class:active={drawerFiltersOpen}
+						onclick={() => (drawerFiltersOpen = !drawerFiltersOpen)}
+					>
+						{tx('Filters', 'Filtros')}{#if mapFilterCount} <strong>{mapFilterCount}</strong>{/if}
+					</button>
+					<button type="button" onclick={copyDrawerCurl} title={drawerCurlCmd}
+						>{curlCopied ? tx('Copied', 'Copiado') : 'curl'}</button
+					>
+					<button type="button" onclick={copyShareUrl}
+						>{shareCopied ? tx('Copied', 'Copiado') : tx('link', 'link')}</button
+					>
 				</div>
-				<details class="drawer-filter-dropdown">
-					<summary>
-						<span>{tx('Filters', 'Filtros')}</span>
-						{#if mapFilterCount}<strong>{mapFilterCount}</strong>{/if}
-					</summary>
+				{#if drawerFiltersOpen}
 					<div class="map-filter-menu drawer-filter-menu">
 						{#if filterBiobankOptions.length > 1}
 							<section class="map-filter-section">
@@ -2311,7 +2240,7 @@
 							>
 						</div>
 					</div>
-				</details>
+				{/if}
 				<div class="map-results-body">
 					{#key resultsDrawerKey}
 						<VariantBrowser
@@ -2815,7 +2744,6 @@
 		--top-search-width: clamp(520px, 42vw, 720px);
 		--panel-surface: color-mix(in srgb, var(--om-white) 85%, transparent);
 		--panel-shadow: 0 10px 28px rgb(46 43 59 / 0.08);
-		--panel-blur: blur(12px);
 		position: relative;
 		height: 100vh;
 		width: 100%;
@@ -2864,7 +2792,6 @@
 		border-radius: var(--om-radius-m);
 		background: var(--panel-surface);
 		box-shadow: var(--panel-shadow);
-		backdrop-filter: var(--panel-blur);
 	}
 
 	.floating-title {
@@ -2910,7 +2837,6 @@
 		padding: 0;
 		border-radius: var(--om-radius-m);
 		background: transparent;
-		backdrop-filter: none;
 	}
 
 	.top-nav a {
@@ -2966,12 +2892,12 @@
 		position: absolute;
 		z-index: 3;
 		top: var(--screen-inset);
-		left: var(--top-search-left);
+		left: calc(var(--top-search-left) - (var(--top-search-width) / 2));
 		display: flex;
 		align-items: center;
 		width: var(--top-search-width);
 		gap: var(--om-space-s);
-		transform: translateX(-50%);
+		transform: none;
 		--search-control-height: 48px;
 		--search-shadow: none;
 		--topbar-shadow: 0 3px 14px rgb(46 43 59 / 0.045);
@@ -2986,7 +2912,6 @@
 		border-radius: var(--om-radius-m);
 		background: var(--panel-surface);
 		box-shadow: var(--topbar-shadow);
-		backdrop-filter: var(--panel-blur);
 	}
 
 	.global-search.dropdown-open {
@@ -3028,7 +2953,6 @@
 	.country-picker {
 		position: relative;
 		flex-shrink: 0;
-		border-right: 1px solid color-mix(in srgb, var(--om-gray-300) 76%, transparent);
 	}
 
 	.country-picker-trigger {
@@ -3090,9 +3014,8 @@
 		max-height: min(430px, calc(100vh - 110px));
 		overflow: auto;
 		border-radius: var(--om-radius-m);
-		background: color-mix(in srgb, var(--om-white) 94%, transparent);
+		background: color-mix(in srgb, var(--om-white) 96%, transparent);
 		box-shadow: 0 8px 24px rgb(46 43 59 / 0.08);
-		backdrop-filter: blur(16px);
 		padding: var(--om-space-xs);
 	}
 
@@ -3123,57 +3046,6 @@
 		overflow: auto;
 		gap: var(--om-space-m);
 		padding: var(--om-space-m);
-	}
-
-	.drawer-filter-dropdown {
-		background: color-mix(in srgb, var(--om-white) 58%, transparent);
-	}
-
-	.drawer-filter-dropdown summary {
-		display: flex;
-		height: 42px;
-		align-items: center;
-		gap: var(--om-space-s);
-		padding: 0 var(--om-space-m);
-		font-size: 12px;
-		font-weight: 800;
-		color: var(--om-gray-700);
-		cursor: pointer;
-		list-style: none;
-	}
-
-	.drawer-filter-dropdown summary::-webkit-details-marker {
-		display: none;
-	}
-
-	.drawer-filter-dropdown summary::after {
-		margin-left: auto;
-		content: '▾';
-		font-size: 11px;
-		color: var(--om-gray-600);
-		transition: transform 160ms ease;
-	}
-
-	.drawer-filter-dropdown[open] summary::after {
-		transform: rotate(180deg);
-	}
-
-	.drawer-filter-dropdown summary:hover {
-		background: color-mix(in srgb, var(--om-teal-100) 52%, transparent);
-		color: var(--om-teal-700);
-	}
-
-	.drawer-filter-dropdown summary strong {
-		display: grid;
-		min-width: 22px;
-		height: 22px;
-		place-items: center;
-		border-radius: 999px;
-		background: var(--om-gray-850);
-		padding: 0 7px;
-		font-size: 11px;
-		line-height: 1;
-		color: var(--om-white);
 	}
 
 	.drawer-filter-menu {
@@ -3258,6 +3130,7 @@
 
 	.map-filter-match input {
 		accent-color: var(--om-teal-600);
+		cursor: pointer;
 	}
 
 	.map-filter-population-groups {
@@ -3316,6 +3189,10 @@
 		outline: none;
 	}
 
+	.map-filter-grid select {
+		cursor: pointer;
+	}
+
 	.range-inputs {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -3363,6 +3240,7 @@
 
 	.map-filter-options input {
 		accent-color: var(--om-teal-600);
+		cursor: pointer;
 	}
 
 	.map-filter-actions {
@@ -3447,7 +3325,6 @@
 		border-radius: var(--om-radius-m);
 		background: var(--panel-surface);
 		box-shadow: var(--topbar-shadow);
-		backdrop-filter: var(--panel-blur);
 		padding: 0 12px;
 		font-family: 'Inter', system-ui, sans-serif;
 		font-size: 13px;
@@ -3473,10 +3350,9 @@
 
 	.variant-mix {
 		bottom: var(--bottom-inset);
-		left: 50%;
+		left: max(16px, calc((100vw - 480px) / 2));
 		width: min(480px, calc(100vw - 32px));
 		padding: var(--om-space-m);
-		transform: translateX(-50%);
 	}
 
 	.explore-intro-panel {
@@ -3532,7 +3408,6 @@
 		border-radius: var(--om-radius-m);
 		background: var(--panel-surface);
 		box-shadow: var(--panel-shadow);
-		backdrop-filter: var(--panel-blur);
 		padding: var(--om-space-m);
 	}
 
@@ -3649,10 +3524,7 @@
 	.bottom-panel.drawer-open {
 		opacity: 0;
 		pointer-events: none;
-		transform: translateY(12px);
-		transition:
-			opacity 160ms ease,
-			transform 160ms ease;
+		transition: opacity 160ms ease;
 	}
 
 	.variant-mix.drawer-open {
@@ -3664,14 +3536,15 @@
 	.site-footer {
 		position: absolute;
 		z-index: 2;
-		left: 50%;
+		left: 0;
+		width: 100%;
 		bottom: 6px;
 		margin: 0;
-		transform: translateX(-50%);
 		font-family: 'Inter', system-ui, sans-serif;
 		font-size: 11px;
 		font-weight: 600;
 		line-height: 1.2;
+		text-align: center;
 		color: var(--om-gray-600);
 		text-align: center;
 		text-shadow: 0 1px 0 rgb(255 255 255 / 0.72);
@@ -3699,7 +3572,6 @@
 		border-radius: var(--om-radius-m);
 		background: color-mix(in srgb, var(--om-white) 88%, transparent);
 		box-shadow: 0 12px 34px rgb(46 43 59 / 0.1);
-		backdrop-filter: blur(14px);
 		padding: clamp(20px, 3vw, 36px);
 	}
 
@@ -3725,7 +3597,6 @@
 		--om-space-l: 16px;
 		--panel-surface: color-mix(in srgb, var(--om-white) 85%, transparent);
 		--panel-shadow: 0 10px 28px rgb(46 43 59 / 0.08);
-		--panel-blur: blur(12px);
 		--screen-inset: 24px;
 		--top-search-left: 49.5vw;
 		--top-search-width: clamp(520px, 42vw, 720px);
@@ -3741,12 +3612,11 @@
 		height: calc(100vh - var(--results-drawer-top) - var(--results-drawer-bottom)) !important;
 		max-height: none !important;
 		min-height: 0;
-		overflow: hidden;
+		overflow: visible;
 		border: 0 !important;
 		border-radius: var(--om-radius-m) 0 0 var(--om-radius-m);
 		background: var(--panel-surface);
 		box-shadow: var(--panel-shadow);
-		backdrop-filter: var(--panel-blur);
 		font-family: 'Inter', system-ui, sans-serif;
 		animation: none !important;
 		transition: none !important;
@@ -3764,74 +3634,107 @@
 		min-height: 0;
 	}
 
-	.map-results-command {
-		display: grid;
-		flex-shrink: 0;
-		grid-template-columns: minmax(0, 1fr) auto;
-		align-items: center;
-		gap: var(--om-space-s);
-		padding: var(--om-space-s);
-	}
-
-	.map-results-command code {
-		display: block;
-		min-width: 0;
-		overflow: auto;
-		border: 1px solid color-mix(in srgb, var(--om-gray-300) 82%, transparent);
-		border-radius: var(--om-radius-s);
-		background: color-mix(in srgb, var(--om-gray-850) 94%, #000);
-		padding: 9px 11px;
-		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-		font-size: 12px;
-		line-height: 1.45;
-		color: var(--om-white);
-		white-space: nowrap;
-	}
-
-	.map-results-command > div {
+	.drawer-copy-ears {
+		position: absolute;
+		z-index: 3;
+		top: -30px;
+		right: 10px;
 		display: flex;
-		gap: var(--om-space-s);
+		gap: 4px;
+		align-items: flex-end;
 	}
 
-	.map-results-command button {
+	.drawer-copy-ears button {
 		display: inline-flex;
-		height: 32px;
+		height: 30px;
 		align-items: center;
-		border: 1px solid color-mix(in srgb, var(--om-gray-400) 62%, transparent);
-		border-radius: var(--om-radius-s);
-		background: color-mix(in srgb, var(--om-white) 78%, transparent);
-		padding: 0 10px;
+		justify-content: center;
+		gap: 6px;
+		border: 0;
+		border-radius: var(--om-radius-s) var(--om-radius-s) 0 0;
+		background: color-mix(in srgb, var(--om-white) 88%, transparent);
+		box-shadow: 0 -4px 14px rgb(46 43 59 / 0.06);
+		padding: 0 11px;
 		font-family: 'Inter', system-ui, sans-serif;
 		font-size: 12px;
 		font-weight: 800;
 		line-height: 1;
 		color: var(--om-gray-700);
-		text-decoration: none;
 		cursor: pointer;
 	}
 
-	.map-results-command button:hover {
-		border-color: color-mix(in srgb, var(--om-teal-600) 45%, transparent);
-		background: color-mix(in srgb, var(--om-teal-100) 68%, var(--om-white));
+	.drawer-copy-ears button:hover {
+		background: color-mix(in srgb, var(--om-teal-100) 64%, var(--om-white));
 		color: var(--om-teal-700);
 	}
 
+	.drawer-copy-ears button.active {
+		background: var(--om-gray-850);
+		color: var(--om-white);
+	}
+
+	.drawer-copy-ears button strong {
+		display: grid;
+		min-width: 18px;
+		height: 18px;
+		place-items: center;
+		border-radius: 999px;
+		background: currentColor;
+		padding: 0 5px;
+		font-size: 10px;
+		line-height: 1;
+		color: var(--panel-surface);
+	}
+
 	.map-results-body {
+		display: flex;
 		min-height: 0;
 		flex: 1;
-		overflow: auto;
+		overflow: hidden;
+		border-radius: inherit;
 		padding: 0;
 	}
 
 	.map-results-body :global(.card-surface) {
+		display: flex;
+		min-height: 0;
+		flex: 1;
+		flex-direction: column;
 		border: 0;
 		background: transparent;
 		box-shadow: none;
 		padding: 0;
 	}
 
+	.map-results-body :global(.card-surface > .mb-3) {
+		order: 2;
+		flex-shrink: 0;
+		margin: 0 !important;
+		padding: 10px var(--om-space-m);
+	}
+
+	.map-results-body :global(.card-surface > .mb-3 button:not(:disabled)) {
+		cursor: pointer;
+	}
+
 	.map-results-body :global(.variant-results-shell) {
+		order: 1;
+		min-height: 0;
+		flex: 1;
+		overflow: auto;
+		border-radius: 0;
 		background: transparent;
+	}
+
+	.map-results-body :global(.variant-results-shell > .overflow-x-auto) {
+		min-height: 100%;
+	}
+
+	.map-results-body :global(.variant-results-shell thead) {
+		position: sticky;
+		z-index: 1;
+		top: 0;
+		background: color-mix(in srgb, var(--om-gray-100) 72%, transparent) !important;
 	}
 
 	.country-panel {
@@ -4331,12 +4234,9 @@
 			border-radius: 0;
 		}
 
-		.map-results-command {
-			grid-template-columns: minmax(0, 1fr);
-		}
-
-		.map-results-command > div {
-			justify-content: flex-end;
+		.drawer-copy-ears {
+			top: 8px;
+			right: 8px;
 		}
 	}
 </style>

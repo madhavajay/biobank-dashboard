@@ -1211,7 +1211,7 @@
 				</tbody>
 			</table>
 			{#if gnomadStatus === 'loading'}
-				<div class="absolute inset-0 grid min-h-28 place-items-center bg-card/75 backdrop-blur-[1px]">
+				<div class="absolute inset-0 grid min-h-28 place-items-center bg-card/75">
 					<div class="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground shadow-sm">
 						<span class="size-4 animate-spin rounded-full border-2 border-muted border-t-primary"></span>
 						<span>Loading gnomAD...</span>
@@ -1400,7 +1400,7 @@
 				</tbody>
 			</table>
 			{#if clinvarStatus === 'loading'}
-				<div class="absolute inset-0 grid min-h-28 place-items-center bg-card/75 backdrop-blur-[1px]">
+				<div class="absolute inset-0 grid min-h-28 place-items-center bg-card/75">
 					<div class="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground shadow-sm">
 						<span class="size-4 animate-spin rounded-full border-2 border-muted border-t-primary"></span>
 						<span>Loading ClinVar...</span>
@@ -1549,7 +1549,7 @@
 				</tbody>
 			</table>
 			{#if clinpgxStatus === 'loading'}
-				<div class="absolute inset-0 grid min-h-28 place-items-center bg-card/75 backdrop-blur-[1px]">
+				<div class="absolute inset-0 grid min-h-28 place-items-center bg-card/75">
 					<div class="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground shadow-sm">
 						<span class="size-4 animate-spin rounded-full border-2 border-muted border-t-primary"></span>
 						<span>Loading ClinPGx...</span>

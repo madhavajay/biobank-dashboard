@@ -972,7 +972,6 @@
 		z-index: 50;
 		pointer-events: none;
 		background: rgba(255, 255, 255, 0.72);
-		backdrop-filter: blur(1.5px);
 		border-radius: inherit;
 	}
 
