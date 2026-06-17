@@ -31,7 +31,7 @@ export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 
 	let dashboard = null;
 	if (locals.tenant.slug === 'biovault') {
-		const db = platform?.env?.DB;
+		const db = locals.db;
 		if (!db) throw error(500, 'D1 binding unavailable — run with wrangler/vite dev');
 
 		const scope = locals.tenant.scope;

@@ -270,12 +270,14 @@
 	const geneHref = (symbol: string) => {
 		const sp = new URLSearchParams({ gene: symbol });
 		if (data.forceTenant) sp.set('tenant', data.forceTenant);
-		return `/explore?${sp.toString()}`;
+		sp.set('results', '1');
+		return `/?${sp.toString()}`;
 	};
 	const explorerFilterHref = (key: 'vepConsequence' | 'vepImpact', value: string) => {
 		const sp = new URLSearchParams({ [key]: value });
 		if (data.forceTenant) sp.set('tenant', data.forceTenant);
-		return `/explore?${sp.toString()}`;
+		sp.set('results', '1');
+		return `/?${sp.toString()}`;
 	};
 	const localComparatorForAncestry = (id: string) => {
 		if (exactLocalFrequencies.length === 1) return exactLocalFrequencies[0];
@@ -911,7 +913,7 @@
 </svelte:head>
 
 <div class="mb-4">
-	<a href="/explore{data.forceTenant ? `?tenant=${data.forceTenant}` : ''}" class="mb-2 inline-flex text-sm text-muted-foreground hover:text-primary hover:underline">
+	<a href="/?results=1{data.forceTenant ? `&tenant=${data.forceTenant}` : ''}" class="mb-2 inline-flex text-sm text-muted-foreground hover:text-primary hover:underline">
 		← {tr($lang, 'explore')}
 	</a>
 	<div class="flex flex-wrap items-center gap-2.5">

@@ -1,7 +1,35 @@
+<script module lang="ts">
+	const VARIANT_RESPONSE_CACHE_LIMIT = 24;
+	const variantResponseCache = new Map<
+		string,
+		{
+			rows: unknown[];
+			total: number;
+			alleleCountReportingThreshold: number;
+		}
+	>();
+
+	function rememberVariantResponse(
+		key: string,
+		value: {
+			rows: unknown[];
+			total: number;
+			alleleCountReportingThreshold: number;
+		}
+	) {
+		if (variantResponseCache.has(key)) variantResponseCache.delete(key);
+		variantResponseCache.set(key, value);
+		while (variantResponseCache.size > VARIANT_RESPONSE_CACHE_LIMIT) {
+			const oldest = variantResponseCache.keys().next().value;
+			if (!oldest) break;
+			variantResponseCache.delete(oldest);
+		}
+	}
+</script>
+
 <script lang="ts">
 	import { replaceState } from '$app/navigation';
 	import { page } from '$app/state';
-	import { onMount } from 'svelte';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import { lang, tr } from '$lib/i18n';
 	import { DEFAULTS, type ExplorerDisplay } from '$lib/explorer';
@@ -14,6 +42,11 @@
 		options = [],
 		examples = ['BRCA1', 'rs2465136', 'p.Arg124His', '1:1000000-1100000', 'chr7'],
 		initialQuery = '',
+		initialParams = '',
+		syncToUrl = true,
+		showApiBar = true,
+		showTitle = true,
+		onParamsChange = undefined,
 		showGenotypeCounts = true,
 		populations = [],
 		display = undefined
@@ -25,6 +58,11 @@
 		options?: { slug: string; name: string }[];
 		examples?: string[];
 		initialQuery?: string;
+		initialParams?: string;
+		syncToUrl?: boolean;
+		showApiBar?: boolean;
+		showTitle?: boolean;
+		onParamsChange?: (params: string) => void;
 		showGenotypeCounts?: boolean;
 		populations?: { cohortId: number; name: string; biobankSlug?: string; biobankName?: string }[];
 		display?: ExplorerDisplay;
@@ -50,7 +88,8 @@
 	const explorerFilterHref = (key: 'vepConsequence' | 'vepImpact', value: string) => {
 		const sp = new URLSearchParams({ [key]: value });
 		if (forceTenant) sp.set('tenant', forceTenant);
-		return `/explore?${sp.toString()}`;
+		sp.set('results', '1');
+		return `/?${sp.toString()}`;
 	};
 	const VEP_IMPACT_OPTIONS = ['HIGH', 'MODERATE', 'LOW', 'MODIFIER'];
 	const VEP_CONSEQUENCE_OPTIONS = [
@@ -84,7 +123,14 @@
 	];
 
 	// initial state read from the page URL (so a pasted/bookmarked link reproduces the view)
-	const sp0 = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
+	function initialSearchParams() {
+		return initialParams
+			? new URLSearchParams(initialParams)
+			: typeof location !== 'undefined'
+				? new URLSearchParams(location.search)
+				: new URLSearchParams();
+	}
+	const sp0 = initialSearchParams();
 	const sp0Cohorts = (sp0.get('cohorts') ?? '').split(',').filter(Boolean).map(Number);
 	const sp0HasVepImpact = sp0.has('vepImpact');
 	const sp0HasVepConsequence = sp0.has('vepConsequence');
@@ -233,6 +279,10 @@
 		siteDomain?: string;
 	}
 
+	const MAX_PAGE_BROWSABLE_ROWS = 10_000;
+	const maxOffsetForPageSize = (size: number) => Math.max(MAX_PAGE_BROWSABLE_ROWS - size, 0);
+	const clampOffset = (value: number, size: number) => Math.min(Math.max(value, 0), Math.floor(maxOffsetForPageSize(size) / size) * size);
+
 	let q = $state(sp0.get('q') ?? initialQuery); // bound to the text input
 	let gene = $state(sp0.get('gene') ?? '');
 	let afMin = $state(sp0.get('afMin') ?? '');
@@ -253,8 +303,9 @@
 	let lastTrackedQueryKey = '';
 
 	const tenantQ = $derived(forceTenant ? `&tenant=${forceTenant}` : '');
-	let pageSize = $state(Number(sp0.get('pageSize')) || 50);
-	let offset = $state(((Number(sp0.get('page')) || 1) - 1) * (Number(sp0.get('pageSize')) || 50));
+	const initialPageSize = Number(sp0.get('pageSize')) || 50;
+	let pageSize = $state(initialPageSize);
+	let offset = $state(clampOffset(((Number(sp0.get('page')) || 1) - 1) * initialPageSize, initialPageSize));
 	function setPageSize(n: number) {
 		pageSize = n;
 		offset = 0;
@@ -399,6 +450,7 @@
 
 	// mirror the current query into the page URL so it's copy-paste / bookmark-able
 	function syncUrl() {
+		if (!syncToUrl) return;
 		const sp = new URLSearchParams();
 		if (qA.trim()) sp.set('q', qA.trim());
 		if (geneA.trim()) sp.set('gene', geneA.trim());
@@ -453,11 +505,25 @@
 		tableLoading = true;
 		try {
 			const params = buildParams();
+			onParamsChange?.(params);
+			const cached = variantResponseCache.get(params);
+			if (cached) {
+				rows = cached.rows as VRow[];
+				total = cached.total;
+				alleleCountReportingThreshold = cached.alleleCountReportingThreshold;
+				loading = false;
+				tableLoading = false;
+			}
 			const res = (await fetch(`/api/variants?${params}`).then((r) => r.json())) as VariantResponse;
 			if (my !== seq) return; // a newer request superseded this one
 			rows = res.rows ?? [];
 			total = res.total ?? 0;
 			alleleCountReportingThreshold = res.alleleCountReportingThreshold ?? alleleCountReportingThreshold;
+			rememberVariantResponse(params, {
+				rows,
+				total,
+				alleleCountReportingThreshold
+			});
 			trackVariantQuery(params, res);
 		} finally {
 			if (my === seq) {
@@ -542,18 +608,21 @@
 		curlCopied = true;
 		setTimeout(() => (curlCopied = false), 1200);
 	}
-	const apiLink = forceTenant ? `/api?tenant=${forceTenant}` : '/api';
+	const apiLink = $derived(forceTenant ? `/api?tenant=${forceTenant}` : '/api');
 
 	const totalPages = $derived(Math.max(1, Math.ceil(total / pageSize)));
+	const reachablePages = $derived(Math.min(totalPages, Math.ceil(MAX_PAGE_BROWSABLE_ROWS / pageSize)));
 	const curPage = $derived(Math.floor(offset / pageSize) + 1);
+	const paginationIsCapped = $derived(totalPages > reachablePages);
+	const reachableRows = $derived(Math.min(total, MAX_PAGE_BROWSABLE_ROWS));
 	function goPage(n: number) {
-		offset = (Math.min(Math.max(n, 1), totalPages) - 1) * pageSize;
+		offset = clampOffset((Math.min(Math.max(n, 1), reachablePages) - 1) * pageSize, pageSize);
 	}
-	// page numbers with ellipsis: 1 … c-1 c c+1 … N
+	// page numbers with ellipsis over the shallow offset window.
 	const pageItems = $derived.by(() => {
 		const items: (number | '…')[] = [];
 		const add = (n: number) => items.push(n);
-		const N = totalPages;
+		const N = reachablePages;
 		const c = curPage;
 		const win = new Set<number>([1, 2, N - 1, N, c - 1, c, c + 1]);
 		let last = 0;
@@ -660,27 +729,6 @@
 		setTimeout(() => (copied = null), 1200);
 	}
 
-	onMount(() => {
-		const closeFilterMenus = (event: PointerEvent) => {
-			const target = event.target;
-			if (!(target instanceof Node)) return;
-			for (const details of document.querySelectorAll<HTMLDetailsElement>('details[data-explorer-filter-menu]')) {
-				if (!details.contains(target)) details.open = false;
-			}
-		};
-		const closeFilterMenusOnEscape = (event: KeyboardEvent) => {
-			if (event.key !== 'Escape') return;
-			for (const details of document.querySelectorAll<HTMLDetailsElement>('details[data-explorer-filter-menu]')) {
-				details.open = false;
-			}
-		};
-		document.addEventListener('pointerdown', closeFilterMenus, true);
-		document.addEventListener('keydown', closeFilterMenusOnEscape);
-		return () => {
-			document.removeEventListener('pointerdown', closeFilterMenus, true);
-			document.removeEventListener('keydown', closeFilterMenusOnEscape);
-		};
-	});
 </script>
 
 <section class="card-surface p-5 sm:p-6">
@@ -689,246 +737,25 @@
 			<div class="bv-loadbar"></div>
 		</div>
 	{/if}
-	<div class="mb-4">
-		<h3 class="text-lg font-semibold">{title || tr($lang, 'variantBrowser')}</h3>
-		<p class="text-sm text-muted-foreground">{subtitle || tr($lang, 'vbSubtitle')}</p>
-	</div>
-
-	{#if showFilter}
-		<div class="relative z-30 mb-3 flex flex-wrap items-start gap-x-5 gap-y-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
-			<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'biobanks')}</span>
-			<details class="relative" data-explorer-filter-menu="biobanks">
-				<summary class="flex cursor-pointer list-none items-center gap-2 rounded-md border bg-card px-2.5 py-1.5 text-xs font-medium hover:bg-muted">
-					<span>Biobanks</span>
-					<span class="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{bankFilterSummary}</span>
-				</summary>
-				<div class="absolute left-0 top-full z-[80] mt-2 w-72 rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
-					<div class="mb-2 flex items-center justify-between border-b pb-2">
-						<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Biobanks</span>
-						<div class="flex gap-1">
-							<button type="button" onclick={() => setAllBanks(true)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">All</button>
-							<button type="button" onclick={() => setAllBanks(false)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">None</button>
-						</div>
-					</div>
-					<div class="grid gap-1.5">
-						{#each options as o}
-							<label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-muted">
-								<input type="checkbox" checked={selected[o.slug]} onchange={() => toggleBank(o.slug)} class="accent-[var(--primary)]" />
-								<span class="min-w-0 truncate">{o.name}</span>
-							</label>
-						{/each}
-					</div>
-				</div>
-			</details>
-			<div class="flex items-center gap-3" class:opacity-40={selectedSlugs.length < 2}>
-				<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'match')}</span>
-				<label class="flex cursor-pointer items-center gap-1.5">
-					<input type="radio" name="match" checked={matchMode === 'any'} onchange={() => setMatch('any')} disabled={selectedSlugs.length < 2} class="accent-[var(--primary)]" />
-					<span>Either biobank</span>
-				</label>
-				<label class="flex cursor-pointer items-center gap-1.5">
-					<input type="radio" name="match" checked={matchMode === 'all'} onchange={() => setMatch('all')} disabled={selectedSlugs.length < 2} class="accent-[var(--primary)]" />
-					<span>All selected biobanks</span>
-				</label>
-			</div>
+	{#if showTitle}
+		<div class="mb-4">
+			<h3 class="text-lg font-semibold">{title || tr($lang, 'variantBrowser')}</h3>
+			<p class="text-sm text-muted-foreground">{subtitle || tr($lang, 'vbSubtitle')}</p>
 		</div>
 	{/if}
 
-	{#if showPopFilter}
-		<div class="relative z-20 mb-3 flex flex-wrap items-start gap-x-5 gap-y-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
-			<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'populations')}</span>
-			<details class="relative" data-explorer-filter-menu="populations">
-				<summary class="flex cursor-pointer list-none items-center gap-2 rounded-md border bg-card px-2.5 py-1.5 text-xs font-medium hover:bg-muted">
-					<span>Populations</span>
-					<span class="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{populationFilterSummary}</span>
-				</summary>
-				<div class="absolute left-0 top-full z-[70] mt-2 max-h-[28rem] w-80 overflow-y-auto rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
-					<div class="mb-2 flex items-center justify-between border-b pb-2">
-						<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Populations</span>
-						<div class="flex gap-1">
-							<button type="button" onclick={() => setAllPops(true)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">All</button>
-							<button type="button" onclick={() => setAllPops(false)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">None</button>
-						</div>
-					</div>
-					<div class="grid gap-2">
-						{#each populationsByBiobank as group}
-							<div class="rounded border bg-card/60 p-2" class:opacity-40={showFilter && selected[group.slug] === false}>
-								<div class="mb-1.5 flex items-center justify-between gap-2">
-									<span class="min-w-0 truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{group.name}</span>
-									{#if populationsByBiobank.length > 1}
-										<div class="flex shrink-0 gap-1">
-											<button type="button" onclick={() => setBankPops(group.slug, true)} class="rounded border px-1.5 py-0.5 text-[10px] hover:bg-muted">All</button>
-											<button type="button" onclick={() => setBankPops(group.slug, false)} class="rounded border px-1.5 py-0.5 text-[10px] hover:bg-muted">None</button>
-										</div>
-									{/if}
-								</div>
-								<div class="grid gap-1">
-									{#each group.pops as pop}
-										<label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1 hover:bg-muted">
-											<input type="checkbox" checked={selectedPops[pop.cohortId]} onchange={() => togglePop(pop.cohortId)} class="accent-[var(--primary)]" />
-											<span class="min-w-0 truncate">{pop.name}</span>
-										</label>
-									{/each}
-								</div>
-							</div>
-						{/each}
-					</div>
-				</div>
-			</details>
-			<div class="flex items-center gap-3" class:opacity-40={selectedFilterCohortIds.length < 2}>
-				<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'match')}</span>
-				<label class="flex cursor-pointer items-center gap-1.5">
-					<input
-						type="radio"
-						name="cohort-match"
-						value="any"
-						checked={populationMatchMode === 'any'}
-						onchange={() => setPopulationMatch('any')}
-						disabled={selectedFilterCohortIds.length < 2}
-						class="accent-[var(--primary)]"
-						/>
-						<span>Either population</span>
-					</label>
-					<label class="flex cursor-pointer items-center gap-1.5">
-						<input
-						type="radio"
-						name="cohort-match"
-						value="all"
-						checked={populationMatchMode === 'all'}
-						onchange={() => setPopulationMatch('all')}
-						disabled={selectedFilterCohortIds.length < 2}
-						class="accent-[var(--primary)]"
-						/>
-						<span>All selected populations</span>
-					</label>
-				</div>
-			</div>
-	{/if}
-
-	{#if examples.length}
-		<div class="mb-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-			<span>{tr($lang, 'tryLabel')}</span>
-			{#each examples as ex}
-				<button onclick={() => runExample(ex)} class="rounded-full border px-2 py-0.5 font-mono hover:bg-muted hover:text-foreground">{ex}</button>
-			{/each}
+	{#if showApiBar}
+		<!-- live curl for the current query -->
+		<div class="mb-3 flex items-center gap-2">
+			<code class="min-w-0 flex-1 truncate rounded-md border bg-muted/40 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground">{curlCmd}</code>
+			<button onclick={copyCurl} class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">{curlCopied ? tr($lang, 'copiedLabel') : tr($lang, 'copyCurl')}</button>
+			<a href={apiLink} class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">API ↗</a>
 		</div>
 	{/if}
-
-	<div class="mb-3 flex flex-col gap-2">
-		<div class="flex flex-wrap items-end gap-2">
-			<div class="relative min-w-56 flex-1">
-				<input
-					bind:value={q}
-					oninput={onInput}
-					onkeydown={(e) => e.key === 'Enter' && go()}
-					placeholder="rs123 · p.Arg124His · chr7 · 1:1000000-1100000 · 1:1000000-1100000 ISG15"
-					class="w-full rounded-md border bg-background px-3 py-2 pr-9 text-sm outline-none focus:ring-2 focus:ring-ring"
-				/>
-				{#if loading}
-					<span class="absolute right-2.5 top-1/2 size-4 -translate-y-1/2 animate-spin rounded-full border-2 border-muted border-t-primary"></span>
-				{/if}
-			</div>
-			<div class="flex flex-col gap-1">
-				<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'gene')}</span>
-				<input
-					bind:value={gene}
-					oninput={onInput}
-					onkeydown={(e) => e.key === 'Enter' && go()}
-					placeholder="ISG15"
-					class="w-24 rounded-md border bg-background px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-				/>
-			</div>
-			<div class="flex flex-col gap-1">
-				<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'alleleFreq')}</span>
-				<div class="flex items-center gap-1">
-					<input bind:value={afMin} oninput={onInput} placeholder="min" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" />
-					<span class="text-muted-foreground">–</span>
-					<input bind:value={afMax} oninput={onInput} placeholder="max" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" />
-				</div>
-			</div>
-			<div class="flex flex-col gap-1">
-				<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'alleleCount')}</span>
-				<div class="flex items-center gap-1">
-					<input bind:value={acMin} oninput={onInput} min={alleleCountReportingThreshold} type="number" placeholder={String(alleleCountReportingThreshold)} class="w-16 rounded-md border bg-background px-2 py-2 text-sm" title={`Exact AC filters use reportable values only (AC >= ${alleleCountReportingThreshold}).`} />
-					<span class="text-muted-foreground">–</span>
-					<input bind:value={acMax} oninput={onInput} min={alleleCountReportingThreshold} type="number" placeholder="max" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" title={`Exact AC filters use reportable values only (AC >= ${alleleCountReportingThreshold}).`} />
-				</div>
-			</div>
-		</div>
-		<div class="flex flex-wrap items-end gap-2">
-			<div class="relative flex flex-col gap-1">
-				<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">VEP impact</span>
-				<details class="relative" data-explorer-filter-menu="vep-impact">
-					<summary class="flex h-9 min-w-32 cursor-pointer list-none items-center justify-between gap-2 rounded-md border bg-background px-2.5 text-sm hover:bg-muted">
-						<span class="truncate">{vepImpactSummary}</span>
-						<span class="text-[10px] text-muted-foreground">▾</span>
-					</summary>
-					<div class="absolute left-0 top-full z-[70] mt-2 w-52 rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
-						<div class="mb-2 flex items-center justify-between border-b pb-2">
-							<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Impact</span>
-							<div class="flex items-center gap-1 text-[11px]">
-								<button type="button" onclick={() => setAllVepImpacts(true)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">All</button>
-								<button type="button" onclick={() => setAllVepImpacts(false)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">None</button>
-							</div>
-						</div>
-						<div class="grid gap-1">
-							{#each VEP_IMPACT_OPTIONS as impact}
-								<label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-muted">
-									<input type="checkbox" checked={selectedVepImpacts[impact]} onchange={() => toggleVepImpact(impact)} class="accent-[var(--primary)]" />
-									<span class={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${impactClass(impact)}`}>{impact}</span>
-								</label>
-							{/each}
-						</div>
-					</div>
-				</details>
-			</div>
-			<div class="relative flex flex-col gap-1">
-				<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">VEP consequence</span>
-				<details class="relative" data-explorer-filter-menu="vep-consequence">
-					<summary class="flex h-9 min-w-40 cursor-pointer list-none items-center justify-between gap-2 rounded-md border bg-background px-2.5 text-sm hover:bg-muted">
-						<span class="truncate">{vepConsequenceSummary}</span>
-						<span class="text-[10px] text-muted-foreground">▾</span>
-					</summary>
-					<div class="absolute left-0 top-full z-[70] mt-2 max-h-80 w-72 overflow-y-auto rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
-						<div class="sticky top-0 mb-2 flex items-center justify-between border-b bg-popover pb-2">
-							<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Consequence</span>
-							<div class="flex items-center gap-1 text-[11px]">
-								<button type="button" onclick={() => setAllVepConsequences(true)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">All</button>
-								<button type="button" onclick={() => setAllVepConsequences(false)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">None</button>
-							</div>
-						</div>
-						<div class="grid gap-1">
-							{#each VEP_CONSEQUENCE_OPTIONS as consequence}
-								<label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-muted">
-									<input type="checkbox" checked={selectedVepConsequences[consequence]} onchange={() => toggleVepConsequence(consequence)} class="accent-[var(--primary)]" />
-									<span class="min-w-0 truncate">{consequence}</span>
-								</label>
-							{/each}
-						</div>
-					</div>
-				</details>
-			</div>
-			<label class="flex flex-col text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-				{tr($lang, 'perPage')}
-				<select value={pageSize} onchange={(e) => setPageSize(Number((e.target as HTMLSelectElement).value))} class="rounded-md border bg-background px-2 py-2 text-sm text-foreground">
-					{#each [25, 50, 100, 200, 500] as n}<option value={n}>{n}</option>{/each}
-				</select>
-			</label>
-			<button onclick={reset} class="h-9 rounded-md border px-3 text-sm hover:bg-muted">{tr($lang, 'reset')}</button>
-			<button onclick={go} class="h-10 cursor-pointer rounded-md bg-primary px-6 text-sm font-bold text-primary-foreground shadow-sm hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2">Go</button>
-		</div>
-	</div>
-
-	<!-- live curl for the current query -->
-	<div class="mb-3 flex items-center gap-2">
-		<code class="min-w-0 flex-1 truncate rounded-md border bg-muted/40 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground">{curlCmd}</code>
-		<button onclick={copyCurl} class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">{curlCopied ? tr($lang, 'copiedLabel') : tr($lang, 'copyCurl')}</button>
-		<a href={apiLink} class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">API ↗</a>
-	</div>
 
 	<div class="mb-3">{@render pager()}</div>
 
-	<div class="variant-results-shell relative min-h-32 rounded-md border" class:variant-results-loading={tableLoading}>
+	<div class="variant-results-shell relative min-h-32 rounded-md" class:variant-results-loading={tableLoading}>
 		<div class="overflow-x-auto">
 		<table class={`w-full text-sm ${vepExpand || vrsExpand ? 'table-fixed' : ''}`} aria-busy={tableLoading}>
 			{#if vepExpand || vrsExpand}
@@ -1106,23 +933,26 @@
 			</div>
 		{/if}
 	</div>
-
-	<div class="mt-3">{@render pager()}</div>
 </section>
 
 {#snippet pager()}
 	<div class="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
-		<span>{loading ? tr($lang, 'loadingLabel') : `${total.toLocaleString()} ${tr($lang, 'variantsLower')}`}</span>
+		<span>
+			{loading ? tr($lang, 'loadingLabel') : `${total.toLocaleString()} ${tr($lang, 'variantsLower')}`}
+			{#if !loading && paginationIsCapped}
+				<span class="ml-1 text-xs">first {reachableRows.toLocaleString()} browsable by page</span>
+			{/if}
+		</span>
 		<div class="flex flex-wrap items-center gap-1">
-			<button onclick={() => goPage(curPage - 1)} disabled={curPage <= 1} class="rounded-md border px-2.5 py-1 disabled:opacity-40 hover:bg-muted">{tr($lang, 'prev')}</button>
+			<button onclick={() => goPage(curPage - 1)} disabled={curPage <= 1} class="cursor-pointer rounded-md border px-2.5 py-1 disabled:cursor-default disabled:opacity-40 hover:bg-muted">{tr($lang, 'prev')}</button>
 			{#each pageItems as it}
 				{#if it === '…'}
 					<span class="px-1 text-muted-foreground">…</span>
 				{:else}
-					<button onclick={() => goPage(it)} class={`min-w-8 rounded-md border px-2 py-1 ${it === curPage ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}>{it}</button>
+					<button onclick={() => goPage(it)} class={`min-w-8 cursor-pointer rounded-md border px-2 py-1 ${it === curPage ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}>{it}</button>
 				{/if}
 			{/each}
-			<button onclick={() => goPage(curPage + 1)} disabled={curPage >= totalPages} class="rounded-md border px-2.5 py-1 disabled:opacity-40 hover:bg-muted">{tr($lang, 'next')}</button>
+			<button onclick={() => goPage(curPage + 1)} disabled={curPage >= reachablePages} class="cursor-pointer rounded-md border px-2.5 py-1 disabled:cursor-default disabled:opacity-40 hover:bg-muted">{tr($lang, 'next')}</button>
 		</div>
 	</div>
 {/snippet}

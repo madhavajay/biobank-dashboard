@@ -87,8 +87,6 @@
 				{/if}
 			</a>
 			<nav class="flex items-center gap-1 text-sm">
-				<a href={link('/')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/'}>{tr($lang, 'navHome')}</a>
-				<a href={link('/explore')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/explore'}>{tr($lang, 'navExplore')}</a>
 				<a href={link('/about')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/about'}>{tr($lang, 'navAbout')}</a>
 				{#if hasTeam}
 					<a href={link('/team')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/team'}>{tr($lang, 'navTeam')}</a>

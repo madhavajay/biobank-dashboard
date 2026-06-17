@@ -3,6 +3,8 @@ import { CODE_CHROM, REFGET_SQ } from './chroms';
 import { publicVariantId } from '$lib/variant-id';
 import { ALLELE_COUNT_REPORTING_THRESHOLD, alleleFrequencyUpperBound, isAlleleCountMasked, isGenotypeMasked } from '$lib/privacy';
 
+type QueryDb = D1Database | D1DatabaseSession;
+
 export interface FreqCell {
 	cohortId: number;
 	cohortLabel: string;
@@ -50,13 +52,13 @@ export interface GeneHit {
 	strand: string;
 }
 
-async function biobankIdForSlug(db: D1Database, slug: string | null): Promise<number | null> {
+async function biobankIdForSlug(db: QueryDb, slug: string | null): Promise<number | null> {
 	if (!slug) return null;
 	const r = await db.prepare('SELECT id FROM biobanks WHERE slug=?').bind(slug).first<{ id: number }>();
 	return r?.id ?? null;
 }
 
-async function biobankIdsForSlugs(db: D1Database, slugs: string[]): Promise<number[]> {
+async function biobankIdsForSlugs(db: QueryDb, slugs: string[]): Promise<number[]> {
 	if (!slugs.length) return [];
 	const ph = slugs.map(() => '?').join(',');
 	const r = await db.prepare(`SELECT id FROM biobanks WHERE slug IN (${ph})`).bind(...slugs).all<{ id: number }>();
@@ -154,7 +156,7 @@ function looksLikeGeneSymbol(raw: string): boolean {
 	return /^[A-Za-z][A-Za-z0-9._-]{1,31}$/.test(raw.trim());
 }
 
-async function genesForSymbols(db: D1Database, symbols: string[]): Promise<{ chrom: number; start: number; end: number }[]> {
+async function genesForSymbols(db: QueryDb, symbols: string[]): Promise<{ chrom: number; start: number; end: number }[]> {
 	const norms = [...new Set(symbols.map(normGeneSymbol).filter(Boolean))];
 	if (!norms.length) return [];
 	const ph = norms.map(() => '?').join(',');
@@ -169,7 +171,7 @@ async function genesForSymbols(db: D1Database, symbols: string[]): Promise<{ chr
 	}
 }
 
-export async function attachGenesToRows<T extends { id: number }>(db: D1Database, rows: T[]): Promise<(T & { genes: GeneHit[] })[]> {
+export async function attachGenesToRows<T extends { id: number }>(db: QueryDb, rows: T[]): Promise<(T & { genes: GeneHit[] })[]> {
 	const ids = rows.map((r) => r.id);
 	if (!ids.length) return rows.map((r) => ({ ...r, genes: [] }));
 	const placeholders = ids.map(() => '?').join(',');
@@ -202,7 +204,7 @@ export async function attachGenesToRows<T extends { id: number }>(db: D1Database
 	}
 }
 
-async function conditionForQueryToken(db: D1Database, raw: string): Promise<{ sql: string; args: unknown[] } | null> {
+async function conditionForQueryToken(db: QueryDb, raw: string): Promise<{ sql: string; args: unknown[] } | null> {
 	const parsed = parseTerm(raw);
 	if (parsed) return parsed;
 	if (!looksLikeGeneSymbol(raw)) return null;
@@ -218,7 +220,7 @@ async function conditionForQueryToken(db: D1Database, raw: string): Promise<{ sq
 	};
 }
 
-async function parseQueryConditionWithGenes(db: D1Database, q: string): Promise<{ sql: string; args: unknown[] } | null> {
+async function parseQueryConditionWithGenes(db: QueryDb, q: string): Promise<{ sql: string; args: unknown[] } | null> {
 	const groups = q
 		.trim()
 		.replace(/\s*-\s*/g, '-')
@@ -317,7 +319,7 @@ export function sanitizeVariantRowsForPublic<T extends { frequencies?: any[] }>(
 }
 
 export async function searchVariants(
-	db: D1Database,
+	db: QueryDb,
 	scopeSlug: string | null,
 	params: SearchParams
 ): Promise<{ rows: VariantRow[]; total: number }> {
@@ -332,17 +334,6 @@ export async function searchVariants(
 	const match = params.match === 'all' ? 'all' : 'any';
 	const cohortIds = params.cohorts ?? [];
 	const cohortMatch = params.cohortMatch === 'all' ? 'all' : 'any';
-	const hasVariantSideFilter = Boolean(
-		params.q?.trim() ||
-			params.gene?.trim() ||
-			params.chrom ||
-			params.posMin != null ||
-			params.posMax != null ||
-			params.rsid != null ||
-			params.vepImpacts?.length ||
-			params.vepConsequences?.length
-	);
-
 	const where: string[] = [];
 	const args: unknown[] = [];
 	// free-text query — supports compound `a|b|c` (OR of rsID / VRS / locus / range)
@@ -433,61 +424,65 @@ export async function searchVariants(
 	}
 	const rangeSql = range.length ? ' AND ' + range.join(' AND ') : '';
 	const baseRangeSql = baseRange.length ? ' AND ' + baseRange.join(' AND ') : '';
+	const hasFrequencySelector = biobankIds.length > 0 || cohortIds.length > 0 || hasFrequencyRange;
 
-	function frequencyTotalSql(): { sql: string; args: unknown[] } | null {
-		if (hasVariantSideFilter) return null;
+	function frequencyCandidateSql(): { cte: string; args: unknown[] } | null {
+		if (!hasFrequencySelector) return null;
 		const sets: { sql: string; args: unknown[] }[] = [];
-		const baseWhere = [...baseRange];
-		const baseArgs = [...baseRangeArgs];
-		if (biobankIds.length) {
-			baseWhere.push(`f.biobank_id IN (${biobankIds.map(() => '?').join(',')})`);
-			baseArgs.push(...biobankIds);
-		}
-		if (cohortIds.length && cohortMatch !== 'all') {
-			baseWhere.push(`f.cohort_id IN (${cohortIds.map(() => '?').join(',')})`);
-			baseArgs.push(...cohortIds);
-		}
-		const having = biobankIds.length && match === 'all' ? ' HAVING COUNT(DISTINCT f.biobank_id)=?' : '';
-		const havingArgs = having ? [biobankIds.length] : [];
-		const needsBaseSet = biobankIds.length > 0 || cohortMatch !== 'all' || cohortIds.length === 0;
-		if (needsBaseSet) {
+
+		const addSet = (conditions: string[], setArgs: unknown[]) => {
 			sets.push({
-				sql: `SELECT f.variant_id FROM frequencies f WHERE ${baseWhere.join(' AND ')} GROUP BY f.variant_id${having}`,
-				args: [...baseArgs, ...havingArgs]
+				sql: `SELECT DISTINCT f.variant_id FROM frequencies f WHERE ${conditions.join(' AND ')}`,
+				args: setArgs
 			});
+		};
+
+		const needsBaseSet = biobankIds.length === 0 || match !== 'all';
+		if (needsBaseSet) {
+			const baseWhere = [...range];
+			const baseArgs = [...rangeArgs];
+			if (biobankIds.length) {
+				baseWhere.push(`f.biobank_id IN (${biobankIds.map(() => '?').join(',')})`);
+				baseArgs.push(...biobankIds);
+			}
+			addSet(baseWhere, baseArgs);
+		}
+		if (biobankIds.length && match === 'all') {
+			for (const biobankId of biobankIds) {
+				addSet([`f.biobank_id=?`, ...range], [biobankId, ...rangeArgs]);
+			}
 		}
 		if (cohortIds.length && cohortMatch === 'all') {
 			for (const cohortId of cohortIds) {
-				sets.push({
-					sql: `SELECT f.variant_id FROM frequencies f WHERE f.cohort_id=?${baseRangeSql}`,
-					args: [cohortId, ...baseRangeArgs]
-				});
+				addSet([`f.cohort_id=?`, ...baseRange], [cohortId, ...baseRangeArgs]);
 			}
 		}
+		if (!sets.length) return null;
 		return {
-			sql: `SELECT COUNT(*) n FROM (${sets.map((set) => set.sql).join(' INTERSECT ')})`,
+			cte: `candidate AS (${sets.map((set) => set.sql).join(' INTERSECT ')})`,
 			args: sets.flatMap((set) => set.args)
 		};
 	}
 
-	if (biobankIds.length === 0) {
+	const candidate = frequencyCandidateSql();
+	if (!candidate && biobankIds.length === 0) {
 		if (range.length) {
 			where.push(`EXISTS (SELECT 1 FROM frequencies f WHERE f.variant_id=v.id${rangeSql})`);
 			args.push(...rangeArgs);
 		}
-	} else if (match === 'all') {
+	} else if (!candidate && match === 'all') {
 		// variant must have a qualifying frequency in EVERY selected biobank
 		for (const bid of biobankIds) {
 			where.push(`EXISTS (SELECT 1 FROM frequencies f WHERE f.variant_id=v.id AND f.biobank_id=?${rangeSql})`);
 			args.push(bid, ...rangeArgs);
 		}
-	} else {
+	} else if (!candidate) {
 		// ANY: qualifying frequency in at least one selected biobank
 		const ph = biobankIds.map(() => '?').join(',');
 		where.push(`EXISTS (SELECT 1 FROM frequencies f WHERE f.variant_id=v.id AND f.biobank_id IN (${ph})${rangeSql})`);
 		args.push(...biobankIds, ...rangeArgs);
 	}
-	if (cohortIds.length && cohortMatch === 'all') {
+	if (!candidate && cohortIds.length && cohortMatch === 'all') {
 		for (const cid of cohortIds) {
 			where.push(`EXISTS (SELECT 1 FROM frequencies f WHERE f.variant_id=v.id AND f.cohort_id=?${baseRangeSql})`);
 			args.push(cid, ...baseRangeArgs);
@@ -515,9 +510,11 @@ export async function searchVariants(
 
 	let total = params.totalOverride ?? 0;
 	if (!params.skipTotal && params.totalOverride == null) {
-		const frequencyTotal = frequencyTotalSql();
-		const totalRow = frequencyTotal
-			? await db.prepare(frequencyTotal.sql).bind(...frequencyTotal.args).first<{ n: number }>()
+		const totalRow = candidate
+			? await db
+					.prepare(`WITH ${candidate.cte} SELECT COUNT(*) n FROM candidate c JOIN variants v ON v.id=c.variant_id ${whereSql}`)
+					.bind(...candidate.args, ...args)
+					.first<{ n: number }>()
 			: await db
 					.prepare(`SELECT COUNT(*) n FROM variants v ${whereSql}`)
 					.bind(...args)
@@ -527,9 +524,29 @@ export async function searchVariants(
 
 	const vrows =
 		params.sort === 'gene'
-			? await db
-					.prepare(
-						`WITH gene_hits AS (
+			? candidate
+				? await db
+						.prepare(
+							`WITH ${candidate.cte}, gene_hits AS (
+							SELECT v.id, MIN(g.symbol_norm) gene_sort
+							FROM candidate c
+							JOIN variants v ON v.id=c.variant_id
+							JOIN genes g ON g.chrom=v.chrom AND v.pos BETWEEN g.start AND g.end
+							${whereSql}
+							GROUP BY v.id
+							ORDER BY gene_sort ${dir}, v.chrom, v.pos
+							LIMIT ? OFFSET ?
+						)
+						SELECT v.*
+						FROM variants v
+						JOIN gene_hits h ON h.id=v.id
+						ORDER BY h.gene_sort ${dir}, v.chrom, v.pos`
+						)
+						.bind(...candidate.args, ...args, limit, offset)
+						.all<any>()
+				: await db
+						.prepare(
+							`WITH gene_hits AS (
 							SELECT v.id, MIN(g.symbol_norm) gene_sort
 							FROM genes g
 							JOIN variants v INDEXED BY variants_chrom_pos_idx ON v.chrom=g.chrom AND v.pos BETWEEN g.start AND g.end
@@ -542,9 +559,14 @@ export async function searchVariants(
 						FROM variants v
 						JOIN gene_hits h ON h.id=v.id
 						ORDER BY h.gene_sort ${dir}, v.chrom, v.pos`
-					)
-					.bind(...args, limit, offset)
-					.all<any>()
+						)
+						.bind(...args, limit, offset)
+						.all<any>()
+			: candidate
+				? await db
+						.prepare(`WITH ${candidate.cte} SELECT v.* FROM candidate c JOIN variants v ON v.id=c.variant_id ${whereSql} ${orderSql} LIMIT ? OFFSET ?`)
+						.bind(...candidate.args, ...args, ...orderArgs, limit, offset)
+						.all<any>()
 			: await db
 					.prepare(`SELECT * FROM variants v ${whereSql} ${orderSql} LIMIT ? OFFSET ?`)
 					.bind(...args, ...orderArgs, limit, offset)
@@ -618,7 +640,7 @@ export async function searchVariants(
 	return { rows, total };
 }
 
-export async function getVariant(db: D1Database, id: number): Promise<VariantRow | null> {
+export async function getVariant(db: QueryDb, id: number): Promise<VariantRow | null> {
 	const v = await db.prepare('SELECT * FROM variants WHERE id=?').bind(id).first<any>();
 	if (!v) return null;
 	const frows = await db
@@ -669,7 +691,7 @@ function scopedVariantExistsSql(scopeSlug: string | null): { sql: string; args: 
 	};
 }
 
-async function getVariantBySql(db: D1Database, whereSql: string, args: unknown[], scopeSlug: string | null) {
+async function getVariantBySql(db: QueryDb, whereSql: string, args: unknown[], scopeSlug: string | null) {
 	const scoped = scopedVariantExistsSql(scopeSlug);
 	const row = await db
 		.prepare(`SELECT v.id FROM variants v WHERE ${whereSql} ${scoped.sql} ORDER BY v.chrom, v.pos, v.id LIMIT 1`)
@@ -682,7 +704,7 @@ export function canonicalVariantId(v: VariantRow): string {
 	return publicVariantId(v);
 }
 
-export async function resolveVariantIdentifier(db: D1Database, raw: string, scopeSlug: string | null): Promise<VariantRow | null> {
+export async function resolveVariantIdentifier(db: QueryDb, raw: string, scopeSlug: string | null): Promise<VariantRow | null> {
 	const token = decodeURIComponent(raw).trim();
 	if (!token) return null;
 
@@ -738,7 +760,7 @@ export interface ExploreFilterOptions {
 	populations: { cohortId: number; name: string; biobankSlug: string; biobankName: string }[];
 }
 
-export async function exploreFilterOptions(db: D1Database, scopeSlug: string | null): Promise<ExploreFilterOptions> {
+export async function exploreFilterOptions(db: QueryDb, scopeSlug: string | null): Promise<ExploreFilterOptions> {
 	const scopeId = await biobankIdForSlug(db, scopeSlug);
 	if (scopeSlug && !scopeId) return { options: [], populations: [] };
 	const bindArgs = scopeId ? [scopeId] : [];
@@ -770,7 +792,7 @@ export async function exploreFilterOptions(db: D1Database, scopeSlug: string | n
 	};
 }
 
-export async function biobanksOverview(db: D1Database, scopeSlug: string | null): Promise<BiobankOverview[]> {
+export async function biobanksOverview(db: QueryDb, scopeSlug: string | null): Promise<BiobankOverview[]> {
 	const scopeId = await biobankIdForSlug(db, scopeSlug);
 	if (scopeSlug && !scopeId) return [];
 	const bWhere = scopeId ? 'WHERE id=?' : '';
@@ -861,7 +883,7 @@ export interface TenantStats {
 	rare: number; // AF < 0.01
 }
 
-export async function tenantStats(db: D1Database, scopeSlug: string | null): Promise<TenantStats> {
+export async function tenantStats(db: QueryDb, scopeSlug: string | null): Promise<TenantStats> {
 	const id = await biobankIdForSlug(db, scopeSlug);
 	if (scopeSlug && !id) return { variants: 0, common: 0, lowFreq: 0, rare: 0 };
 	const where = id ? 'WHERE biobank_id=?' : '';
@@ -883,7 +905,7 @@ export async function tenantStats(db: D1Database, scopeSlug: string | null): Pro
 // Precomputed stats cache (seeder writes `home:<scope>` / `explore:<scope>`).
 // Resilient: if the table is missing or unseeded, return null so callers fall
 // back to live computation instead of 500-ing.
-export async function getStats(db: D1Database, key: string): Promise<any | null> {
+export async function getStats(db: QueryDb, key: string): Promise<any | null> {
 	try {
 		const r = await db.prepare('SELECT value FROM stats WHERE key=?').bind(key).first<{ value: string }>();
 		if (!r) return null;
@@ -910,7 +932,7 @@ function safeParse(s: string): Record<string, any> {
 	}
 }
 
-export async function getDatasets(db: D1Database, scopeSlug: string | null): Promise<DatasetRow[]> {
+export async function getDatasets(db: QueryDb, scopeSlug: string | null): Promise<DatasetRow[]> {
 	const scopeId = await biobankIdForSlug(db, scopeSlug);
 	if (scopeSlug && !scopeId) return [];
 	const where = scopeId ? 'WHERE biobank_id=?' : '';
@@ -922,7 +944,7 @@ export async function getDatasets(db: D1Database, scopeSlug: string | null): Pro
 }
 
 // The browser shows het/hom_alt/hom_ref unless every dataset in scope opts out.
-export async function showGenotypeCounts(db: D1Database, scopeSlug: string | null): Promise<boolean> {
+export async function showGenotypeCounts(db: QueryDb, scopeSlug: string | null): Promise<boolean> {
 	const ds = await getDatasets(db, scopeSlug);
 	if (!ds.length) return true;
 	return ds.some((d) => d.metadata.showGenotypeCounts !== false);

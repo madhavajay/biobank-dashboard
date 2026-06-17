@@ -5,7 +5,7 @@ import type { PageServerLoad } from './$types';
 export const load: PageServerLoad = async ({ locals, platform }) => {
 	if (locals.tenant.slug === 'biovault') return {};
 
-	const db = platform?.env?.DB;
+	const db = locals.db;
 	if (!db) throw error(500, 'D1 binding unavailable — run with wrangler/vite dev');
 
 	const scope = locals.tenant.scope;
