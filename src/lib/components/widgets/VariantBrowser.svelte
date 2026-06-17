@@ -1,11 +1,40 @@
+<script module lang="ts">
+	const VARIANT_RESPONSE_CACHE_LIMIT = 24
+	const variantResponseCache = new Map<
+		string,
+		{
+			rows: unknown[]
+			total: number
+			alleleCountReportingThreshold: number
+		}
+	>()
+
+	function rememberVariantResponse(
+		key: string,
+		value: {
+			rows: unknown[]
+			total: number
+			alleleCountReportingThreshold: number
+		}
+	) {
+		if (variantResponseCache.has(key)) variantResponseCache.delete(key)
+		variantResponseCache.set(key, value)
+		while (variantResponseCache.size > VARIANT_RESPONSE_CACHE_LIMIT) {
+			const oldest = variantResponseCache.keys().next().value
+			if (!oldest) break
+			variantResponseCache.delete(oldest)
+		}
+	}
+</script>
+
 <script lang="ts">
-	import { replaceState } from '$app/navigation';
-	import { page } from '$app/state';
-	import { onMount } from 'svelte';
-	import SearchIcon from '@lucide/svelte/icons/search';
-	import { lang, tr } from '$lib/i18n';
-	import { DEFAULTS, type ExplorerDisplay } from '$lib/explorer';
-	import { publicVariantPathToken } from '$lib/variant-id';
+	import { replaceState } from '$app/navigation'
+	import { page } from '$app/state'
+	import SearchIcon from '@lucide/svelte/icons/search'
+	import { lang, tr } from '$lib/i18n'
+	import { DEFAULTS, type ExplorerDisplay } from '$lib/explorer'
+	import { publicVariantId } from '$lib/variant-id'
+	import type { Snippet } from 'svelte'
 	let {
 		forceTenant = '',
 		title = '',
@@ -14,45 +43,92 @@
 		options = [],
 		examples = ['BRCA1', 'rs2465136', 'p.Arg124His', '1:1000000-1100000', 'chr7'],
 		initialQuery = '',
+		initialParams = '',
+		syncFromParentParams = false,
+		syncToUrl = true,
+		showApiBar = true,
+		showTitle = true,
+		showContextHeader = false,
+		embedded = false,
+		onParamsChange = undefined,
+		onVariantNavigate = undefined,
+		onShareQuery = undefined,
+		shareQueryCopied = false,
+		shareQueryLabel = 'Share this query!',
+		shareQueryCopiedLabel = 'Copied!',
+		filtersOpen = false,
+		filterCount = 0,
+		filterLabel = 'Filters',
+		onFilterToggle = undefined,
+		filterPanel = undefined,
 		showGenotypeCounts = true,
 		populations = [],
-		display = undefined
+		display = undefined,
 	}: {
-		forceTenant?: string;
-		title?: string;
-		subtitle?: string;
-		scoped?: boolean;
-		options?: { slug: string; name: string }[];
-		examples?: string[];
-		initialQuery?: string;
-		showGenotypeCounts?: boolean;
-		populations?: { cohortId: number; name: string; biobankSlug?: string; biobankName?: string }[];
-		display?: ExplorerDisplay;
-	} = $props();
+		forceTenant?: string
+		title?: string
+		subtitle?: string
+		scoped?: boolean
+		options?: { slug: string; name: string }[]
+		examples?: string[]
+		initialQuery?: string
+		initialParams?: string
+		syncFromParentParams?: boolean
+		syncToUrl?: boolean
+		showApiBar?: boolean
+		showTitle?: boolean
+		showContextHeader?: boolean
+		embedded?: boolean
+		onParamsChange?: (params: string) => void
+		onVariantNavigate?: (href: string) => void
+		onShareQuery?: () => void
+		shareQueryCopied?: boolean
+		shareQueryLabel?: string
+		shareQueryCopiedLabel?: string
+		filtersOpen?: boolean
+		filterCount?: number
+		filterLabel?: string
+		onFilterToggle?: () => void
+		filterPanel?: Snippet
+		showGenotypeCounts?: boolean
+		populations?: { cohortId: number; name: string; biobankSlug?: string; biobankName?: string }[]
+		display?: ExplorerDisplay
+	} = $props()
 
 	// resolved per-tenant column visibility (falls back to auto behaviour when no config passed)
-	const cfg = $derived(display ?? DEFAULTS);
-	const showGeno = $derived(display ? cfg.genotypes : showGenotypeCounts);
-	const showGene = $derived(cfg.gene);
-	const showVep = $derived(cfg.vep);
-	const showVrs = $derived(false);
-	const barMax = $derived(cfg.barMax);
-	const acAnSplit = $derived(cfg.acAnSplit);
-	const vrsExpand = $derived(showVrs && cfg.vrsExpand);
-	const vepExpand = $derived(showVep);
-	const showGnomad = $derived(cfg.gnomad);
-	const variantDetailIcon = $derived(cfg.variantDetailIcon);
-	const geneWidthOverride = $derived(cfg.geneColWidth);
-	const frequencyWidthOverride = $derived(cfg.frequencyColWidth);
-	const variantWidthOverride = $derived(cfg.variantColWidth);
-	const gnomadUrl = (r: VRow) => `https://gnomad.broadinstitute.org/variant/${r.chromName}-${r.pos}-${r.ref}-${r.alt}?dataset=gnomad_r4`;
-	const variantHref = (r: VRow) => `/explore/variant/${publicVariantPathToken(r)}${forceTenant ? `?tenant=${forceTenant}` : ''}`;
+	const cfg = $derived(display ?? DEFAULTS)
+	const showGeno = $derived(display ? cfg.genotypes : showGenotypeCounts)
+	const showGene = $derived(cfg.gene)
+	const showVep = $derived(cfg.vep)
+	const showVrs = $derived(false)
+	const barMax = $derived(cfg.barMax)
+	const acAnSplit = $derived(cfg.acAnSplit)
+	const vrsExpand = $derived(showVrs && cfg.vrsExpand)
+	const vepExpand = $derived(showVep)
+	const useFixedTable = $derived((vepExpand || vrsExpand) && !embedded)
+	const showGnomad = $derived(cfg.gnomad)
+	const variantDetailIcon = $derived(cfg.variantDetailIcon)
+	const geneWidthOverride = $derived(cfg.geneColWidth)
+	const frequencyWidthOverride = $derived(cfg.frequencyColWidth)
+	const variantWidthOverride = $derived(cfg.variantColWidth)
+	const gnomadUrl = (r: VRow) =>
+		`https://gnomad.broadinstitute.org/variant/${r.chromName}-${r.pos}-${r.ref}-${r.alt}?dataset=gnomad_r4`
+	const variantHref = (r: VRow) => {
+		const tenant = forceTenant || page.url.searchParams.get('tenant') || ''
+		const base = `/explore/variant/${publicVariantId(r)}`
+		return tenant ? `${base}?tenant=${encodeURIComponent(tenant)}` : base
+	}
+	function openVariantDetail(href: string, event: MouseEvent) {
+		if (!onVariantNavigate) return
+		event.preventDefault()
+		onVariantNavigate(href)
+	}
 	const explorerFilterHref = (key: 'vepConsequence' | 'vepImpact', value: string) => {
-		const sp = new URLSearchParams({ [key]: value });
-		if (forceTenant) sp.set('tenant', forceTenant);
-		return `/explore?${sp.toString()}`;
-	};
-	const VEP_IMPACT_OPTIONS = ['HIGH', 'MODERATE', 'LOW', 'MODIFIER'];
+		const sp = new URLSearchParams({ [key]: value })
+		if (forceTenant) sp.set('tenant', forceTenant)
+		return `/?${sp.toString()}`
+	}
+	const VEP_IMPACT_OPTIONS = ['HIGH', 'MODERATE', 'LOW', 'MODIFIER']
 	const VEP_CONSEQUENCE_OPTIONS = [
 		'transcript ablation',
 		'splice acceptor',
@@ -80,258 +156,337 @@
 		'non coding transcript',
 		'upstream gene',
 		'downstream gene',
-		'intergenic'
-	];
+		'intergenic',
+	]
 
 	// initial state read from the page URL (so a pasted/bookmarked link reproduces the view)
-	const sp0 = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
-	const sp0Cohorts = (sp0.get('cohorts') ?? '').split(',').filter(Boolean).map(Number);
-	const sp0HasVepImpact = sp0.has('vepImpact');
-	const sp0HasVepConsequence = sp0.has('vepConsequence');
-	const sp0VepImpacts = (sp0.get('vepImpact') ?? '').split(',').filter(Boolean);
-	const sp0VepConsequences = (sp0.get('vepConsequence') ?? '').split(',').filter(Boolean);
+	function initialSearchParams() {
+		return initialParams
+			? new URLSearchParams(initialParams)
+			: typeof location !== 'undefined'
+				? new URLSearchParams(location.search)
+				: new URLSearchParams()
+	}
+	const sp0 = initialSearchParams()
+	const sp0Cohorts = (sp0.get('cohorts') ?? '').split(',').filter(Boolean).map(Number)
+	const sp0HasVepImpact = sp0.has('vepImpact')
+	const sp0HasVepConsequence = sp0.has('vepConsequence')
+	const sp0VepImpacts = (sp0.get('vepImpact') ?? '').split(',').filter(Boolean)
+	const sp0VepConsequences = (sp0.get('vepConsequence') ?? '').split(',').filter(Boolean)
 
 	// biobank filter (global view only): which biobanks + ANY/ALL match
-	const sp0Banks = (sp0.get('biobanks') ?? '').split(',').filter(Boolean);
-	const initialSelected = () => Object.fromEntries(options.map((o) => [o.slug, sp0Banks.length ? sp0Banks.includes(o.slug) : true]));
-	let selected = $state<Record<string, boolean>>(initialSelected());
-	let matchMode = $state<'any' | 'all'>(sp0.get('match') === 'all' ? 'all' : 'any');
-	const selectedSlugs = $derived(options.filter((o) => selected[o.slug]).map((o) => o.slug));
-	const bankFilterSummary = $derived(selectedSlugs.length === options.length ? 'All' : `${selectedSlugs.length}/${options.length}`);
-	const showFilter = $derived(!scoped && options.length > 1);
+	const sp0Banks = (sp0.get('biobanks') ?? '').split(',').filter(Boolean)
+	const initialSelected = () =>
+		Object.fromEntries(
+			options.map((o) => [o.slug, sp0Banks.length ? sp0Banks.includes(o.slug) : true])
+		)
+	let selected = $state<Record<string, boolean>>(initialSelected())
+	let matchMode = $state<'any' | 'all'>(sp0.get('match') === 'all' ? 'all' : 'any')
+	const selectedSlugs = $derived(options.filter((o) => selected[o.slug]).map((o) => o.slug))
+	const bankFilterSummary = $derived(
+		selectedSlugs.length === options.length ? 'All' : `${selectedSlugs.length}/${options.length}`
+	)
+	const showFilter = $derived(!scoped && options.length > 1)
 
 	function toggleBank(slug: string) {
-		selected = { ...selected, [slug]: !selected[slug] };
-		offset = 0;
+		selected = { ...selected, [slug]: !selected[slug] }
+		offset = 0
 	}
 	function setAllBanks(enabled: boolean) {
-		selected = Object.fromEntries(options.map((o) => [o.slug, enabled]));
-		offset = 0;
+		selected = Object.fromEntries(options.map((o) => [o.slug, enabled]))
+		offset = 0
 	}
 	function setMatch(m: 'any' | 'all') {
-		matchMode = m;
-		offset = 0;
+		matchMode = m
+		offset = 0
 	}
 
 	// population (cohort) checkboxes — carigenetics-style multi-population tenants
 	let selectedPops = $state<Record<number, boolean>>(
-		Object.fromEntries(populations.map((p) => [p.cohortId, sp0Cohorts.length ? sp0Cohorts.includes(p.cohortId) : true]))
-	);
-	const showPopFilter = $derived(populations.length > 1);
-	let populationMatchMode = $state<'any' | 'all'>(sp0.get('cohortMatch') === 'all' ? 'all' : 'any');
+		Object.fromEntries(
+			populations.map((p) => [
+				p.cohortId,
+				sp0Cohorts.length ? sp0Cohorts.includes(p.cohortId) : true,
+			])
+		)
+	)
+	const showPopFilter = $derived(populations.length > 1)
+	let populationMatchMode = $state<'any' | 'all'>(sp0.get('cohortMatch') === 'all' ? 'all' : 'any')
 	const activePopulations = $derived(
 		populations.filter((p) => !showFilter || !p.biobankSlug || selected[p.biobankSlug] !== false)
-	);
-	const selectedFilterCohortIds = $derived(activePopulations.filter((p) => selectedPops[p.cohortId]).map((p) => p.cohortId));
-	const selectedPopCount = $derived(selectedFilterCohortIds.length);
-	const populationFilterSummary = $derived(selectedPopCount === activePopulations.length ? 'All' : `${selectedPopCount}/${activePopulations.length}`);
+	)
+	const selectedFilterCohortIds = $derived(
+		activePopulations.filter((p) => selectedPops[p.cohortId]).map((p) => p.cohortId)
+	)
+	const selectedPopCount = $derived(selectedFilterCohortIds.length)
+	const populationFilterSummary = $derived(
+		selectedPopCount === activePopulations.length
+			? 'All'
+			: `${selectedPopCount}/${activePopulations.length}`
+	)
 	const populationsByBiobank = $derived.by(() => {
-		const groups = new Map<string, { slug: string; name: string; pops: typeof populations }>();
+		const groups = new Map<string, { slug: string; name: string; pops: typeof populations }>()
 		for (const pop of populations) {
-			const slug = pop.biobankSlug ?? 'population';
-			const name = pop.biobankName ?? tr($lang, 'populations');
-			const group = groups.get(slug) ?? { slug, name, pops: [] };
-			group.pops.push(pop);
-			groups.set(slug, group);
+			const slug = pop.biobankSlug ?? 'population'
+			const name = pop.biobankName ?? tr($lang, 'populations')
+			const group = groups.get(slug) ?? { slug, name, pops: [] }
+			group.pops.push(pop)
+			groups.set(slug, group)
 		}
-		return [...groups.values()];
-	});
+		return [...groups.values()]
+	})
 	function togglePop(id: number) {
-		selectedPops = { ...selectedPops, [id]: !selectedPops[id] };
-		offset = 0;
+		selectedPops = { ...selectedPops, [id]: !selectedPops[id] }
+		offset = 0
 	}
 	function setAllPops(enabled: boolean) {
-		selectedPops = Object.fromEntries(populations.map((p) => [p.cohortId, enabled]));
-		offset = 0;
+		selectedPops = Object.fromEntries(populations.map((p) => [p.cohortId, enabled]))
+		offset = 0
 	}
 	function setBankPops(slug: string, enabled: boolean) {
 		selectedPops = {
 			...selectedPops,
-			...Object.fromEntries(populations.filter((p) => (p.biobankSlug ?? 'population') === slug).map((p) => [p.cohortId, enabled]))
-		};
-		offset = 0;
+			...Object.fromEntries(
+				populations
+					.filter((p) => (p.biobankSlug ?? 'population') === slug)
+					.map((p) => [p.cohortId, enabled])
+			),
+		}
+		offset = 0
 	}
 	function setPopulationMatch(m: 'any' | 'all') {
-		populationMatchMode = m;
-		offset = 0;
+		populationMatchMode = m
+		offset = 0
 	}
 
-	let selectedVepImpacts = $state<Record<string, boolean>>(Object.fromEntries(VEP_IMPACT_OPTIONS.map((v) => [v, sp0HasVepImpact ? sp0VepImpacts.includes(v) : true])));
-	let selectedVepConsequences = $state<Record<string, boolean>>(Object.fromEntries(VEP_CONSEQUENCE_OPTIONS.map((v) => [v, sp0HasVepConsequence ? sp0VepConsequences.includes(v) : true])));
-	const selectedVepImpactValues = $derived(VEP_IMPACT_OPTIONS.filter((v) => selectedVepImpacts[v]));
-	const selectedVepConsequenceValues = $derived(VEP_CONSEQUENCE_OPTIONS.filter((v) => selectedVepConsequences[v]));
-	const vepImpactSummary = $derived(selectedVepImpactValues.length === VEP_IMPACT_OPTIONS.length ? 'All' : selectedVepImpactValues.length ? selectedVepImpactValues.join(', ') : 'None');
-	const vepConsequenceSummary = $derived(selectedVepConsequenceValues.length === VEP_CONSEQUENCE_OPTIONS.length ? 'All' : selectedVepConsequenceValues.length ? `${selectedVepConsequenceValues.length} selected` : 'None');
+	let selectedVepImpacts = $state<Record<string, boolean>>(
+		Object.fromEntries(
+			VEP_IMPACT_OPTIONS.map((v) => [v, sp0HasVepImpact ? sp0VepImpacts.includes(v) : true])
+		)
+	)
+	let selectedVepConsequences = $state<Record<string, boolean>>(
+		Object.fromEntries(
+			VEP_CONSEQUENCE_OPTIONS.map((v) => [
+				v,
+				sp0HasVepConsequence ? sp0VepConsequences.includes(v) : true,
+			])
+		)
+	)
+	const selectedVepImpactValues = $derived(VEP_IMPACT_OPTIONS.filter((v) => selectedVepImpacts[v]))
+	const selectedVepConsequenceValues = $derived(
+		VEP_CONSEQUENCE_OPTIONS.filter((v) => selectedVepConsequences[v])
+	)
+	const vepImpactSummary = $derived(
+		selectedVepImpactValues.length === VEP_IMPACT_OPTIONS.length
+			? 'All'
+			: selectedVepImpactValues.length
+				? selectedVepImpactValues.join(', ')
+				: 'None'
+	)
+	const vepConsequenceSummary = $derived(
+		selectedVepConsequenceValues.length === VEP_CONSEQUENCE_OPTIONS.length
+			? 'All'
+			: selectedVepConsequenceValues.length
+				? `${selectedVepConsequenceValues.length} selected`
+				: 'None'
+	)
 	function toggleVepImpact(value: string) {
-		selectedVepImpacts = { ...selectedVepImpacts, [value]: !selectedVepImpacts[value] };
-		offset = 0;
+		selectedVepImpacts = { ...selectedVepImpacts, [value]: !selectedVepImpacts[value] }
+		offset = 0
 	}
 	function setAllVepImpacts(enabled: boolean) {
-		selectedVepImpacts = Object.fromEntries(VEP_IMPACT_OPTIONS.map((v) => [v, enabled]));
-		offset = 0;
+		selectedVepImpacts = Object.fromEntries(VEP_IMPACT_OPTIONS.map((v) => [v, enabled]))
+		offset = 0
 	}
 	function toggleVepConsequence(value: string) {
-		selectedVepConsequences = { ...selectedVepConsequences, [value]: !selectedVepConsequences[value] };
-		offset = 0;
+		selectedVepConsequences = {
+			...selectedVepConsequences,
+			[value]: !selectedVepConsequences[value],
+		}
+		offset = 0
 	}
 	function setAllVepConsequences(enabled: boolean) {
-		selectedVepConsequences = Object.fromEntries(VEP_CONSEQUENCE_OPTIONS.map((v) => [v, enabled]));
-		offset = 0;
+		selectedVepConsequences = Object.fromEntries(VEP_CONSEQUENCE_OPTIONS.map((v) => [v, enabled]))
+		offset = 0
 	}
 
 	interface FreqCell {
-		cohortId: number;
-		population: string;
-		biobankSlug: string;
-		af: number | null;
-		ac: number | null;
-		an: number;
-		acMasked: boolean;
-		acUpperBound: number | null;
-		afUpperBound: number | null;
-		genotypeMasked: boolean;
-		nHetero: number | null;
-		nHomo: number | null;
-		nHomoRef: number | null;
+		cohortId: number
+		population: string
+		biobankSlug: string
+		af: number | null
+		ac: number | null
+		an: number
+		acMasked: boolean
+		acUpperBound: number | null
+		afUpperBound: number | null
+		genotypeMasked: boolean
+		nHetero: number | null
+		nHomo: number | null
+		nHomoRef: number | null
 	}
 	interface GeneHit {
-		ensemblId: string;
-		symbol: string;
-		geneType: string;
-		start: number;
-		end: number;
-		strand: string;
+		ensemblId: string
+		symbol: string
+		geneType: string
+		start: number
+		end: number
+		strand: string
 	}
 	interface VRow {
-		id: number;
-		chromName: string;
-		pos: number;
-		ref: string;
-		alt: string;
-		rsid: number | null;
-		vrsDigest: string | null;
-		lifted: number;
-		vepLabel: string | null;
-		vepImpact: string | null;
-		hgvsConsequence: string | null;
-		vepHasMultipleConsequences: boolean;
-		genes?: GeneHit[];
-		frequencies: FreqCell[];
+		id: number
+		chromName: string
+		pos: number
+		ref: string
+		alt: string
+		rsid: number | null
+		vrsDigest: string | null
+		lifted: number
+		vepLabel: string | null
+		vepImpact: string | null
+		hgvsConsequence: string | null
+		vepHasMultipleConsequences: boolean
+		genes?: GeneHit[]
+		frequencies: FreqCell[]
 	}
 	interface VariantResponse {
-		rows?: VRow[];
-		total?: number;
-		alleleCountReportingThreshold?: number;
+		rows?: VRow[]
+		total?: number
+		alleleCountReportingThreshold?: number
 	}
 	interface PageTenant {
-		slug?: string;
-		name?: string;
-		scope?: string | null;
+		slug?: string
+		name?: string
+		scope?: string | null
 	}
 	interface PageAnalytics {
-		hostname?: string;
-		siteDomain?: string;
+		hostname?: string
+		siteDomain?: string
 	}
 
-	let q = $state(sp0.get('q') ?? initialQuery); // bound to the text input
-	let gene = $state(sp0.get('gene') ?? '');
-	let afMin = $state(sp0.get('afMin') ?? '');
-	let afMax = $state(sp0.get('afMax') ?? '');
-	let acMin = $state(sp0.get('acMin') ?? '');
-	let acMax = $state(sp0.get('acMax') ?? '');
-	let qA = $state(sp0.get('q') ?? initialQuery); // debounced/applied values that actually drive queries
-	let geneA = $state(sp0.get('gene') ?? '');
-	let afMinA = $state(sp0.get('afMin') ?? '');
-	let afMaxA = $state(sp0.get('afMax') ?? '');
-	let acMinA = $state(sp0.get('acMin') ?? '');
-	let acMaxA = $state(sp0.get('acMax') ?? '');
-	let rows = $state<VRow[]>([]);
-	let total = $state(0);
-	let alleleCountReportingThreshold = $state(5);
-	let loading = $state(false);
-	let tableLoading = $state(false);
-	let lastTrackedQueryKey = '';
+	const MAX_PAGE_BROWSABLE_ROWS = 10_000
+	const maxOffsetForPageSize = (size: number) => Math.max(MAX_PAGE_BROWSABLE_ROWS - size, 0)
+	const clampOffset = (value: number, size: number) =>
+		Math.min(Math.max(value, 0), Math.floor(maxOffsetForPageSize(size) / size) * size)
 
-	const tenantQ = $derived(forceTenant ? `&tenant=${forceTenant}` : '');
-	let pageSize = $state(Number(sp0.get('pageSize')) || 50);
-	let offset = $state(((Number(sp0.get('page')) || 1) - 1) * (Number(sp0.get('pageSize')) || 50));
+	let q = $state(sp0.get('q') ?? initialQuery) // bound to the text input
+	let gene = $state(sp0.get('gene') ?? '')
+	let countryA = $state(sp0.get('country') ?? '')
+	let afMin = $state(sp0.get('afMin') ?? '')
+	let afMax = $state(sp0.get('afMax') ?? '')
+	let acMin = $state(sp0.get('acMin') ?? '')
+	let acMax = $state(sp0.get('acMax') ?? '')
+	let qA = $state(sp0.get('q') ?? initialQuery) // debounced/applied values that actually drive queries
+	let geneA = $state(sp0.get('gene') ?? '')
+	let afMinA = $state(sp0.get('afMin') ?? '')
+	let afMaxA = $state(sp0.get('afMax') ?? '')
+	let acMinA = $state(sp0.get('acMin') ?? '')
+	let acMaxA = $state(sp0.get('acMax') ?? '')
+	let rows = $state<VRow[]>([])
+	let total = $state(0)
+	let alleleCountReportingThreshold = $state(5)
+	let loading = $state(false)
+	let tableLoading = $state(false)
+	let lastTrackedQueryKey = ''
+
+	const tenantQ = $derived(forceTenant ? `&tenant=${forceTenant}` : '')
+	const initialPageSize = Number(sp0.get('pageSize')) || 50
+	let pageSize = $state(initialPageSize)
+	let offset = $state(
+		clampOffset(((Number(sp0.get('page')) || 1) - 1) * initialPageSize, initialPageSize)
+	)
 	function setPageSize(n: number) {
-		pageSize = n;
-		offset = 0;
+		pageSize = n
+		offset = 0
 	}
 
-	type SortCol = '' | 'variant' | 'rsid' | 'gene' | 'maxaf' | 'vrs';
-	let sortCol = $state<SortCol>((['variant', 'rsid', 'gene', 'maxaf', 'vrs'].includes(sp0.get('sort') ?? '') ? sp0.get('sort') : '') as SortCol);
-	let sortDir = $state<'asc' | 'desc'>(sp0.get('dir') === 'desc' ? 'desc' : 'asc');
+	type SortCol = '' | 'variant' | 'rsid' | 'gene' | 'maxaf' | 'vrs'
+	let sortCol = $state<SortCol>(
+		(['variant', 'rsid', 'gene', 'maxaf', 'vrs'].includes(sp0.get('sort') ?? '')
+			? sp0.get('sort')
+			: '') as SortCol
+	)
+	let sortDir = $state<'asc' | 'desc'>(sp0.get('dir') === 'desc' ? 'desc' : 'asc')
 	function setSort(col: SortCol) {
-		if (sortCol === col) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+		if (sortCol === col) sortDir = sortDir === 'asc' ? 'desc' : 'asc'
 		else {
-			sortCol = col;
-			sortDir = col === 'maxaf' ? 'desc' : 'asc';
+			sortCol = col
+			sortDir = col === 'maxaf' ? 'desc' : 'asc'
 		}
-		offset = 0;
+		offset = 0
 	}
 
 	function buildParams(extra = '') {
-		const p = new URLSearchParams();
-		if (qA.trim()) p.set('q', qA.trim());
-		if (geneA.trim()) p.set('gene', geneA.trim());
-		if (afMinA) p.set('afMin', afMinA);
-		if (afMaxA) p.set('afMax', afMaxA);
-		if (acMinA) p.set('acMin', acMinA);
-		if (acMaxA) p.set('acMax', acMaxA);
-		if (selectedVepImpactValues.length < VEP_IMPACT_OPTIONS.length) p.set('vepImpact', selectedVepImpactValues.join(','));
-		if (selectedVepConsequenceValues.length < VEP_CONSEQUENCE_OPTIONS.length) p.set('vepConsequence', selectedVepConsequenceValues.join(','));
-		if (showPopFilter && selectedFilterCohortIds.length && (populationMatchMode === 'all' || selectedFilterCohortIds.length < activePopulations.length)) {
-			p.set('cohorts', selectedFilterCohortIds.join(','));
-			if (populationMatchMode === 'all') p.set('cohortMatch', 'all');
+		const p = new URLSearchParams()
+		if (qA.trim()) p.set('q', qA.trim())
+		if (geneA.trim()) p.set('gene', geneA.trim())
+		if (countryA.trim()) p.set('country', countryA.trim())
+		if (afMinA) p.set('afMin', afMinA)
+		if (afMaxA) p.set('afMax', afMaxA)
+		if (acMinA) p.set('acMin', acMinA)
+		if (acMaxA) p.set('acMax', acMaxA)
+		if (selectedVepImpactValues.length < VEP_IMPACT_OPTIONS.length)
+			p.set('vepImpact', selectedVepImpactValues.join(','))
+		if (selectedVepConsequenceValues.length < VEP_CONSEQUENCE_OPTIONS.length)
+			p.set('vepConsequence', selectedVepConsequenceValues.join(','))
+		if (
+			showPopFilter &&
+			selectedFilterCohortIds.length &&
+			(populationMatchMode === 'all' || selectedFilterCohortIds.length < activePopulations.length)
+		) {
+			p.set('cohorts', selectedFilterCohortIds.join(','))
+			if (populationMatchMode === 'all') p.set('cohortMatch', 'all')
 		}
-		p.set('limit', String(pageSize));
-		p.set('offset', String(offset));
+		p.set('limit', String(pageSize))
+		p.set('offset', String(offset))
 		if (sortCol) {
-			p.set('sort', sortCol);
-			p.set('dir', sortDir);
+			p.set('sort', sortCol)
+			p.set('dir', sortDir)
 		}
 		// `any` with all biobanks selected is the cacheable default. `all` still
 		// needs the explicit set so the API can require presence in every biobank.
-		if (showFilter && selectedSlugs.length && (matchMode === 'all' || selectedSlugs.length < options.length)) {
-			p.set('biobanks', selectedSlugs.join(','));
-			p.set('match', matchMode);
+		if (
+			showFilter &&
+			selectedSlugs.length &&
+			(matchMode === 'all' || selectedSlugs.length < options.length)
+		) {
+			p.set('biobanks', selectedSlugs.join(','))
+			p.set('match', matchMode)
 		}
-		return p.toString() + tenantQ + extra;
+		return p.toString() + tenantQ + extra
 	}
 
-	const tenantData = $derived((page.data.tenant ?? {}) as PageTenant);
-	const analyticsData = $derived((page.data.analytics ?? null) as PageAnalytics | null);
+	const tenantData = $derived((page.data.tenant ?? {}) as PageTenant)
+	const analyticsData = $derived((page.data.analytics ?? null) as PageAnalytics | null)
 
 	function analyticsTenantSlug() {
-		return tenantData.slug ?? forceTenant ?? 'unknown';
+		return tenantData.slug ?? forceTenant ?? 'unknown'
 	}
 
 	function analyticsTenantName() {
-		return tenantData.name ?? tenantData.slug ?? forceTenant ?? 'unknown';
+		return tenantData.name ?? tenantData.slug ?? forceTenant ?? 'unknown'
 	}
 
 	function sendAnalyticsEvent(eventName: string, properties: Record<string, unknown>) {
-		if (!analyticsData) return;
+		if (!analyticsData) return
 
-		let attempts = 0;
+		let attempts = 0
 		const send = () => {
 			if (window.rybbit?.event) {
-				window.rybbit.event(eventName, properties);
+				window.rybbit.event(eventName, properties)
 			} else if (++attempts < 20) {
-				window.setTimeout(send, 250);
+				window.setTimeout(send, 250)
 			}
-		};
-		send();
+		}
+		send()
 	}
 
 	function trackVariantQuery(params: string, response: VariantResponse) {
-		if (!analyticsData) return;
+		if (!analyticsData) return
 
-		const parsed = new URLSearchParams(params);
-		const queryText = parsed.get('q') ?? '';
-		const geneText = parsed.get('gene') ?? '';
+		const parsed = new URLSearchParams(params)
+		const queryText = parsed.get('q') ?? ''
+		const geneText = parsed.get('gene') ?? ''
 		const eventKey = [
 			analyticsTenantSlug(),
 			queryText,
@@ -349,11 +504,11 @@
 			parsed.get('sort') ?? '',
 			parsed.get('dir') ?? '',
 			parsed.get('limit') ?? '',
-			parsed.get('offset') ?? ''
-		].join('|');
+			parsed.get('offset') ?? '',
+		].join('|')
 
-		if (eventKey === lastTrackedQueryKey) return;
-		lastTrackedQueryKey = eventKey;
+		if (eventKey === lastTrackedQueryKey) return
+		lastTrackedQueryKey = eventKey
 
 		sendAnalyticsEvent('variant_query', {
 			tenant_slug: analyticsTenantSlug(),
@@ -377,7 +532,10 @@
 			sort_dir: parsed.get('dir') ?? '',
 			limit: Number(parsed.get('limit') ?? pageSize),
 			offset: Number(parsed.get('offset') ?? offset),
-			page: Math.floor(Number(parsed.get('offset') ?? offset) / Number(parsed.get('limit') ?? pageSize)) + 1,
+			page:
+				Math.floor(
+					Number(parsed.get('offset') ?? offset) / Number(parsed.get('limit') ?? pageSize)
+				) + 1,
 			result_count: response.rows?.length ?? 0,
 			total_results: response.total ?? 0,
 			has_search_text: Boolean(queryText || geneText),
@@ -393,48 +551,60 @@
 					parsed.get('biobanks') ||
 					parsed.get('match')
 			),
-			api_querystring: params
-		});
+			api_querystring: params,
+		})
 	}
 
 	// mirror the current query into the page URL so it's copy-paste / bookmark-able
 	function syncUrl() {
-		const sp = new URLSearchParams();
-		if (qA.trim()) sp.set('q', qA.trim());
-		if (geneA.trim()) sp.set('gene', geneA.trim());
-		if (afMinA) sp.set('afMin', afMinA);
-		if (afMaxA) sp.set('afMax', afMaxA);
-		if (acMinA) sp.set('acMin', acMinA);
-		if (acMaxA) sp.set('acMax', acMaxA);
-		if (selectedVepImpactValues.length < VEP_IMPACT_OPTIONS.length) sp.set('vepImpact', selectedVepImpactValues.join(','));
-		if (selectedVepConsequenceValues.length < VEP_CONSEQUENCE_OPTIONS.length) sp.set('vepConsequence', selectedVepConsequenceValues.join(','));
+		if (!syncToUrl) return
+		const sp = new URLSearchParams()
+		if (qA.trim()) sp.set('q', qA.trim())
+		if (geneA.trim()) sp.set('gene', geneA.trim())
+		if (countryA.trim()) sp.set('country', countryA.trim())
+		if (afMinA) sp.set('afMin', afMinA)
+		if (afMaxA) sp.set('afMax', afMaxA)
+		if (acMinA) sp.set('acMin', acMinA)
+		if (acMaxA) sp.set('acMax', acMaxA)
+		if (selectedVepImpactValues.length < VEP_IMPACT_OPTIONS.length)
+			sp.set('vepImpact', selectedVepImpactValues.join(','))
+		if (selectedVepConsequenceValues.length < VEP_CONSEQUENCE_OPTIONS.length)
+			sp.set('vepConsequence', selectedVepConsequenceValues.join(','))
 		if (sortCol) {
-			sp.set('sort', sortCol);
-			sp.set('dir', sortDir);
+			sp.set('sort', sortCol)
+			sp.set('dir', sortDir)
 		}
-		if (pageSize !== 50) sp.set('pageSize', String(pageSize));
-		const pg = Math.floor(offset / pageSize) + 1;
-		if (pg > 1) sp.set('page', String(pg));
-		if (showPopFilter && selectedFilterCohortIds.length && (populationMatchMode === 'all' || selectedFilterCohortIds.length < activePopulations.length)) {
-			sp.set('cohorts', selectedFilterCohortIds.join(','));
-			if (populationMatchMode === 'all') sp.set('cohortMatch', 'all');
+		if (pageSize !== 50) sp.set('pageSize', String(pageSize))
+		const pg = Math.floor(offset / pageSize) + 1
+		if (pg > 1) sp.set('page', String(pg))
+		if (
+			showPopFilter &&
+			selectedFilterCohortIds.length &&
+			(populationMatchMode === 'all' || selectedFilterCohortIds.length < activePopulations.length)
+		) {
+			sp.set('cohorts', selectedFilterCohortIds.join(','))
+			if (populationMatchMode === 'all') sp.set('cohortMatch', 'all')
 		}
-		if (showFilter && selectedSlugs.length && (matchMode === 'all' || selectedSlugs.length < options.length)) {
-			sp.set('biobanks', selectedSlugs.join(','));
-			sp.set('match', matchMode);
+		if (
+			showFilter &&
+			selectedSlugs.length &&
+			(matchMode === 'all' || selectedSlugs.length < options.length)
+		) {
+			sp.set('biobanks', selectedSlugs.join(','))
+			sp.set('match', matchMode)
 		}
-		if (forceTenant) sp.set('tenant', forceTenant);
-		const qs = sp.toString();
+		if (forceTenant) sp.set('tenant', forceTenant)
+		const qs = sp.toString()
 		try {
-			replaceState(`${location.pathname}${qs ? `?${qs}` : ''}`, {});
+			replaceState(`${location.pathname}${qs ? `?${qs}` : ''}`, {})
 		} catch {
 			/* router not ready */
 		}
 	}
 
-	let seq = 0;
+	let seq = 0
 	async function load() {
-		const my = ++seq;
+		const my = ++seq
 		// an empty filter selection means "none" → no results (not "all")
 		if (
 			(showFilter && selectedSlugs.length === 0) ||
@@ -442,30 +612,45 @@
 			selectedVepImpactValues.length === 0 ||
 			selectedVepConsequenceValues.length === 0
 		) {
-			rows = [];
-			total = 0;
-			loading = false;
-			tableLoading = false;
-			return;
+			rows = []
+			total = 0
+			loading = false
+			tableLoading = false
+			return
 		}
-		const startedAt = Date.now();
-		loading = true;
-		tableLoading = true;
+		const startedAt = Date.now()
+		loading = true
+		tableLoading = true
 		try {
-			const params = buildParams();
-			const res = (await fetch(`/api/variants?${params}`).then((r) => r.json())) as VariantResponse;
-			if (my !== seq) return; // a newer request superseded this one
-			rows = res.rows ?? [];
-			total = res.total ?? 0;
-			alleleCountReportingThreshold = res.alleleCountReportingThreshold ?? alleleCountReportingThreshold;
-			trackVariantQuery(params, res);
+			const params = buildParams()
+			const cached = variantResponseCache.get(params)
+			if (cached) {
+				rows = cached.rows as VRow[]
+				total = cached.total
+				alleleCountReportingThreshold = cached.alleleCountReportingThreshold
+				loading = false
+				tableLoading = false
+			}
+			const res = (await fetch(`/api/variants?${params}`).then((r) => r.json())) as VariantResponse
+			if (my !== seq) return // a newer request superseded this one
+			onParamsChange?.(params)
+			rows = res.rows ?? []
+			total = res.total ?? 0
+			alleleCountReportingThreshold =
+				res.alleleCountReportingThreshold ?? alleleCountReportingThreshold
+			rememberVariantResponse(params, {
+				rows,
+				total,
+				alleleCountReportingThreshold,
+			})
+			trackVariantQuery(params, res)
 		} finally {
 			if (my === seq) {
-				loading = false;
-				const remaining = Math.max(0, 350 - (Date.now() - startedAt));
+				loading = false
+				const remaining = Math.max(0, 350 - (Date.now() - startedAt))
 				window.setTimeout(() => {
-					if (my === seq) tableLoading = false;
-				}, remaining);
+					if (my === seq) tableLoading = false
+				}, remaining)
 			}
 		}
 	}
@@ -473,141 +658,219 @@
 	// Reactive load with EXPLICIT deps so tracking never depends on async reads.
 	// The seq guard in load() drops stale (out-of-order) responses.
 	$effect(() => {
-		void qA;
-		void geneA;
-		void afMinA;
-		void afMaxA;
-		void acMinA;
-		void acMaxA;
-		void offset;
-		void pageSize;
-		void matchMode;
-		void populationMatchMode;
-		void selectedSlugs;
-		void selectedFilterCohortIds;
-		void selectedVepImpactValues;
-		void selectedVepConsequenceValues;
-		void showFilter;
-		void sortCol;
-		void sortDir;
-		load();
-		syncUrl();
-	});
+		void qA
+		void geneA
+		void countryA
+		void afMinA
+		void afMaxA
+		void acMinA
+		void acMaxA
+		void offset
+		void pageSize
+		void matchMode
+		void populationMatchMode
+		void selectedSlugs
+		void selectedFilterCohortIds
+		void selectedVepImpactValues
+		void selectedVepConsequenceValues
+		void showFilter
+		void sortCol
+		void sortDir
+		load()
+		syncUrl()
+	})
 
-	let timer: ReturnType<typeof setTimeout>;
+	let lastSyncedParentParams = ''
+
+	function applyParentParams(paramsStr: string) {
+		const sp = new URLSearchParams(paramsStr)
+		const nextQ = sp.get('q') ?? ''
+		q = nextQ
+		qA = nextQ
+		gene = sp.get('gene') ?? ''
+		geneA = gene
+		countryA = sp.get('country') ?? ''
+		afMin = sp.get('afMin') ?? ''
+		afMax = sp.get('afMax') ?? ''
+		acMin = sp.get('acMin') ?? ''
+		acMax = sp.get('acMax') ?? ''
+		afMinA = afMin
+		afMaxA = afMax
+		acMinA = acMin
+		acMaxA = acMax
+		offset = 0
+
+		if (sp.has('vepImpact')) {
+			const impacts = (sp.get('vepImpact') ?? '').split(',').filter(Boolean)
+			selectedVepImpacts = Object.fromEntries(
+				VEP_IMPACT_OPTIONS.map((value) => [value, impacts.includes(value)])
+			)
+		}
+		if (sp.has('vepConsequence')) {
+			const consequences = (sp.get('vepConsequence') ?? '').split(',').filter(Boolean)
+			selectedVepConsequences = Object.fromEntries(
+				VEP_CONSEQUENCE_OPTIONS.map((value) => [value, consequences.includes(value)])
+			)
+		}
+		if (sp.has('biobanks') && showFilter) {
+			const banks = (sp.get('biobanks') ?? '').split(',').filter(Boolean)
+			selected = Object.fromEntries(
+				options.map((option) => [option.slug, banks.includes(option.slug)])
+			)
+			matchMode = sp.get('match') === 'all' ? 'all' : 'any'
+		}
+		if (sp.has('cohorts') && showPopFilter) {
+			const cohorts = new Set(
+				(sp.get('cohorts') ?? '')
+					.split(',')
+					.filter(Boolean)
+					.map(Number)
+					.filter((n) => !Number.isNaN(n))
+			)
+			selectedPops = Object.fromEntries(
+				populations.map((population) => [population.cohortId, cohorts.has(population.cohortId)])
+			)
+			populationMatchMode = sp.get('cohortMatch') === 'all' ? 'all' : 'any'
+		}
+		const nextPageSize = Number(sp.get('pageSize'))
+		if (nextPageSize) pageSize = nextPageSize
+	}
+
+	$effect(() => {
+		if (!syncFromParentParams) return
+		const paramsStr = initialParams
+		if (paramsStr === lastSyncedParentParams) return
+		lastSyncedParentParams = paramsStr
+		applyParentParams(paramsStr)
+	})
+
+	let timer: ReturnType<typeof setTimeout>
 	function applyInputs() {
-		offset = 0;
-		qA = q;
-		geneA = gene;
-		afMinA = afMin;
-		afMaxA = afMax;
-		acMinA = acMin;
-		acMaxA = acMax;
+		offset = 0
+		qA = q
+		geneA = gene
+		afMinA = afMin
+		afMaxA = afMax
+		acMinA = acMin
+		acMaxA = acMax
 	}
 	function onInput() {
-		clearTimeout(timer);
-		timer = setTimeout(applyInputs, 250);
+		clearTimeout(timer)
+		timer = setTimeout(applyInputs, 250)
 	}
 	// explicit "Go" — run the query now
 	function go() {
-		clearTimeout(timer);
-		applyInputs();
+		clearTimeout(timer)
+		applyInputs()
 	}
 	// click an example → populate the box and run it immediately
 	function runExample(ex: string) {
-		clearTimeout(timer);
-		q = ex;
-		offset = 0;
-		qA = ex;
+		clearTimeout(timer)
+		q = ex
+		offset = 0
+		qA = ex
 	}
 	// clear search + all filters
 	function reset() {
-		clearTimeout(timer);
-		q = afMin = afMax = acMin = acMax = '';
-		gene = '';
-		qA = afMinA = afMaxA = acMinA = acMaxA = '';
-		geneA = '';
-		setAllVepImpacts(true);
-		setAllVepConsequences(true);
-		sortCol = '';
-		offset = 0;
+		clearTimeout(timer)
+		q = afMin = afMax = acMin = acMax = ''
+		gene = ''
+		qA = afMinA = afMaxA = acMinA = acMaxA = ''
+		geneA = ''
+		setAllVepImpacts(true)
+		setAllVepConsequences(true)
+		sortCol = ''
+		offset = 0
 	}
 
 	// live curl for the current query (matches what just ran)
-	const origin = $derived(typeof location !== 'undefined' ? location.origin : '');
-	const curlCmd = $derived(`curl '${origin}/api/variants?${buildParams()}'`);
-	let curlCopied = $state(false);
+	const origin = $derived(typeof location !== 'undefined' ? location.origin : '')
+	const curlCmd = $derived(`curl '${origin}/api/variants?${buildParams()}'`)
+	let curlCopied = $state(false)
 	function copyCurl() {
-		navigator.clipboard?.writeText(curlCmd);
-		curlCopied = true;
-		setTimeout(() => (curlCopied = false), 1200);
+		navigator.clipboard?.writeText(curlCmd)
+		curlCopied = true
+		setTimeout(() => (curlCopied = false), 1200)
 	}
-	const apiLink = forceTenant ? `/api?tenant=${forceTenant}` : '/api';
+	const apiLink = $derived(forceTenant ? `/api?tenant=${forceTenant}` : '/api')
 
-	const totalPages = $derived(Math.max(1, Math.ceil(total / pageSize)));
-	const curPage = $derived(Math.floor(offset / pageSize) + 1);
+	const totalPages = $derived(Math.max(1, Math.ceil(total / pageSize)))
+	const reachablePages = $derived(
+		Math.min(totalPages, Math.ceil(MAX_PAGE_BROWSABLE_ROWS / pageSize))
+	)
+	const curPage = $derived(Math.floor(offset / pageSize) + 1)
+	const paginationIsCapped = $derived(totalPages > reachablePages)
+	const reachableRows = $derived(Math.min(total, MAX_PAGE_BROWSABLE_ROWS))
 	function goPage(n: number) {
-		offset = (Math.min(Math.max(n, 1), totalPages) - 1) * pageSize;
+		offset = clampOffset((Math.min(Math.max(n, 1), reachablePages) - 1) * pageSize, pageSize)
 	}
-	// page numbers with ellipsis: 1 … c-1 c c+1 … N
+	// page numbers with ellipsis over the shallow offset window.
 	const pageItems = $derived.by(() => {
-		const items: (number | '…')[] = [];
-		const add = (n: number) => items.push(n);
-		const N = totalPages;
-		const c = curPage;
-		const win = new Set<number>([1, 2, N - 1, N, c - 1, c, c + 1]);
-		let last = 0;
+		const items: (number | '…')[] = []
+		const add = (n: number) => items.push(n)
+		const N = reachablePages
+		const c = curPage
+		const win = new Set<number>([1, 2, N - 1, N, c - 1, c, c + 1])
+		let last = 0
 		for (let i = 1; i <= N; i++) {
 			if (win.has(i) || i === 1 || i === N) {
-				if (i - last > 1) items.push('…');
-				add(i);
-				last = i;
+				if (i - last > 1) items.push('…')
+				add(i)
+				last = i
 			}
 		}
-		return items;
-	});
+		return items
+	})
 
-	const ind = (c: SortCol) => (sortCol === c ? (sortDir === 'asc' ? '▲' : '▼') : '↕');
+	const ind = (c: SortCol) => (sortCol === c ? (sortDir === 'asc' ? '▲' : '▼') : '↕')
 	const visibleRows = $derived.by(() => {
-		if (!showFilter && !showPopFilter) return rows;
+		if (!showFilter && !showPopFilter) return rows
 
-		const slugSet = showFilter ? new Set(selectedSlugs) : null;
-		const cohortSet = showPopFilter ? new Set(selectedFilterCohortIds) : null;
+		const slugSet = showFilter ? new Set(selectedSlugs) : null
+		const cohortSet = showPopFilter ? new Set(selectedFilterCohortIds) : null
 		return rows
 			.map((r) => {
 				const frequencies = r.frequencies.filter(
-					(f) => (!slugSet || slugSet.has(f.biobankSlug)) && (!cohortSet || cohortSet.has(f.cohortId))
-				);
-				return { ...r, frequencies };
+					(f) =>
+						(!slugSet || slugSet.has(f.biobankSlug)) && (!cohortSet || cohortSet.has(f.cohortId))
+				)
+				return { ...r, frequencies }
 			})
 			.filter((r) => {
 				if (showFilter) {
 					if (matchMode === 'all') {
 						return selectedSlugs.every((slug) =>
 							r.frequencies.some((f) => f.biobankSlug === slug && (f.acMasked || (f.ac ?? 0) > 0))
-						);
+						)
 					}
-					return r.frequencies.some((f) => f.acMasked || (f.ac ?? 0) > 0);
+					return r.frequencies.some((f) => f.acMasked || (f.ac ?? 0) > 0)
 				}
-				return r.frequencies.length > 0;
-			});
-	});
+				return r.frequencies.length > 0
+			})
+	})
 	// shared grid template for the population rows + their header (so they align).
 	// The last visible column is max-content so it collapses to its text width.
-	const multiPop = $derived(visibleRows.some((r) => r.frequencies.length > 1));
-	const showMaxAf = $derived(cfg.maxAf);
-	const colCount = $derived(3 + (showGene ? 1 : 0) + (showVep ? 2 : 0) + (showMaxAf ? 1 : 0) + (showVrs ? 1 : 0) + (showGnomad ? 1 : 0));
+	const multiPop = $derived(visibleRows.some((r) => r.frequencies.length > 1))
+	const showMaxAf = $derived(cfg.maxAf)
+	const colCount = $derived(
+		3 +
+			(showGene ? 1 : 0) +
+			(showVep ? 2 : 0) +
+			(showMaxAf ? 1 : 0) +
+			(showVrs ? 1 : 0) +
+			(showGnomad ? 1 : 0)
+	)
 	const popTmpl = $derived(
 		[
 			multiPop ? 'minmax(3.75rem,5.5rem)' : null,
 			vepExpand ? barMax : `minmax(5rem,${barMax})`, // bar: fixed when VEP absorbs slack, else stretches to fill
 			'4rem', // freq
 			...(acAnSplit ? ['2.75rem', '3.5rem'] : [showGeno ? '4.5rem' : 'max-content']), // ac/an (split: separate right-aligned cols)
-			...(showGeno ? ['2rem', '3rem', '3rem'] : []) // het, hom_alt, hom_ref
+			...(showGeno ? ['2rem', '3rem', '3rem'] : []), // het, hom_alt, hom_ref
 		]
 			.filter(Boolean)
 			.join(' ')
-	);
+	)
 	const frequencyColWidth = $derived(
 		frequencyWidthOverride ??
 			(multiPop
@@ -621,23 +884,30 @@
 					: showGeno
 						? '18rem'
 						: '10rem')
-	);
-	const geneColWidth = $derived(geneWidthOverride ?? '7rem');
-	const variantColWidth = $derived(variantWidthOverride ?? '9.5rem');
-	const fmtAf = (af: number) => (af >= 0.0001 || af === 0 ? af.toFixed(4) : af.toExponential(1));
-	const fmtAfPercent = (af: number) => `${(af * 100).toFixed(2)}%`;
-	const displayAfValue = (f: FreqCell) => f.af ?? f.afUpperBound ?? 0;
-	const displayAfLabel = (f: FreqCell) => (f.acMasked ? `<${fmtAf(f.afUpperBound ?? 0)}` : fmtAf(f.af ?? 0));
-	const displayAcLabel = (f: FreqCell) => (f.acMasked ? `<${f.acUpperBound ?? alleleCountReportingThreshold}` : String(f.ac ?? '—'));
+	)
+	const geneColWidth = $derived(geneWidthOverride ?? '7rem')
+	const variantColWidth = $derived(variantWidthOverride ?? '9.5rem')
+	const fmtAf = (af: number) => (af >= 0.0001 || af === 0 ? af.toFixed(4) : af.toExponential(1))
+	const fmtAfPercent = (af: number) => `${(af * 100).toFixed(2)}%`
+	const displayAfValue = (f: FreqCell) => f.af ?? f.afUpperBound ?? 0
+	const displayAfLabel = (f: FreqCell) =>
+		f.acMasked ? `<${fmtAf(f.afUpperBound ?? 0)}` : fmtAf(f.af ?? 0)
+	const displayAcLabel = (f: FreqCell) =>
+		f.acMasked ? `<${f.acUpperBound ?? alleleCountReportingThreshold}` : String(f.ac ?? '—')
 	const maskTitle = (f: FreqCell) =>
-		f.acMasked ? `Too low to report exact. AC <${f.acUpperBound ?? alleleCountReportingThreshold}; AF <${fmtAf(f.afUpperBound ?? 0)}.` : '';
-	const maxAf = (r: VRow) => (r.frequencies.length ? Math.max(...r.frequencies.map(displayAfValue)) : 0);
-	const isHighestAf = (r: VRow, f: FreqCell) => r.frequencies.length > 1 && displayAfValue(f) === maxAf(r);
+		f.acMasked
+			? `Too low to report exact. AC <${f.acUpperBound ?? alleleCountReportingThreshold}; AF <${fmtAf(f.afUpperBound ?? 0)}.`
+			: ''
+	const maxAf = (r: VRow) =>
+		r.frequencies.length ? Math.max(...r.frequencies.map(displayAfValue)) : 0
+	const isHighestAf = (r: VRow, f: FreqCell) =>
+		r.frequencies.length > 1 && displayAfValue(f) === maxAf(r)
 	const afValueClass = (r: VRow, f: FreqCell) =>
 		isHighestAf(r, f)
 			? 'inline-flex justify-end rounded-full border border-primary/25 bg-primary/10 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-primary'
-			: 'font-mono text-[11px] tabular-nums';
-	const geneLabel = (r: VRow) => (r.genes?.length ? [...new Set(r.genes.map((g) => g.symbol))].join(', ') : '');
+			: 'font-mono text-[11px] tabular-nums'
+	const geneLabel = (r: VRow) =>
+		r.genes?.length ? [...new Set(r.genes.map((g) => g.symbol))].join(', ') : ''
 	const impactClass = (impact: string | null) =>
 		impact === 'HIGH'
 			? 'border-red-200 bg-red-50 text-red-700'
@@ -645,455 +915,524 @@
 				? 'border-amber-200 bg-amber-50 text-amber-700'
 				: impact === 'LOW'
 					? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-					: 'border-slate-200 bg-slate-50 text-slate-700';
+					: 'border-slate-200 bg-slate-50 text-slate-700'
 	const vepTitle = (r: VRow) =>
-		[
-			r.vepLabel ? `Worst: ${r.vepLabel}` : null,
-			r.vepImpact ? `Category: ${r.vepImpact}` : null
-		]
+		[r.vepLabel ? `Worst: ${r.vepLabel}` : null, r.vepImpact ? `Category: ${r.vepImpact}` : null]
 			.filter(Boolean)
-			.join('\n');
-	let copied = $state<string | null>(null);
+			.join('\n')
+	let copied = $state<string | null>(null)
 	function copyVrs(d: string) {
-		navigator.clipboard?.writeText(`ga4gh:VA.${d}`);
-		copied = d;
-		setTimeout(() => (copied = null), 1200);
+		navigator.clipboard?.writeText(`ga4gh:VA.${d}`)
+		copied = d
+		setTimeout(() => (copied = null), 1200)
 	}
-
-	onMount(() => {
-		const closeFilterMenus = (event: PointerEvent) => {
-			const target = event.target;
-			if (!(target instanceof Node)) return;
-			for (const details of document.querySelectorAll<HTMLDetailsElement>('details[data-explorer-filter-menu]')) {
-				if (!details.contains(target)) details.open = false;
-			}
-		};
-		const closeFilterMenusOnEscape = (event: KeyboardEvent) => {
-			if (event.key !== 'Escape') return;
-			for (const details of document.querySelectorAll<HTMLDetailsElement>('details[data-explorer-filter-menu]')) {
-				details.open = false;
-			}
-		};
-		document.addEventListener('pointerdown', closeFilterMenus, true);
-		document.addEventListener('keydown', closeFilterMenusOnEscape);
-		return () => {
-			document.removeEventListener('pointerdown', closeFilterMenus, true);
-			document.removeEventListener('keydown', closeFilterMenusOnEscape);
-		};
-	});
 </script>
 
-<section class="card-surface p-5 sm:p-6">
+<section class="card-surface p-5 sm:p-6" class:vb-embedded={embedded}>
 	{#if loading}
 		<div class="fixed inset-x-0 top-0 z-[60] h-1 overflow-hidden bg-primary/15">
 			<div class="bv-loadbar"></div>
 		</div>
 	{/if}
-	<div class="mb-4">
-		<h3 class="text-lg font-semibold">{title || tr($lang, 'variantBrowser')}</h3>
-		<p class="text-sm text-muted-foreground">{subtitle || tr($lang, 'vbSubtitle')}</p>
-	</div>
-
-	{#if showFilter}
-		<div class="relative z-30 mb-3 flex flex-wrap items-start gap-x-5 gap-y-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
-			<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'biobanks')}</span>
-			<details class="relative" data-explorer-filter-menu="biobanks">
-				<summary class="flex cursor-pointer list-none items-center gap-2 rounded-md border bg-card px-2.5 py-1.5 text-xs font-medium hover:bg-muted">
-					<span>Biobanks</span>
-					<span class="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{bankFilterSummary}</span>
-				</summary>
-				<div class="absolute left-0 top-full z-[80] mt-2 w-72 rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
-					<div class="mb-2 flex items-center justify-between border-b pb-2">
-						<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Biobanks</span>
-						<div class="flex gap-1">
-							<button type="button" onclick={() => setAllBanks(true)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">All</button>
-							<button type="button" onclick={() => setAllBanks(false)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">None</button>
-						</div>
-					</div>
-					<div class="grid gap-1.5">
-						{#each options as o}
-							<label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-muted">
-								<input type="checkbox" checked={selected[o.slug]} onchange={() => toggleBank(o.slug)} class="accent-[var(--primary)]" />
-								<span class="min-w-0 truncate">{o.name}</span>
-							</label>
-						{/each}
-					</div>
-				</div>
-			</details>
-			<div class="flex items-center gap-3" class:opacity-40={selectedSlugs.length < 2}>
-				<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'match')}</span>
-				<label class="flex cursor-pointer items-center gap-1.5">
-					<input type="radio" name="match" checked={matchMode === 'any'} onchange={() => setMatch('any')} disabled={selectedSlugs.length < 2} class="accent-[var(--primary)]" />
-					<span>Either biobank</span>
-				</label>
-				<label class="flex cursor-pointer items-center gap-1.5">
-					<input type="radio" name="match" checked={matchMode === 'all'} onchange={() => setMatch('all')} disabled={selectedSlugs.length < 2} class="accent-[var(--primary)]" />
-					<span>All selected biobanks</span>
-				</label>
-			</div>
+	{#if showTitle}
+		<div class="mb-4">
+			<h3 class="text-lg font-semibold">{title || tr($lang, 'variantBrowser')}</h3>
+			<p class="text-sm text-muted-foreground">{subtitle || tr($lang, 'vbSubtitle')}</p>
 		</div>
 	{/if}
 
-	{#if showPopFilter}
-		<div class="relative z-20 mb-3 flex flex-wrap items-start gap-x-5 gap-y-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
-			<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'populations')}</span>
-			<details class="relative" data-explorer-filter-menu="populations">
-				<summary class="flex cursor-pointer list-none items-center gap-2 rounded-md border bg-card px-2.5 py-1.5 text-xs font-medium hover:bg-muted">
-					<span>Populations</span>
-					<span class="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{populationFilterSummary}</span>
-				</summary>
-				<div class="absolute left-0 top-full z-[70] mt-2 max-h-[28rem] w-80 overflow-y-auto rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
-					<div class="mb-2 flex items-center justify-between border-b pb-2">
-						<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Populations</span>
-						<div class="flex gap-1">
-							<button type="button" onclick={() => setAllPops(true)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">All</button>
-							<button type="button" onclick={() => setAllPops(false)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">None</button>
-						</div>
-					</div>
-					<div class="grid gap-2">
-						{#each populationsByBiobank as group}
-							<div class="rounded border bg-card/60 p-2" class:opacity-40={showFilter && selected[group.slug] === false}>
-								<div class="mb-1.5 flex items-center justify-between gap-2">
-									<span class="min-w-0 truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{group.name}</span>
-									{#if populationsByBiobank.length > 1}
-										<div class="flex shrink-0 gap-1">
-											<button type="button" onclick={() => setBankPops(group.slug, true)} class="rounded border px-1.5 py-0.5 text-[10px] hover:bg-muted">All</button>
-											<button type="button" onclick={() => setBankPops(group.slug, false)} class="rounded border px-1.5 py-0.5 text-[10px] hover:bg-muted">None</button>
-										</div>
-									{/if}
-								</div>
-								<div class="grid gap-1">
-									{#each group.pops as pop}
-										<label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1 hover:bg-muted">
-											<input type="checkbox" checked={selectedPops[pop.cohortId]} onchange={() => togglePop(pop.cohortId)} class="accent-[var(--primary)]" />
-											<span class="min-w-0 truncate">{pop.name}</span>
-										</label>
-									{/each}
-								</div>
-							</div>
-						{/each}
-					</div>
-				</div>
-			</details>
-			<div class="flex items-center gap-3" class:opacity-40={selectedFilterCohortIds.length < 2}>
-				<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'match')}</span>
-				<label class="flex cursor-pointer items-center gap-1.5">
-					<input
-						type="radio"
-						name="cohort-match"
-						value="any"
-						checked={populationMatchMode === 'any'}
-						onchange={() => setPopulationMatch('any')}
-						disabled={selectedFilterCohortIds.length < 2}
-						class="accent-[var(--primary)]"
-						/>
-						<span>Either population</span>
-					</label>
-					<label class="flex cursor-pointer items-center gap-1.5">
-						<input
-						type="radio"
-						name="cohort-match"
-						value="all"
-						checked={populationMatchMode === 'all'}
-						onchange={() => setPopulationMatch('all')}
-						disabled={selectedFilterCohortIds.length < 2}
-						class="accent-[var(--primary)]"
-						/>
-						<span>All selected populations</span>
-					</label>
-				</div>
-			</div>
-	{/if}
-
-	{#if examples.length}
-		<div class="mb-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-			<span>{tr($lang, 'tryLabel')}</span>
-			{#each examples as ex}
-				<button onclick={() => runExample(ex)} class="rounded-full border px-2 py-0.5 font-mono hover:bg-muted hover:text-foreground">{ex}</button>
-			{/each}
+	{#if showContextHeader && subtitle}
+		<div class="vb-context-header">
+			<p>{subtitle}</p>
 		</div>
 	{/if}
 
-	<div class="mb-3 flex flex-col gap-2">
-		<div class="flex flex-wrap items-end gap-2">
-			<div class="relative min-w-56 flex-1">
-				<input
-					bind:value={q}
-					oninput={onInput}
-					onkeydown={(e) => e.key === 'Enter' && go()}
-					placeholder="rs123 · p.Arg124His · chr7 · 1:1000000-1100000 · 1:1000000-1100000 ISG15"
-					class="w-full rounded-md border bg-background px-3 py-2 pr-9 text-sm outline-none focus:ring-2 focus:ring-ring"
-				/>
-				{#if loading}
-					<span class="absolute right-2.5 top-1/2 size-4 -translate-y-1/2 animate-spin rounded-full border-2 border-muted border-t-primary"></span>
+	{#if showApiBar}
+		<!-- live curl for the current query -->
+		<div class="mb-3 flex items-center gap-2">
+			<code
+				class="min-w-0 flex-1 truncate rounded-md border bg-muted/40 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground"
+				>{curlCmd}</code
+			>
+			<button
+				onclick={copyCurl}
+				class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
+				>{curlCopied ? tr($lang, 'copiedLabel') : tr($lang, 'copyCurl')}</button
+			>
+			<a href={apiLink} class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
+				>API ↗</a
+			>
+		</div>
+	{/if}
+
+	<div class:vb-drawer-controls={embedded}>
+		<div
+			class="mb-3 flex flex-wrap items-center justify-between gap-2"
+			class:vb-toolbar-row={embedded}
+		>
+			<div class="flex flex-wrap items-center gap-2">
+				{#if onFilterToggle}
+					<button
+						type="button"
+						class="bv-filter-toggle"
+						class:active={filtersOpen}
+						aria-expanded={filtersOpen}
+						onclick={onFilterToggle}
+					>
+						{filterLabel}{#if filterCount}
+							<strong>{filterCount}</strong>{/if}
+					</button>
+				{/if}
+				{@render pagerSummary()}
+				{#if onShareQuery}
+					<button
+						type="button"
+						onclick={onShareQuery}
+						class="rounded-md border border-primary/25 bg-primary/8 px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary/12"
+					>
+						{shareQueryCopied ? shareQueryCopiedLabel : shareQueryLabel}
+					</button>
 				{/if}
 			</div>
-			<div class="flex flex-col gap-1">
-				<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'gene')}</span>
-				<input
-					bind:value={gene}
-					oninput={onInput}
-					onkeydown={(e) => e.key === 'Enter' && go()}
-					placeholder="ISG15"
-					class="w-24 rounded-md border bg-background px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-				/>
-			</div>
-			<div class="flex flex-col gap-1">
-				<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'alleleFreq')}</span>
-				<div class="flex items-center gap-1">
-					<input bind:value={afMin} oninput={onInput} placeholder="min" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" />
-					<span class="text-muted-foreground">–</span>
-					<input bind:value={afMax} oninput={onInput} placeholder="max" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" />
-				</div>
-			</div>
-			<div class="flex flex-col gap-1">
-				<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'alleleCount')}</span>
-				<div class="flex items-center gap-1">
-					<input bind:value={acMin} oninput={onInput} min={alleleCountReportingThreshold} type="number" placeholder={String(alleleCountReportingThreshold)} class="w-16 rounded-md border bg-background px-2 py-2 text-sm" title={`Exact AC filters use reportable values only (AC >= ${alleleCountReportingThreshold}).`} />
-					<span class="text-muted-foreground">–</span>
-					<input bind:value={acMax} oninput={onInput} min={alleleCountReportingThreshold} type="number" placeholder="max" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" title={`Exact AC filters use reportable values only (AC >= ${alleleCountReportingThreshold}).`} />
-				</div>
+			<div class="flex flex-wrap items-center gap-1">
+				{@render pagerControls()}
 			</div>
 		</div>
-		<div class="flex flex-wrap items-end gap-2">
-			<div class="relative flex flex-col gap-1">
-				<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">VEP impact</span>
-				<details class="relative" data-explorer-filter-menu="vep-impact">
-					<summary class="flex h-9 min-w-32 cursor-pointer list-none items-center justify-between gap-2 rounded-md border bg-background px-2.5 text-sm hover:bg-muted">
-						<span class="truncate">{vepImpactSummary}</span>
-						<span class="text-[10px] text-muted-foreground">▾</span>
-					</summary>
-					<div class="absolute left-0 top-full z-[70] mt-2 w-52 rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
-						<div class="mb-2 flex items-center justify-between border-b pb-2">
-							<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Impact</span>
-							<div class="flex items-center gap-1 text-[11px]">
-								<button type="button" onclick={() => setAllVepImpacts(true)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">All</button>
-								<button type="button" onclick={() => setAllVepImpacts(false)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">None</button>
-							</div>
-						</div>
-						<div class="grid gap-1">
-							{#each VEP_IMPACT_OPTIONS as impact}
-								<label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-muted">
-									<input type="checkbox" checked={selectedVepImpacts[impact]} onchange={() => toggleVepImpact(impact)} class="accent-[var(--primary)]" />
-									<span class={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${impactClass(impact)}`}>{impact}</span>
-								</label>
-							{/each}
-						</div>
-					</div>
-				</details>
+
+		{#if filtersOpen && filterPanel}
+			<div class="vb-filter-panel">
+				{@render filterPanel()}
 			</div>
-			<div class="relative flex flex-col gap-1">
-				<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">VEP consequence</span>
-				<details class="relative" data-explorer-filter-menu="vep-consequence">
-					<summary class="flex h-9 min-w-40 cursor-pointer list-none items-center justify-between gap-2 rounded-md border bg-background px-2.5 text-sm hover:bg-muted">
-						<span class="truncate">{vepConsequenceSummary}</span>
-						<span class="text-[10px] text-muted-foreground">▾</span>
-					</summary>
-					<div class="absolute left-0 top-full z-[70] mt-2 max-h-80 w-72 overflow-y-auto rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
-						<div class="sticky top-0 mb-2 flex items-center justify-between border-b bg-popover pb-2">
-							<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Consequence</span>
-							<div class="flex items-center gap-1 text-[11px]">
-								<button type="button" onclick={() => setAllVepConsequences(true)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">All</button>
-								<button type="button" onclick={() => setAllVepConsequences(false)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">None</button>
-							</div>
-						</div>
-						<div class="grid gap-1">
-							{#each VEP_CONSEQUENCE_OPTIONS as consequence}
-								<label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-muted">
-									<input type="checkbox" checked={selectedVepConsequences[consequence]} onchange={() => toggleVepConsequence(consequence)} class="accent-[var(--primary)]" />
-									<span class="min-w-0 truncate">{consequence}</span>
-								</label>
-							{/each}
-						</div>
-					</div>
-				</details>
-			</div>
-			<label class="flex flex-col text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-				{tr($lang, 'perPage')}
-				<select value={pageSize} onchange={(e) => setPageSize(Number((e.target as HTMLSelectElement).value))} class="rounded-md border bg-background px-2 py-2 text-sm text-foreground">
-					{#each [25, 50, 100, 200, 500] as n}<option value={n}>{n}</option>{/each}
-				</select>
-			</label>
-			<button onclick={reset} class="h-9 rounded-md border px-3 text-sm hover:bg-muted">{tr($lang, 'reset')}</button>
-			<button onclick={go} class="h-10 cursor-pointer rounded-md bg-primary px-6 text-sm font-bold text-primary-foreground shadow-sm hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2">Go</button>
-		</div>
+		{/if}
 	</div>
 
-	<!-- live curl for the current query -->
-	<div class="mb-3 flex items-center gap-2">
-		<code class="min-w-0 flex-1 truncate rounded-md border bg-muted/40 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground">{curlCmd}</code>
-		<button onclick={copyCurl} class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">{curlCopied ? tr($lang, 'copiedLabel') : tr($lang, 'copyCurl')}</button>
-		<a href={apiLink} class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">API ↗</a>
-	</div>
-
-	<div class="mb-3">{@render pager()}</div>
-
-	<div class="variant-results-shell relative min-h-32 rounded-md border" class:variant-results-loading={tableLoading}>
+	<div
+		class="variant-results-shell relative min-h-32 rounded-md"
+		class:variant-results-loading={tableLoading}
+	>
 		<div class="overflow-x-auto">
-		<table class={`w-full text-sm ${vepExpand || vrsExpand ? 'table-fixed' : ''}`} aria-busy={tableLoading}>
-			{#if vepExpand || vrsExpand}
-				<colgroup>
-					<col style={`width:${variantColWidth}`} />
-					<col class="w-20" />
-					{#if showGene}<col style={`width:${geneColWidth}`} />{/if}
-					{#if showVep}<col class="w-28" /><col class="w-28" />{/if}
-					<col style={`width:${frequencyColWidth}`} />
-					{#if showMaxAf}<col class="w-20" />{/if}
-					{#if showVrs}<col />{/if}
-					{#if showGnomad}<col class="w-9" />{/if}
-				</colgroup>
-			{/if}
-			<thead class="bg-muted/60 text-left text-xs uppercase tracking-wide text-muted-foreground">
-				<tr>
-					<th class={`py-2 pr-3 font-medium ${variantDetailIcon ? 'pl-7' : 'pl-3'}`}><button onclick={() => setSort('variant')} title="Genomic location on the GRCh38 assembly. Chromosome:position, then reference›alternate allele. Click to sort by position." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">{tr($lang, 'colVariant')} <span class="normal-case text-[9px] text-muted-foreground/70">GRCh38</span> <span class="text-[9px]">{ind('variant')}</span></button></th>
-					<th class="px-2 py-2 font-medium"><button onclick={() => setSort('rsid')} title="dbSNP Reference SNP cluster ID (rsID). Links out to NCBI dbSNP. Click to sort." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">rsID <span class="text-[9px]">{ind('rsid')}</span></button></th>
-					{#if showGene}<th class="px-3 py-2 font-medium"><button onclick={() => setSort('gene')} title="Gene(s) whose transcribed region overlaps this position (Ensembl). Click to sort by gene symbol." class="inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground">Gene <span class="text-[9px]">{ind('gene')}</span></button></th>{/if}
-					{#if showVep}
-						<th class="px-2 py-2 font-medium"><span title="Protein or coding HGVS string from the selected worst VEP annotation." class="cursor-help uppercase">HGVS</span></th>
-						<th class="px-2 py-2 font-medium"><span title="Worst Ensembl VEP consequence selected for display." class="cursor-help uppercase">VEP annotation</span></th>
-					{/if}
-					<th class="px-3 py-2 font-medium">
-						<div class="grid items-center gap-x-2 uppercase" style={`grid-template-columns:${popTmpl}`}>
-							{#if multiPop}<span class="cursor-help text-left" title="Cohort / population in which the allele frequencies on this row were measured.">{tr($lang, 'colPopulation')}</span>{/if}
-							<span></span>
-							<button onclick={() => setSort('maxaf')} title="Alternate allele frequency in this population = allele count ÷ allele number (AC ÷ AN). Click to sort." class="inline-flex cursor-help items-center justify-end gap-1 uppercase hover:text-foreground">Freq <span class="text-[9px]">{ind('maxaf')}</span></button>
-							{#if acAnSplit}
-								<span class="cursor-help text-right" title="Allele count: observed alternate alleles.">AC</span>
-								<span class="cursor-help text-right" title="Allele number: total alleles genotyped.">AN</span>
-							{:else}
-								<span class="cursor-help text-right" title="Allele count / allele number. Observed alternate alleles ÷ total alleles genotyped in this population.">AC/AN</span>
-							{/if}
-							{#if showGeno}
-								<span class="cursor-help text-right text-[9px] tracking-tight" title="HET: heterozygous individuals (one copy of the alternate allele).">HET</span>
-								<span class="cursor-help text-right text-[9px] tracking-tight" title="HOM_ALT: homozygous-alternate individuals (two copies of the alternate allele).">HOM_ALT</span>
-								<span class="cursor-help text-right text-[9px] tracking-tight" title="HOM_REF: homozygous-reference individuals (no copies of the alternate allele).">HOM_REF</span>
-							{/if}
-						</div>
-					</th>
-					{#if showMaxAf}<th class="whitespace-nowrap px-3 py-2 text-right font-medium"><button onclick={() => setSort('maxaf')} title="Highest alternate allele frequency across all populations shown for this variant. Click to sort." class="inline-flex cursor-help items-center gap-1 whitespace-nowrap uppercase hover:text-foreground">Max AF <span class="text-[9px]">{ind('maxaf')}</span></button></th>{/if}
-					{#if showVrs}
-						<th class={`min-w-0 py-2 font-medium ${vrsExpand ? 'w-full overflow-hidden px-0' : 'px-3'}`}>
-							<div class={vrsExpand ? 'vrs-collapse-content' : ''}>
-								<button onclick={() => setSort('vrs')} title="GA4GH VRS computed allele identifier (ga4gh:VA.…): a global, sequence-derived variant ID. Click a cell to copy the full ID." class="inline-flex min-w-0 max-w-full cursor-help items-center gap-1 truncate uppercase hover:text-foreground">VRS <span class="text-[9px]">{ind('vrs')}</span></button>
-							</div>
+			<table
+				class={`w-full text-sm ${useFixedTable ? 'table-fixed' : 'variant-table-auto'}`}
+				aria-busy={tableLoading}
+			>
+				{#if useFixedTable}
+					<colgroup>
+						<col style={`width:${variantColWidth}`} />
+						<col class="w-20" />
+						{#if showGene}<col style={`width:${geneColWidth}`} />{/if}
+						{#if showVep}<col class="w-28" /><col class="w-28" />{/if}
+						<col style={`width:${frequencyColWidth}`} />
+						{#if showMaxAf}<col class="w-20" />{/if}
+						{#if showVrs}<col />{/if}
+						{#if showGnomad}<col class="w-9" />{/if}
+					</colgroup>
+				{/if}
+				<thead
+					class={embedded
+						? 'vb-table-head'
+						: 'bg-muted/60 text-left text-xs uppercase tracking-wide text-muted-foreground'}
+				>
+					<tr>
+						<th
+							class={embedded
+								? `vb-head-cell${variantDetailIcon ? ' vb-head-cell-icon' : ''}`
+								: `py-2 pr-3 font-medium ${variantDetailIcon ? 'pl-7' : 'pl-3'}`}
+						>
+							<button
+								type="button"
+								onclick={() => setSort('variant')}
+								title="Genomic location on the GRCh38 assembly. Chromosome:position, then reference›alternate allele. Click to sort by position."
+								class={embedded
+									? 'vb-head-button'
+									: 'inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground'}
+							>
+								<span class={embedded ? 'vb-head-text' : ''}>{tr($lang, 'colVariant')}</span>
+								{#if embedded}<span class="vb-head-meta">GRCh38</span>{:else}<span
+										class="normal-case text-[9px] text-muted-foreground/70">GRCh38</span
+									>{/if}
+								<span class={embedded ? 'vb-head-sort' : 'text-[9px]'} aria-hidden="true"
+									>{ind('variant')}</span
+								>
+							</button>
 						</th>
-					{/if}
-					{#if showGnomad}<th class="w-9 py-2 pl-0 pr-4"><span class="sr-only">gnomAD</span></th>{/if}
-				</tr>
-			</thead>
-			<tbody>
-				{#each visibleRows as r (r.id)}
-					<tr class="border-t hover:bg-muted/40">
-						<td class={`relative whitespace-nowrap py-2 pr-3 font-mono text-xs ${variantDetailIcon ? 'pl-7' : 'pl-3'}`}>
-							<a href={variantHref(r)} title="View variant details" class="group inline-flex items-baseline gap-1 rounded-sm text-primary hover:underline focus:outline-none focus:ring-2 focus:ring-ring">
-								{#if variantDetailIcon}
-									<SearchIcon class="absolute left-2 top-1/2 size-3.5 -translate-y-1/2 opacity-70" aria-hidden="true" />
-								{/if}
-								<span class="font-semibold">chr{r.chromName}-{r.pos}</span>
-								<span class="text-muted-foreground group-hover:text-primary">-{r.ref}-{r.alt}</span>
-							</a>
-						</td>
-						<td class="whitespace-nowrap px-2 py-2">
-							{#if r.rsid}
-								<a class="text-primary hover:underline" href={`https://www.ncbi.nlm.nih.gov/snp/rs${r.rsid}`} target="_blank" rel="noreferrer">rs{r.rsid}</a>
-							{:else}<span class="text-muted-foreground">—</span>{/if}
-						</td>
+						<th class={embedded ? 'vb-head-cell' : 'px-2 py-2 font-medium'}>
+							<button
+								type="button"
+								onclick={() => setSort('rsid')}
+								title="dbSNP Reference SNP cluster ID (rsID). Links out to NCBI dbSNP. Click to sort."
+								class={embedded
+									? 'vb-head-button'
+									: 'inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground'}
+							>
+								<span class={embedded ? 'vb-head-text' : ''}>rsID</span>
+								<span class={embedded ? 'vb-head-sort' : 'text-[9px]'} aria-hidden="true"
+									>{ind('rsid')}</span
+								>
+							</button>
+						</th>
 						{#if showGene}
-							<td class={`px-3 py-2 ${vrsExpand ? 'min-w-0' : 'max-w-36'}`}>
-								{#if geneLabel(r)}
-									<span class="block truncate text-xs font-medium" title={r.genes?.map((g) => `${g.symbol} (${g.geneType}, ${g.ensemblId})`).join('\n')}>{geneLabel(r)}</span>
-								{:else}
-									<span class="text-muted-foreground">—</span>
-								{/if}
-							</td>
+							<th class={embedded ? 'vb-head-cell' : 'px-3 py-2 font-medium'}>
+								<button
+									type="button"
+									onclick={() => setSort('gene')}
+									title="Gene(s) whose transcribed region overlaps this position (Ensembl). Click to sort by gene symbol."
+									class={embedded
+										? 'vb-head-button'
+										: 'inline-flex cursor-help items-center gap-1 uppercase hover:text-foreground'}
+								>
+									<span class={embedded ? 'vb-head-text' : ''}>Gene</span>
+									<span class={embedded ? 'vb-head-sort' : 'text-[9px]'} aria-hidden="true"
+										>{ind('gene')}</span
+									>
+								</button>
+							</th>
 						{/if}
 						{#if showVep}
-							<td class="max-w-28 px-2 py-2">
-								{#if r.hgvsConsequence}
-									<span class="block truncate font-mono text-xs" title={r.hgvsConsequence}>{r.hgvsConsequence}</span>
-								{:else}
-									<span class="text-muted-foreground">—</span>
-								{/if}
-							</td>
-							<td class="min-w-0 max-w-28 px-2 py-2">
-								{#if r.vepLabel}
-									<a
-										href={explorerFilterHref('vepConsequence', r.vepLabel)}
-										class={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-ring ${impactClass(r.vepImpact)}`}
-										title={vepTitle(r)}
-									>
-										<span class="min-w-0 truncate">{r.vepLabel}</span>
-										{#if r.vepHasMultipleConsequences}<span class="shrink-0 text-[10px] opacity-75">+</span>{/if}
-									</a>
-								{:else if r.vepImpact}
-									<a
-										href={explorerFilterHref('vepImpact', r.vepImpact)}
-										class={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-ring ${impactClass(r.vepImpact)}`}
-										title={vepTitle(r)}
-									>
-										<span class="min-w-0 truncate">{r.vepImpact}</span>
-									</a>
-								{:else}
-									<span class="text-muted-foreground">—</span>
-								{/if}
-							</td>
+							<th class={embedded ? 'vb-head-cell' : 'px-2 py-2 font-medium'}>
+								<span
+									title="Protein or coding HGVS string from the selected worst VEP annotation."
+									class={embedded ? 'vb-head-text cursor-help' : 'cursor-help uppercase'}>HGVS</span
+								>
+							</th>
+							<th class={embedded ? 'vb-head-cell' : 'px-2 py-2 font-medium'}>
+								<span
+									title="Worst Ensembl VEP consequence selected for display."
+									class={embedded ? 'vb-head-text cursor-help' : 'cursor-help uppercase'}
+									>VEP annotation</span
+								>
+							</th>
 						{/if}
-						<td class="px-3 py-2">
-							<div class="grid items-center gap-x-2 gap-y-1" style={`grid-template-columns:${popTmpl}`}>
-								{#each r.frequencies as f}
-									{#if multiPop}
-										<span class="truncate text-xs text-muted-foreground" title={f.population}>{f.population}</span>
-									{/if}
-									<span class="af-track h-2 cursor-help overflow-hidden rounded-full" title={f.acMasked ? `${f.population} · ${maskTitle(f)}` : `${f.population} · alt allele freq ${fmtAfPercent(f.af ?? 0)} · AC ${f.ac}/${f.an}`}>
-										<span class="af-fill block h-full rounded-full" class:opacity-60={f.acMasked} style={`width:${Math.min(100, displayAfValue(f) * 100)}%`}></span>
-									</span>
-									<span class="text-right">
-										<span class={afValueClass(r, f)} title={f.acMasked ? maskTitle(f) : isHighestAf(r, f) ? `Highest frequency shown for this variant: ${f.population}` : undefined}>{displayAfLabel(f)}</span>
-									</span>
-									{#if acAnSplit}
-										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title={f.acMasked ? maskTitle(f) : 'allele count'}>{displayAcLabel(f)}</span>
-										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title="allele number">{f.an}</span>
-									{:else}
-										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title={f.acMasked ? maskTitle(f) : 'allele count / allele number'}>{displayAcLabel(f)}/{f.an}</span>
-									{/if}
-									{#if showGeno}
-										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title={f.genotypeMasked ? 'Too low to report exact genotype counts.' : 'heterozygous'}>{f.genotypeMasked ? 'low' : (f.nHetero ?? '—')}</span>
-										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title={f.genotypeMasked ? 'Too low to report exact genotype counts.' : 'homozygous alt'}>{f.genotypeMasked ? 'low' : (f.nHomo ?? '—')}</span>
-										<span class="text-right font-mono text-[10px] tabular-nums text-muted-foreground" title={f.genotypeMasked ? 'Too low to report exact genotype counts.' : 'homozygous ref'}>{f.genotypeMasked ? 'low' : (f.nHomoRef ?? '—')}</span>
-									{/if}
-								{/each}
+						<th class={embedded ? 'vb-head-cell vb-head-cell-pop' : 'px-3 py-2 font-medium'}>
+							<div
+								class={embedded ? 'vb-head-grid' : 'grid items-center gap-x-2 uppercase'}
+								style={`grid-template-columns:${popTmpl}`}
+							>
+								{#if multiPop}<span
+										class={embedded
+											? 'vb-head-text cursor-help text-left'
+											: 'cursor-help text-left'}
+										title="Cohort / population in which the allele frequencies on this row were measured."
+										>{tr($lang, 'colPopulation')}</span
+									>{/if}
+								<span aria-hidden="true"></span>
+								<button
+									type="button"
+									onclick={() => setSort('maxaf')}
+									title="Alternate allele frequency in this population = allele count ÷ allele number (AC ÷ AN). Click to sort."
+									class={embedded
+										? 'vb-head-button vb-head-button-end'
+										: 'inline-flex cursor-help items-center justify-end gap-1 uppercase hover:text-foreground'}
+								>
+									<span class={embedded ? 'vb-head-text' : ''}>Freq</span>
+									<span class={embedded ? 'vb-head-sort' : 'text-[9px]'} aria-hidden="true"
+										>{ind('maxaf')}</span
+									>
+								</button>
+								{#if acAnSplit}
+									<span
+										class={embedded
+											? 'vb-head-text cursor-help text-right'
+											: 'cursor-help text-right'}
+										title="Allele count: observed alternate alleles.">AC</span
+									>
+									<span
+										class={embedded
+											? 'vb-head-text cursor-help text-right'
+											: 'cursor-help text-right'}
+										title="Allele number: total alleles genotyped.">AN</span
+									>
+								{:else}
+									<span
+										class={embedded
+											? 'vb-head-text cursor-help text-right'
+											: 'cursor-help text-right'}
+										title="Allele count / allele number. Observed alternate alleles ÷ total alleles genotyped in this population."
+										>AC/AN</span
+									>
+								{/if}
+								{#if showGeno}
+									<span
+										class={embedded
+											? 'vb-head-text cursor-help text-right'
+											: 'cursor-help text-right text-[9px] tracking-tight'}
+										title="HET: heterozygous individuals (one copy of the alternate allele)."
+										>HET</span
+									>
+									<span
+										class={embedded
+											? 'vb-head-text cursor-help text-right'
+											: 'cursor-help text-right text-[9px] tracking-tight'}
+										title="HOM_ALT: homozygous-alternate individuals (two copies of the alternate allele)."
+										>HOM_ALT</span
+									>
+									<span
+										class={embedded
+											? 'vb-head-text cursor-help text-right'
+											: 'cursor-help text-right text-[9px] tracking-tight'}
+										title="HOM_REF: homozygous-reference individuals (no copies of the alternate allele)."
+										>HOM_REF</span
+									>
+								{/if}
 							</div>
-						</td>
-						{#if showMaxAf}<td class="px-3 py-2 text-right font-mono text-xs">{fmtAf(maxAf(r))}</td>{/if}
-						{#if showVrs}
-							<td class={`min-w-0 py-2 ${vrsExpand ? 'w-full max-w-0 overflow-hidden px-0' : 'px-3'}`}>
-								{#if r.vrsDigest}
-									<div class={vrsExpand ? 'vrs-collapse-content' : ''}>
-										<button
-											onclick={() => copyVrs(r.vrsDigest!)}
-											class={`box-border min-w-0 max-w-full rounded border px-1.5 py-0.5 font-mono text-[10px] hover:bg-muted ${vrsExpand ? 'inline-block truncate text-left align-middle' : ''}`}
-											title={`ga4gh:VA.${r.vrsDigest} · click to copy`}
-										>
-											{copied === r.vrsDigest ? 'copied!' : vrsExpand ? `VA.${r.vrsDigest}` : `VA.${r.vrsDigest.slice(0, 6)}…`}
-										</button>
-									</div>
-								{:else}<span class="text-muted-foreground">—</span>{/if}
-							</td>
+						</th>
+						{#if showMaxAf}
+							<th
+								class={embedded
+									? 'vb-head-cell text-right'
+									: 'whitespace-nowrap px-3 py-2 text-right font-medium'}
+							>
+								<button
+									type="button"
+									onclick={() => setSort('maxaf')}
+									title="Highest alternate allele frequency across all populations shown for this variant. Click to sort."
+									class={embedded
+										? 'vb-head-button vb-head-button-end'
+										: 'inline-flex cursor-help items-center gap-1 whitespace-nowrap uppercase hover:text-foreground'}
+								>
+									<span class={embedded ? 'vb-head-text' : ''}>Max AF</span>
+									<span class={embedded ? 'vb-head-sort' : 'text-[9px]'} aria-hidden="true"
+										>{ind('maxaf')}</span
+									>
+								</button>
+							</th>
 						{/if}
-						{#if showGnomad}
-							<td class="w-9 py-2 pl-0 pr-4 text-right">
-								<a href={gnomadUrl(r)} target="_blank" rel="noopener" title={`View ${r.chromName}-${r.pos}-${r.ref}-${r.alt} on gnomAD (r4)`} class="inline-flex items-center">
-									<img src="/icons/gnomad.png" alt="gnomAD" class="size-4 opacity-70 transition-opacity hover:opacity-100" />
+						{#if showVrs}
+							<th
+								class={embedded
+									? 'vb-head-cell'
+									: `min-w-0 py-2 font-medium ${vrsExpand ? 'w-full overflow-hidden px-0' : 'px-3'}`}
+							>
+								<div class={vrsExpand ? 'vrs-collapse-content' : ''}>
+									<button
+										type="button"
+										onclick={() => setSort('vrs')}
+										title="GA4GH VRS computed allele identifier (ga4gh:VA.…): a global, sequence-derived variant ID. Click a cell to copy the full ID."
+										class={embedded
+											? 'vb-head-button'
+											: 'inline-flex min-w-0 max-w-full cursor-help items-center gap-1 truncate uppercase hover:text-foreground'}
+									>
+										<span class={embedded ? 'vb-head-text' : ''}>VRS</span>
+										<span class={embedded ? 'vb-head-sort' : 'text-[9px]'} aria-hidden="true"
+											>{ind('vrs')}</span
+										>
+									</button>
+								</div>
+							</th>
+						{/if}
+						{#if showGnomad}<th
+								class={embedded ? 'vb-head-cell vb-head-cell-gnomad' : 'w-9 py-2 pl-0 pr-4'}
+								><span class="sr-only">gnomAD</span></th
+							>{/if}
+					</tr>
+				</thead>
+				<tbody>
+					{#each visibleRows as r (r.id)}
+						<tr class="border-t hover:bg-muted/40">
+							<td
+								class={`relative whitespace-nowrap py-2 pr-3 font-mono text-xs ${variantDetailIcon ? 'pl-7' : 'pl-3'}`}
+							>
+								<a
+									href={variantHref(r)}
+									data-sveltekit-preload-data="off"
+									onclick={(event) => openVariantDetail(variantHref(r), event)}
+									title="View variant details"
+									class="group inline-flex items-baseline gap-1 rounded-sm text-primary hover:underline focus:outline-none focus:ring-2 focus:ring-ring"
+								>
+									{#if variantDetailIcon}
+										<SearchIcon
+											class="absolute left-2 top-1/2 size-3.5 -translate-y-1/2 opacity-70"
+											aria-hidden="true"
+										/>
+									{/if}
+									<span class="font-semibold">chr{r.chromName}-{r.pos}</span>
+									<span class="text-muted-foreground group-hover:text-primary"
+										>-{r.ref}-{r.alt}</span
+									>
 								</a>
 							</td>
-						{/if}
-					</tr>
-				{/each}
-				{#if !visibleRows.length && !loading}
-					<tr><td colspan={colCount} class="px-3 py-10 text-center text-muted-foreground">{tr($lang, 'noVariants')}</td></tr>
-				{/if}
-			</tbody>
-		</table>
+							<td class="whitespace-nowrap px-2 py-2">
+								{#if r.rsid}
+									<a
+										class="text-primary hover:underline"
+										href={`https://www.ncbi.nlm.nih.gov/snp/rs${r.rsid}`}
+										target="_blank"
+										rel="noreferrer">rs{r.rsid}</a
+									>
+								{:else}<span class="text-muted-foreground">—</span>{/if}
+							</td>
+							{#if showGene}
+								<td class={`px-3 py-2 ${vrsExpand ? 'min-w-0' : 'max-w-36'}`}>
+									{#if geneLabel(r)}
+										<span
+											class="block truncate text-xs font-medium"
+											title={r.genes
+												?.map((g) => `${g.symbol} (${g.geneType}, ${g.ensemblId})`)
+												.join('\n')}>{geneLabel(r)}</span
+										>
+									{:else}
+										<span class="text-muted-foreground">—</span>
+									{/if}
+								</td>
+							{/if}
+							{#if showVep}
+								<td class="max-w-28 px-2 py-2">
+									{#if r.hgvsConsequence}
+										<span class="block truncate font-mono text-xs" title={r.hgvsConsequence}
+											>{r.hgvsConsequence}</span
+										>
+									{:else}
+										<span class="text-muted-foreground">—</span>
+									{/if}
+								</td>
+								<td class="min-w-0 max-w-28 px-2 py-2">
+									{#if r.vepLabel}
+										<a
+											href={explorerFilterHref('vepConsequence', r.vepLabel)}
+											class={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-ring ${impactClass(r.vepImpact)}`}
+											title={vepTitle(r)}
+										>
+											<span class="min-w-0 truncate">{r.vepLabel}</span>
+											{#if r.vepHasMultipleConsequences}<span
+													class="shrink-0 text-[10px] opacity-75">+</span
+												>{/if}
+										</a>
+									{:else if r.vepImpact}
+										<a
+											href={explorerFilterHref('vepImpact', r.vepImpact)}
+											class={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-ring ${impactClass(r.vepImpact)}`}
+											title={vepTitle(r)}
+										>
+											<span class="min-w-0 truncate">{r.vepImpact}</span>
+										</a>
+									{:else}
+										<span class="text-muted-foreground">—</span>
+									{/if}
+								</td>
+							{/if}
+							<td class="px-3 py-2">
+								<div
+									class="grid items-center gap-x-2 gap-y-1"
+									style={`grid-template-columns:${popTmpl}`}
+								>
+									{#each r.frequencies as f}
+										{#if multiPop}
+											<span class="truncate text-xs text-muted-foreground" title={f.population}
+												>{f.population}</span
+											>
+										{/if}
+										<span
+											class="af-track h-2 cursor-help overflow-hidden rounded-full"
+											title={f.acMasked
+												? `${f.population} · ${maskTitle(f)}`
+												: `${f.population} · alt allele freq ${fmtAfPercent(f.af ?? 0)} · AC ${f.ac}/${f.an}`}
+										>
+											<span
+												class="af-fill block h-full rounded-full"
+												class:opacity-60={f.acMasked}
+												style={`width:${Math.min(100, displayAfValue(f) * 100)}%`}
+											></span>
+										</span>
+										<span class="text-right">
+											<span
+												class={afValueClass(r, f)}
+												title={f.acMasked
+													? maskTitle(f)
+													: isHighestAf(r, f)
+														? `Highest frequency shown for this variant: ${f.population}`
+														: undefined}>{displayAfLabel(f)}</span
+											>
+										</span>
+										{#if acAnSplit}
+											<span
+												class="text-right font-mono text-[10px] tabular-nums text-muted-foreground"
+												title={f.acMasked ? maskTitle(f) : 'allele count'}>{displayAcLabel(f)}</span
+											>
+											<span
+												class="text-right font-mono text-[10px] tabular-nums text-muted-foreground"
+												title="allele number">{f.an}</span
+											>
+										{:else}
+											<span
+												class="text-right font-mono text-[10px] tabular-nums text-muted-foreground"
+												title={f.acMasked ? maskTitle(f) : 'allele count / allele number'}
+												>{displayAcLabel(f)}/{f.an}</span
+											>
+										{/if}
+										{#if showGeno}
+											<span
+												class="text-right font-mono text-[10px] tabular-nums text-muted-foreground"
+												title={f.genotypeMasked
+													? 'Too low to report exact genotype counts.'
+													: 'heterozygous'}>{f.genotypeMasked ? 'low' : (f.nHetero ?? '—')}</span
+											>
+											<span
+												class="text-right font-mono text-[10px] tabular-nums text-muted-foreground"
+												title={f.genotypeMasked
+													? 'Too low to report exact genotype counts.'
+													: 'homozygous alt'}>{f.genotypeMasked ? 'low' : (f.nHomo ?? '—')}</span
+											>
+											<span
+												class="text-right font-mono text-[10px] tabular-nums text-muted-foreground"
+												title={f.genotypeMasked
+													? 'Too low to report exact genotype counts.'
+													: 'homozygous ref'}>{f.genotypeMasked ? 'low' : (f.nHomoRef ?? '—')}</span
+											>
+										{/if}
+									{/each}
+								</div>
+							</td>
+							{#if showMaxAf}<td class="px-3 py-2 text-right font-mono text-xs"
+									>{fmtAf(maxAf(r))}</td
+								>{/if}
+							{#if showVrs}
+								<td
+									class={`min-w-0 py-2 ${vrsExpand ? 'w-full max-w-0 overflow-hidden px-0' : 'px-3'}`}
+								>
+									{#if r.vrsDigest}
+										<div class={vrsExpand ? 'vrs-collapse-content' : ''}>
+											<button
+												onclick={() => copyVrs(r.vrsDigest!)}
+												class={`box-border min-w-0 max-w-full rounded border px-1.5 py-0.5 font-mono text-[10px] hover:bg-muted ${vrsExpand ? 'inline-block truncate text-left align-middle' : ''}`}
+												title={`ga4gh:VA.${r.vrsDigest} · click to copy`}
+											>
+												{copied === r.vrsDigest
+													? 'copied!'
+													: vrsExpand
+														? `VA.${r.vrsDigest}`
+														: `VA.${r.vrsDigest.slice(0, 6)}…`}
+											</button>
+										</div>
+									{:else}<span class="text-muted-foreground">—</span>{/if}
+								</td>
+							{/if}
+							{#if showGnomad}
+								<td class="w-9 py-2 pl-0 pr-4 text-right">
+									<a
+										href={gnomadUrl(r)}
+										target="_blank"
+										rel="noopener"
+										title={`View ${r.chromName}-${r.pos}-${r.ref}-${r.alt} on gnomAD (r4)`}
+										class="inline-flex items-center"
+									>
+										<img
+											src="/icons/gnomad.png"
+											alt="gnomAD"
+											class="size-4 opacity-70 transition-opacity hover:opacity-100"
+										/>
+									</a>
+								</td>
+							{/if}
+						</tr>
+					{/each}
+					{#if !visibleRows.length && !loading}
+						<tr
+							><td colspan={colCount} class="px-3 py-10 text-center text-muted-foreground"
+								>{tr($lang, 'noVariants')}</td
+							></tr
+						>
+					{/if}
+				</tbody>
+			</table>
 		</div>
 		{#if tableLoading}
 			<div class="variant-table-overlay" aria-hidden="true">
@@ -1106,25 +1445,43 @@
 			</div>
 		{/if}
 	</div>
-
-	<div class="mt-3">{@render pager()}</div>
 </section>
 
-{#snippet pager()}
-	<div class="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
-		<span>{loading ? tr($lang, 'loadingLabel') : `${total.toLocaleString()} ${tr($lang, 'variantsLower')}`}</span>
-		<div class="flex flex-wrap items-center gap-1">
-			<button onclick={() => goPage(curPage - 1)} disabled={curPage <= 1} class="rounded-md border px-2.5 py-1 disabled:opacity-40 hover:bg-muted">{tr($lang, 'prev')}</button>
-			{#each pageItems as it}
-				{#if it === '…'}
-					<span class="px-1 text-muted-foreground">…</span>
-				{:else}
-					<button onclick={() => goPage(it)} class={`min-w-8 rounded-md border px-2 py-1 ${it === curPage ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}>{it}</button>
-				{/if}
-			{/each}
-			<button onclick={() => goPage(curPage + 1)} disabled={curPage >= totalPages} class="rounded-md border px-2.5 py-1 disabled:opacity-40 hover:bg-muted">{tr($lang, 'next')}</button>
-		</div>
-	</div>
+{#snippet pagerSummary()}
+	<span class="text-sm text-muted-foreground">
+		{loading
+			? tr($lang, 'loadingLabel')
+			: `${total.toLocaleString()} ${tr($lang, 'variantsLower')}`}
+		{#if !loading && paginationIsCapped}
+			<span class="ml-1 text-xs">first {reachableRows.toLocaleString()} browsable by page</span>
+		{/if}
+	</span>
+{/snippet}
+
+{#snippet pagerControls()}
+	<button
+		onclick={() => goPage(curPage - 1)}
+		disabled={curPage <= 1}
+		class="cursor-pointer rounded-md border px-2.5 py-1 disabled:cursor-default disabled:opacity-40 hover:bg-muted"
+		>{tr($lang, 'prev')}</button
+	>
+	{#each pageItems as it}
+		{#if it === '…'}
+			<span class="px-1 text-muted-foreground">…</span>
+		{:else}
+			<button
+				onclick={() => goPage(it)}
+				class={`min-w-8 cursor-pointer rounded-md border px-2 py-1 ${it === curPage ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
+				>{it}</button
+			>
+		{/if}
+	{/each}
+	<button
+		onclick={() => goPage(curPage + 1)}
+		disabled={curPage >= reachablePages}
+		class="cursor-pointer rounded-md border px-2.5 py-1 disabled:cursor-default disabled:opacity-40 hover:bg-muted"
+		>{tr($lang, 'next')}</button
+	>
 {/snippet}
 
 <style>
@@ -1142,7 +1499,6 @@
 		z-index: 50;
 		pointer-events: none;
 		background: rgba(255, 255, 255, 0.72);
-		backdrop-filter: blur(1.5px);
 		border-radius: inherit;
 	}
 
@@ -1190,5 +1546,218 @@
 		to {
 			transform: rotate(360deg);
 		}
+	}
+
+	.vb-embedded {
+		display: flex;
+		min-height: 0;
+		flex: 1;
+		flex-direction: column;
+		padding: 0;
+	}
+
+	.vb-embedded .vb-drawer-controls {
+		flex-shrink: 0;
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+	}
+
+	.vb-embedded .vb-toolbar-row {
+		flex-shrink: 0;
+		margin-bottom: 0 !important;
+		padding: 10px var(--om-space-m, 12px);
+	}
+
+	.vb-embedded .variant-results-shell {
+		min-height: 0;
+		flex: 1;
+		overflow: auto;
+	}
+
+	.vb-embedded :global(.vb-table-head) {
+		background: var(--column-header-bg, #f7f6f9);
+	}
+
+	.vb-embedded :global(.vb-table-head tr) {
+		height: var(--column-header-height, 32px);
+		background: var(--column-header-bg, #f7f6f9);
+	}
+
+	.vb-embedded :global(.vb-head-cell) {
+		box-sizing: border-box;
+		height: var(--column-header-height, 32px);
+		min-height: var(--column-header-height, 32px);
+		max-height: var(--column-header-height, 32px);
+		padding: 0 var(--column-header-padding-x, 12px);
+		border: 0;
+		vertical-align: middle;
+		background: var(--column-header-bg, #f7f6f9);
+		font-family: 'Inter', system-ui, sans-serif;
+		font-size: var(--column-header-size, 11px);
+		font-weight: var(--column-header-weight, 600);
+		letter-spacing: var(--column-header-tracking, 0.06em);
+		text-transform: uppercase;
+		color: var(--column-header-color, #5e5a72);
+		line-height: 1;
+		white-space: nowrap;
+	}
+
+	.vb-embedded :global(.vb-head-cell-icon) {
+		padding-left: calc(var(--column-header-padding-x, 12px) + 14px);
+	}
+
+	.vb-embedded :global(.vb-head-cell-pop) {
+		padding-left: var(--column-header-padding-x, 12px);
+		padding-right: var(--column-header-padding-x, 12px);
+	}
+
+	.vb-embedded :global(.vb-head-cell-gnomad) {
+		width: 2.25rem;
+		padding-right: 16px;
+	}
+
+	.vb-embedded :global(.vb-head-button) {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 0;
+		margin: 0;
+		border: 0;
+		background: transparent;
+		font: inherit;
+		color: inherit;
+		letter-spacing: inherit;
+		text-transform: inherit;
+		line-height: 1;
+		cursor: pointer;
+		white-space: nowrap;
+		vertical-align: middle;
+	}
+
+	.vb-embedded :global(.vb-head-button:hover) {
+		color: var(--om-teal-700, #2a697e);
+	}
+
+	.vb-embedded :global(.vb-head-button-end) {
+		justify-content: flex-end;
+		width: 100%;
+	}
+
+	.vb-embedded :global(.vb-head-text) {
+		font: inherit;
+		color: inherit;
+		letter-spacing: inherit;
+		text-transform: inherit;
+		line-height: 1;
+	}
+
+	.vb-embedded :global(.vb-head-meta),
+	.vb-embedded :global(.vb-head-sort) {
+		font-size: 9px;
+		font-weight: 500;
+		letter-spacing: 0.02em;
+		text-transform: none;
+		line-height: 1;
+		color: color-mix(in srgb, var(--column-header-color, #5e5a72) 78%, transparent);
+	}
+
+	.vb-embedded :global(.vb-head-grid) {
+		display: grid;
+		align-items: center;
+		width: 100%;
+		height: var(--column-header-height, 32px);
+		gap: 0 8px;
+		font: inherit;
+		color: inherit;
+		text-transform: uppercase;
+	}
+
+	.vb-context-header {
+		margin-bottom: 10px;
+	}
+
+	.vb-context-header p {
+		margin: 0;
+		overflow: hidden;
+		font-family: 'Inter', system-ui, sans-serif;
+		font-size: 12px;
+		font-weight: 600;
+		line-height: 1.35;
+		color: #5e5a72;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.bv-filter-toggle {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 6px;
+		border: 1px solid color-mix(in srgb, #cfcdd6 55%, transparent);
+		border-radius: 6px;
+		background: color-mix(in srgb, #ffffff 84%, transparent);
+		padding: 0 11px;
+		height: 30px;
+		font-family: 'Inter', system-ui, sans-serif;
+		font-size: 12px;
+		font-weight: 800;
+		line-height: 1;
+		color: #464257;
+		cursor: pointer;
+	}
+
+	.bv-filter-toggle:hover {
+		background: color-mix(in srgb, #ddeef3 64%, #ffffff);
+		color: #2a697e;
+	}
+
+	.bv-filter-toggle.active {
+		border-color: #272532;
+		background: #272532;
+		color: #ffffff;
+	}
+
+	.bv-filter-toggle strong {
+		display: grid;
+		min-width: 18px;
+		height: 18px;
+		place-items: center;
+		border-radius: 999px;
+		background: currentColor;
+		padding: 0 5px;
+		font-size: 10px;
+		line-height: 1;
+		color: color-mix(in srgb, #ffffff 85%, transparent);
+	}
+
+	.bv-filter-toggle.active strong {
+		color: #272532;
+	}
+
+	.vb-filter-panel {
+		margin-bottom: 12px;
+		flex-shrink: 0;
+		padding: 0 16px;
+	}
+
+	.vb-embedded .vb-filter-panel {
+		margin: 0;
+		padding: 0 var(--om-space-m, 12px) var(--om-space-s, 8px);
+		min-height: 0;
+	}
+
+	.vb-embedded .variant-results-shell > .overflow-x-auto {
+		overflow-x: auto;
+	}
+
+	.variant-table-auto {
+		width: max-content;
+		min-width: 100%;
+	}
+
+	.variant-table-auto td,
+	.variant-table-auto th {
+		white-space: nowrap;
 	}
 </style>

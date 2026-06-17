@@ -1,16 +1,7 @@
 <script lang="ts">
-	import BioVaultHome from '$lib/templates/BioVaultHome.svelte';
 	import AtlasHome from '$lib/templates/AtlasHome.svelte';
 
 	let { data } = $props();
-	const templates: Record<string, any> = {
-		biovault: BioVaultHome,
-		carigenetics: AtlasHome,
-		bipmed: AtlasHome,
-		'pgp-harvard': AtlasHome,
-		'1kgp': AtlasHome
-	};
-	const Template = $derived(templates[data.tenant.slug] ?? BioVaultHome);
 </script>
 
 <svelte:head>
@@ -18,4 +9,6 @@
 	<meta name="description" content={data.tenant.tagline} />
 </svelte:head>
 
-<Template {data} />
+{#if data.tenant.slug !== 'biovault'}
+	<AtlasHome {data} />
+{/if}

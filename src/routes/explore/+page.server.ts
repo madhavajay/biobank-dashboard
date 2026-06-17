@@ -1,17 +1,20 @@
-import { error } from '@sveltejs/kit';
+import { error, redirect } from '@sveltejs/kit';
 import { exploreFilterOptions, showGenotypeCounts } from '$lib/server/db/queries';
-import { explorerDisplay, hasExplorerConfig } from '$lib/explorer';
+import { explorerDisplay } from '$lib/explorer';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ locals, platform, url }) => {
-	const db = platform?.env?.DB;
+export const load: PageServerLoad = async ({ locals, url }) => {
+	if (locals.tenant.slug === 'biovault') {
+		throw redirect(307, `/${url.search}`);
+	}
+
+	const db = locals.db;
 	if (!db) throw error(500, 'D1 binding unavailable');
+
 	const filters = await exploreFilterOptions(db, locals.tenant.scope);
 	return {
-		options: filters.options,
-		populations: filters.populations,
-		q: url.searchParams.get('q') ?? '',
+		...filters,
 		showGenotypeCounts: await showGenotypeCounts(db, locals.tenant.scope),
-		display: hasExplorerConfig(locals.tenant.slug) ? explorerDisplay(locals.tenant.slug) : undefined
+		display: explorerDisplay(locals.tenant.slug)
 	};
 };

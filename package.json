@@ -14,10 +14,13 @@
 		"db:seed": "bun scripts/seed-db.ts --local",
 		"db:seed:local": "bun scripts/seed-db.ts --local",
 		"db:seed:remote": "bun scripts/seed-db.ts --remote",
+		"db:refresh-stats:remote": "bun scripts/refresh-explore-stats-remote.ts --apply",
+		"db:verify-stats:remote": "bun scripts/refresh-explore-stats-remote.ts --verify-only",
 		"db:export:vcf": "bun scripts/export-vcf.ts",
 		"db:export:loci-filter": "bun scripts/export-loci-filter.ts",
 		"db:import:1kgp": "bun scripts/import-1kgp-superpop-af.ts",
 		"prepare": "svelte-kit sync || echo ''",
+	"test": "bun test src/lib/search/variant-search.test.ts",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
 	},
@@ -38,6 +41,7 @@
 		"tailwind-variants": "^3.2.2",
 		"tailwindcss": "^4.2.2",
 		"typescript": "^6.0.2",
+		"vaul-svelte": "^1.0.0-next.7",
 		"vite": "^8.0.7",
 		"wrangler": "^4.11.1"
 	},

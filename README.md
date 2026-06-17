@@ -40,3 +40,28 @@ npm run build
 You can preview the production build with `npm run preview`.
 
 > To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+
+## BioVault Ops
+
+Routine UI deploy:
+
+```sh
+./deploy.sh
+```
+
+When variant/frequency/gene/dataset/cohort/population data changes, refresh the remote
+default explore cache:
+
+```sh
+bun run db:refresh-stats:remote
+```
+
+The deploy script verifies the required `explore:*` cache rows by default. For a
+data-changing deploy, use:
+
+```sh
+DATA_CHANGED=1 ./deploy.sh
+```
+
+Normal D1 Sessions/read replicas reduce global read latency; the `stats` cache avoids
+running expensive default explore queries at all. They are complementary.

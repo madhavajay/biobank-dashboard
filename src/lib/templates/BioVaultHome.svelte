@@ -63,7 +63,7 @@
 	const tenantFor = (slug: string) => TENANTS.find((t) => t.slug === slug);
 	const go = (slug: string) => `/?tenant=${slug}`;
 	const exploreLink = (q = '') =>
-		`/explore${q ? `?q=${encodeURIComponent(q)}` : ''}${data.forceTenant ? `${q ? '&' : '?'}tenant=${data.forceTenant}` : ''}`;
+		`/${q || data.forceTenant ? '?' : ''}${q ? `q=${encodeURIComponent(q)}` : ''}${data.forceTenant ? `${q ? '&' : ''}tenant=${data.forceTenant}` : ''}`;
 	const fmt = (n: number) => n.toLocaleString();
 	const tryQueries = ['BRCA1', 'rs1050828', 'p.Arg124His', 'G6PD', 'chr17:43078520'];
 	const sampleTotalFor = (slug: string) =>
@@ -109,7 +109,7 @@
 	{/each}
 </div>
 
-<form method="GET" action="/explore" class="mb-6 flex items-center gap-2 rounded-[var(--radius)] border bg-card p-2.5 shadow-sm">
+<form method="GET" action="/" class="mb-6 flex items-center gap-2 rounded-[var(--radius)] border bg-card p-2.5 shadow-sm">
 	{#if data.forceTenant}<input type="hidden" name="tenant" value={data.forceTenant} />{/if}
 	<svg viewBox="0 0 24 24" class="ml-2 size-5 text-muted-foreground" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
 	<input name="q" placeholder="Search variants, genes, rsIDs, regions, or HGVS consequences" class="flex-1 bg-transparent px-1 py-2 text-sm outline-none" />
@@ -153,7 +153,7 @@
 			{#each mapLabels as item}
 				<a
 					href={go(item.slug)}
-					class={`absolute z-20 rounded-full border bg-card/95 px-3 py-1 text-xs font-bold shadow-sm backdrop-blur hover:bg-muted ${item.class}`}
+					class={`absolute z-20 rounded-full border bg-card/95 px-3 py-1 text-xs font-bold shadow-sm hover:bg-muted ${item.class}`}
 				>
 					<span>{item.label}</span>
 					<span class="ml-1 font-mono text-[10px] text-muted-foreground">{fmt(item.slug === 'carigenetics' ? caribbeanSampleTotal : sampleTotalFor(item.slug))}</span>
@@ -163,7 +163,7 @@
 			{#each oneKgpPins as p}
 				<a
 					href={go('1kgp')}
-					class={`absolute z-30 rounded-md border bg-card/95 px-2.5 py-1.5 text-xs font-bold shadow-sm backdrop-blur hover:bg-muted ${superpopLayout[p.name] ?? 'left-[50%] top-[50%]'}`}
+					class={`absolute z-30 rounded-md border bg-card/95 px-2.5 py-1.5 text-xs font-bold shadow-sm hover:bg-muted ${superpopLayout[p.name] ?? 'left-[50%] top-[50%]'}`}
 					style={`border-color:${p.color}; background:${mixedBackground(p)}; color:white; text-shadow:0 1px 1px rgb(0 0 0 / 0.35)`}
 					onmouseenter={() => (activeSuperpop = p)}
 					onmouseleave={() => (activeSuperpop = null)}
@@ -193,7 +193,7 @@
 			{/if}
 
 			{#if bermudaPins.length}
-				<a href={go('carigenetics')} class="absolute left-[25%] top-[9%] z-20 w-28 overflow-hidden rounded-md border bg-card/95 p-1 shadow-lg backdrop-blur sm:left-[26%] sm:top-[10%] sm:w-32">
+				<a href={go('carigenetics')} class="absolute left-[25%] top-[9%] z-20 w-28 overflow-hidden rounded-md border bg-card/95 p-1 shadow-lg sm:left-[26%] sm:top-[10%] sm:w-32">
 					<div class="mb-1.5">
 						<div class="text-[9px] font-bold uppercase tracking-wider text-primary">Caribbean - Bermuda</div>
 						<div class="mt-0.5 text-[10px] text-muted-foreground">{fmt(bermudaPins[0].sampleCount)} of {fmt(caribbeanSampleTotal)} samples</div>
@@ -235,7 +235,7 @@
 						{@const layout = islandLayout(island.name, index)}
 						<a
 							href={go('carigenetics')}
-							class="absolute overflow-hidden rounded border bg-card/95 p-0.5 shadow-sm backdrop-blur hover:bg-muted"
+							class="absolute overflow-hidden rounded border bg-card/95 p-0.5 shadow-sm hover:bg-muted"
 							style={`left:${layout.left}%;top:${layout.top}%;width:4.5rem`}
 						>
 							<div class="truncate text-[7px] font-bold uppercase leading-tight tracking-wide text-primary" title={island.name}>{island.name}</div>

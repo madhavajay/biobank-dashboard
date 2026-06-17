@@ -13,6 +13,7 @@ declare global {
 		// interface Error {}
 		interface Locals {
 			tenant: Tenant;
+			db?: D1Database | D1DatabaseSession;
 		}
 		// interface PageData {}
 		// interface PageState {}

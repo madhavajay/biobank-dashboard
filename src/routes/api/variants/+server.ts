@@ -4,11 +4,13 @@ import { ALLELE_COUNT_REPORTING_THRESHOLD } from '$lib/privacy';
 import type { RequestHandler } from './$types';
 
 // params that, if present, mean this is NOT an unfiltered listing → must compute its total live.
-const FILTER_KEYS = ['q', 'gene', 'chrom', 'posMin', 'posMax', 'rsid', 'afMin', 'afMax', 'acMin', 'acMax', 'vepImpact', 'vepConsequence', 'cohorts', 'cohortMatch', 'biobanks', 'sort'];
+const FILTER_KEYS = ['q', 'gene', 'country', 'chrom', 'posMin', 'posMax', 'rsid', 'afMin', 'afMax', 'acMin', 'acMax', 'vepImpact', 'vepConsequence', 'cohorts', 'cohortMatch', 'biobanks', 'sort'];
 const TOTAL_FILTER_KEYS = FILTER_KEYS.filter((key) => key !== 'sort');
+const MAX_PAGE_BROWSABLE_ROWS = 10_000;
 
 export const GET: RequestHandler = async ({ url, locals, platform }) => {
-	const db = platform?.env?.DB;
+	const startedAt = performance.now();
+	const db = locals.db;
 	if (!db) throw error(500, 'D1 binding unavailable');
 	const num = (k: string) => (url.searchParams.has(k) ? Number(url.searchParams.get(k)) : undefined);
 	const biobanksParam = url.searchParams.get('biobanks');
@@ -16,21 +18,54 @@ export const GET: RequestHandler = async ({ url, locals, platform }) => {
 	const splitList = (k: string) => url.searchParams.get(k)?.split(',').map((v) => v.trim()).filter(Boolean);
 	const match = url.searchParams.get('match') === 'all' ? 'all' : 'any';
 	const cohortMatch = url.searchParams.get('cohortMatch') === 'all' ? 'all' : 'any';
+	const offset = Math.max(num('offset') ?? 0, 0);
+	const limit = Math.min(Math.max(num('limit') ?? 50, 1), 500);
+	const maxOffset = Math.max(MAX_PAGE_BROWSABLE_ROWS - limit, 0);
+
+	if (offset > maxOffset) {
+		return json(
+			{
+				error: `Offset is too deep for page-number pagination. Add filters/search, or use an offset of ${maxOffset} or less for this limit.`,
+				maxOffset,
+				maxPageBrowsableRows: MAX_PAGE_BROWSABLE_ROWS
+			},
+			{
+				status: 400,
+				headers: {
+					'Server-Timing': `total;dur=${(performance.now() - startedAt).toFixed(1)}`,
+					'X-BioVault-Query-Path': 'rejected-deep-offset'
+				}
+			}
+		);
+	}
 
 	// fast path: unfiltered pagination can reuse the precomputed `explore:<scope>` total.
 	const sp = url.searchParams;
+	const bypassStatsCache = sp.get('__cache') === 'skip';
 	const isUnfilteredDefaultShape =
+		!bypassStatsCache &&
 		!TOTAL_FILTER_KEYS.some((k) => sp.get(k)) &&
-		(num('limit') ?? 50) === 50 &&
+		limit === 50 &&
 		sp.get('format') !== 'csv';
+	const statsStartedAt = performance.now();
 	const cachedExplore = isUnfilteredDefaultShape ? await getStats(db, `explore:${locals.tenant.scope ?? 'global'}`) : null;
-	if (isUnfilteredDefaultShape && !sp.get('sort') && (num('offset') ?? 0) === 0) {
+	const statsMs = performance.now() - statsStartedAt;
+	if (isUnfilteredDefaultShape && !sp.get('sort') && offset === 0) {
 		if (cachedExplore) {
 			// gene annotations are baked into the cached rows by the seeder.
 			const rows = sanitizeVariantRowsForPublic(cachedExplore.rows);
-			return json({ tenant: locals.tenant.slug, total: cachedExplore.total, count: rows.length, alleleCountReportingThreshold: ALLELE_COUNT_REPORTING_THRESHOLD, rows });
+			return json(
+				{ tenant: locals.tenant.slug, total: cachedExplore.total, count: rows.length, alleleCountReportingThreshold: ALLELE_COUNT_REPORTING_THRESHOLD, rows },
+				{
+					headers: {
+						'Server-Timing': `stats;dur=${statsMs.toFixed(1)}, total;dur=${(performance.now() - startedAt).toFixed(1)}`,
+						'X-BioVault-Query-Path': 'stats-cache'
+					}
+				}
+			);
 		}
 	}
+	const searchStartedAt = performance.now();
 	const { rows, total } = await searchVariants(db, locals.tenant.scope, {
 		q: url.searchParams.get('q') ?? undefined,
 		chrom: num('chrom'),
@@ -38,6 +73,7 @@ export const GET: RequestHandler = async ({ url, locals, platform }) => {
 		posMax: num('posMax'),
 		rsid: num('rsid'),
 		gene: url.searchParams.get('gene') ?? undefined,
+		country: url.searchParams.get('country') ?? undefined,
 		afMin: num('afMin'),
 		afMax: num('afMax'),
 		acMin: num('acMin'),
@@ -48,8 +84,8 @@ export const GET: RequestHandler = async ({ url, locals, platform }) => {
 			? url.searchParams.get('cohorts')!.split(',').map(Number).filter((n) => !Number.isNaN(n))
 			: undefined,
 		cohortMatch,
-		limit: num('limit'),
-		offset: num('offset'),
+		limit,
+		offset,
 		biobanks,
 		match,
 		sort: (url.searchParams.get('sort') as any) ?? undefined,
@@ -57,6 +93,7 @@ export const GET: RequestHandler = async ({ url, locals, platform }) => {
 		skipTotal: Boolean(cachedExplore),
 		totalOverride: cachedExplore?.total
 	});
+	const searchMs = performance.now() - searchStartedAt;
 	const format = url.searchParams.get('format');
 	if (format === 'csv') {
 		const head = 'variant,rsid,genes,vep_label,vep_impact,hgvs_consequence,population,af,ac,an,masked,af_upper_bound,ac_upper_bound\n';
@@ -71,5 +108,13 @@ export const GET: RequestHandler = async ({ url, locals, platform }) => {
 			headers: { 'content-type': 'text/csv', 'content-disposition': 'attachment; filename="variants.csv"' }
 		});
 	}
-	return json({ tenant: locals.tenant.slug, total, count: rows.length, alleleCountReportingThreshold: ALLELE_COUNT_REPORTING_THRESHOLD, rows });
+	return json(
+		{ tenant: locals.tenant.slug, total, count: rows.length, alleleCountReportingThreshold: ALLELE_COUNT_REPORTING_THRESHOLD, rows },
+		{
+			headers: {
+				'Server-Timing': `stats;dur=${statsMs.toFixed(1)}, search;dur=${searchMs.toFixed(1)}, total;dur=${(performance.now() - startedAt).toFixed(1)}`,
+				'X-BioVault-Query-Path': cachedExplore ? 'live-query-cached-total' : isUnfilteredDefaultShape ? 'live-query-cache-miss' : 'live-query'
+			}
+		}
+	);
 };

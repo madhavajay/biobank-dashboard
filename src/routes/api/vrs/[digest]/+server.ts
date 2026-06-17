@@ -3,8 +3,8 @@ import { buildVrsAllele } from '$lib/server/db/queries';
 import { CODE_CHROM } from '$lib/server/db/chroms';
 import type { RequestHandler } from './$types';
 
-export const GET: RequestHandler = async ({ params, platform }) => {
-	const db = platform?.env?.DB;
+export const GET: RequestHandler = async ({ params, locals }) => {
+	const db = locals.db;
 	if (!db) throw error(500, 'D1 binding unavailable');
 	const digest = params.digest.replace(/^ga4gh:VA\./, '');
 	const v = await db

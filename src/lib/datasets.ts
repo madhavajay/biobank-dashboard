@@ -166,3 +166,9 @@ export function biobankSlugForDatasetSlug(slug?: string): string | undefined {
 	if (slug.startsWith('pgp')) return 'pgp-harvard';
 	return undefined;
 }
+
+export function cohortIdsForDatasetSlug(slug?: string): number[] {
+	if (!slug) return [];
+	const match = DATASETS.find((d) => d.id === slug);
+	return match?.cohortIds ?? [];
+}

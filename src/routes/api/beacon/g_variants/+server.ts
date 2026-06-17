@@ -23,7 +23,7 @@ function refNameToCode(name: string): number | null {
 }
 
 export const GET: RequestHandler = async ({ url, locals, platform }) => {
-	const db = platform?.env?.DB;
+	const db = locals.db;
 	if (!db) throw error(500, 'D1 binding unavailable');
 	const q = url.searchParams;
 	const refName = q.get('referenceName');

@@ -120,6 +120,7 @@ export const TENANTS: Tenant[] = [
 		product: '1000 Genomes Project Frequencies',
 		tagline: 'Super-population allele frequencies across BioVault tracked loci.',
 		logoEmoji: '🧬',
+		logoImg: '/1000gp.ico',
 		scope: '1kgp',
 		map: { center: [0, 0], zoom: 1 },
 		theme: {

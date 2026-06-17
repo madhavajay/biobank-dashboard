@@ -99,7 +99,7 @@
 
 	const tryQueries = ['BRCA1', 'rs2465136', 'p.Arg124His', '1:1000000-1100000', 'chr7'];
 	const exploreLink = (q: string) =>
-		`/explore?q=${encodeURIComponent(q)}${data.forceTenant ? `&tenant=${data.forceTenant}` : ''}`;
+		`/?q=${encodeURIComponent(q)}${data.forceTenant ? `&tenant=${data.forceTenant}` : ''}`;
 </script>
 
 <!-- try bar -->
@@ -111,7 +111,7 @@
 </div>
 
 <!-- search band -->
-<form method="GET" action="/explore" class="mb-6 flex items-center gap-2 rounded-[var(--radius)] border bg-card p-2.5 shadow-sm">
+<form method="GET" action="/" class="mb-6 flex items-center gap-2 rounded-[var(--radius)] border bg-card p-2.5 shadow-sm">
 	{#if data.forceTenant}<input type="hidden" name="tenant" value={data.forceTenant} />{/if}
 	<svg viewBox="0 0 24 24" class="ml-2 size-5 text-muted-foreground" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
 	<input name="q" placeholder={tr(L, 'search')} class="flex-1 bg-transparent px-1 py-2 text-sm outline-none" />
@@ -147,7 +147,7 @@
 					{#each pins as p}
 						<button
 							type="button"
-							class="rounded-md border bg-card/95 px-2.5 py-1.5 text-xs font-semibold shadow-sm backdrop-blur"
+							class="rounded-md border bg-card/95 px-2.5 py-1.5 text-xs font-semibold shadow-sm"
 							style={`border-color:${p.color}; background:${mixedBackground(p)}; color:white; text-shadow:0 1px 1px rgb(0 0 0 / 0.35)`}
 							onmouseenter={() => (activeSuperpop = p)}
 							onmouseleave={() => (activeSuperpop = null)}
@@ -161,7 +161,7 @@
 			{/if}
 			<GeoMap pins={mainMapPins} center={tenant.map.center} zoom={tenant.map.zoom} showMatchedDots={isCarigenetics || isOneKgp} showDots={!isCarigenetics && !isBipmed} showLabels={isCarigenetics || isOneKgp} labelScale={isCarigenetics ? 0.42 : isOneKgp ? 0.82 : 1} markerScale={isCarigenetics ? 0.08 : isOneKgp ? 1.28 : undefined} fit={isCarigenetics ? 'slice' : 'meet'} backgroundSource={isBipmed ? '/world.geo.json' : null} source={mapSource} highlightedCountries={activeCountryNames} highlightAllFeatures={isBipmed} tooltipPlacement={isCarigenetics ? 'open-water' : 'top-left'} showTooltip={!isCarigenetics} onhover={(p) => (mapHover = p)} />
 			{#if isCarigenetics && bermudaPins.length}
-				<div class="absolute right-3 top-3 h-32 w-44 overflow-hidden rounded-md border bg-card/95 p-1.5 shadow-lg backdrop-blur">
+				<div class="absolute right-3 top-3 h-32 w-44 overflow-hidden rounded-md border bg-card/95 p-1.5 shadow-lg">
 					<div
 						class="absolute left-2 top-2 z-10 cursor-pointer rounded border bg-card/90 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
 						style={`border-color:${bermudaPins[0].color}`}
@@ -178,7 +178,7 @@
 				</div>
 			{/if}
 			{#if isCarigenetics && mapHover}
-				<div class="pointer-events-none absolute left-[27%] top-[70%] z-20 -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-popover/95 px-3 py-2 text-xs shadow-lg backdrop-blur">
+				<div class="pointer-events-none absolute left-[27%] top-[70%] z-20 -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-popover/95 px-3 py-2 text-xs shadow-lg">
 					<div class="font-semibold text-popover-foreground">{mapHover.name}</div>
 					<div class="mt-1 flex gap-3 text-popover-foreground">
 						<span>{fmt(mapHover.sampleCount)} samples</span>

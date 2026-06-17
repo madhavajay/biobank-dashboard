@@ -134,3 +134,234 @@ body {
 	border-radius: 9999px;
 	animation: bv-indeterminate 1.05s ease-in-out infinite;
 }
+
+.site-modal-title {
+	margin: 0;
+	font-size: clamp(1.5rem, 2.4vw, 1.875rem);
+	font-weight: 700;
+	line-height: 1.15;
+	letter-spacing: -0.02em;
+}
+
+.site-modal-lead {
+	margin: 0.75rem 0 0;
+	color: var(--muted-foreground);
+	line-height: 1.5;
+}
+
+.site-modal-subtitle {
+	margin: 1.5rem 0 0.75rem;
+	font-size: 1.05rem;
+	font-weight: 600;
+}
+
+.site-modal-copy {
+	font-size: 0.875rem;
+	line-height: 1.6;
+	color: var(--muted-foreground);
+}
+
+.site-modal-copy-lg {
+	font-size: 1.05rem;
+	line-height: 1.65;
+	color: var(--foreground);
+}
+
+.site-modal-copy-stack {
+	margin-top: 1.5rem;
+	display: grid;
+	gap: 1rem;
+	font-size: 0.875rem;
+	line-height: 1.6;
+	color: var(--muted-foreground);
+}
+
+.site-modal-grid {
+	margin-top: 0.75rem;
+	display: grid;
+	gap: 0.75rem;
+}
+
+@media (min-width: 640px) {
+	.site-modal-grid {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+}
+
+.site-modal-tags,
+.site-modal-form {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+}
+
+.site-modal-form {
+	margin-top: 1.25rem;
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 1rem;
+}
+
+.site-modal-field-wide {
+	grid-column: 1 / -1;
+}
+
+.site-modal-label {
+	display: block;
+	margin-bottom: 0.25rem;
+	font-size: 0.75rem;
+	font-weight: 500;
+	color: var(--muted-foreground);
+}
+
+.site-modal-input {
+	width: 100%;
+	border: 1px solid var(--border);
+	border-radius: calc(var(--radius) - 4px);
+	background: var(--background);
+	padding: 0.5rem 0.75rem;
+	font-size: 0.875rem;
+}
+
+.site-modal-input:focus {
+	border-color: var(--primary);
+	outline: 1px solid var(--ring);
+}
+
+.site-modal-error {
+	margin-top: 0.25rem;
+	font-size: 0.75rem;
+	color: var(--destructive);
+}
+
+.site-modal-success {
+	margin-top: 0.75rem;
+	font-size: 0.875rem;
+	color: var(--primary);
+}
+
+.site-modal-submit {
+	border: 0;
+	border-radius: calc(var(--radius) - 4px);
+	padding: 0.5rem 1.25rem;
+	font-size: 0.875rem;
+	font-weight: 600;
+	color: white;
+}
+
+.site-modal-placeholder {
+	margin-top: 1rem;
+	padding: 1.25rem;
+	font-size: 0.875rem;
+	color: var(--muted-foreground);
+}
+
+.site-modal-table-wrap {
+	margin-top: 1.25rem;
+	overflow: hidden;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+}
+
+.site-modal-table {
+	width: 100%;
+	font-size: 0.875rem;
+}
+
+.site-modal-table tr + tr {
+	border-top: 1px solid var(--border);
+}
+
+.site-modal-table td {
+	padding: 0.5rem 0.75rem;
+	vertical-align: top;
+}
+
+.site-modal-method {
+	display: inline-block;
+	border-radius: 999px;
+	background: color-mix(in oklch, var(--primary) 12%, transparent);
+	padding: 0.125rem 0.375rem;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+	font-size: 0.68rem;
+	font-weight: 600;
+	color: var(--primary);
+}
+
+.site-modal-api-panel {
+	margin-top: 1.25rem;
+	padding: 1.25rem;
+}
+
+.site-modal-chip {
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	background: transparent;
+	padding: 0.25rem 0.75rem;
+	font-size: 0.75rem;
+}
+
+.site-modal-chip:hover {
+	background: var(--muted);
+}
+
+.site-modal-api-controls {
+	margin-top: 0.75rem;
+	display: flex;
+	gap: 0.5rem;
+}
+
+.site-modal-method-select {
+	width: 5.5rem;
+	flex-shrink: 0;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.site-modal-path-input {
+	flex: 1;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.site-modal-run {
+	flex-shrink: 0;
+}
+
+.site-modal-code {
+	margin-top: 0.5rem;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+	font-size: 0.75rem;
+}
+
+.site-modal-api-meta {
+	margin-top: 0.75rem;
+	display: flex;
+	gap: 0.75rem;
+	font-size: 0.75rem;
+	color: var(--muted-foreground);
+}
+
+.site-modal-status-ok {
+	font-weight: 600;
+	color: var(--primary);
+}
+
+.site-modal-pre {
+	margin-top: 0.5rem;
+	max-height: 28rem;
+	overflow: auto;
+	border: 1px solid var(--border);
+	border-radius: calc(var(--radius) - 4px);
+	background: color-mix(in oklch, var(--muted) 45%, transparent);
+	padding: 0.75rem;
+	font-size: 0.75rem;
+	line-height: 1.5;
+}
+
+.site-modal-kicker {
+	margin: 0 0 0.25rem;
+	font-size: 0.68rem;
+	font-weight: 600;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted-foreground);
+}

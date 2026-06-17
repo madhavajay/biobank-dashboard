@@ -3,7 +3,7 @@ import { buildVrsAllele, canonicalVariantId, resolveVariantIdentifier } from '$l
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals, params, platform, url }) => {
-	const db = platform?.env?.DB;
+	const db = locals.db;
 	if (!db) throw error(500, 'D1 binding unavailable');
 
 	const variant = await resolveVariantIdentifier(db, params.id, locals.tenant.scope);
@@ -13,8 +13,8 @@ export const load: PageServerLoad = async ({ locals, params, platform, url }) =>
 	const frequencies = scope ? variant.frequencies.filter((f) => f.biobankSlug === scope) : variant.frequencies;
 	if (scope && frequencies.length === 0) throw error(404, 'variant not found');
 	const canonical = canonicalVariantId(variant);
-	if (/^\d+$/.test(params.id) && params.id !== canonical) {
-		const query = url.searchParams.toString();
+	const query = url.searchParams.toString();
+	if (params.id !== canonical && (/^\d+$/.test(params.id) || decodeURIComponent(params.id) !== canonical)) {
 		throw redirect(308, `/explore/variant/${encodeURIComponent(canonical)}${query ? `?${query}` : ''}`);
 	}
 

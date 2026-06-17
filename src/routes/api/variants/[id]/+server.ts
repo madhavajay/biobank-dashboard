@@ -4,7 +4,7 @@ import { ALLELE_COUNT_REPORTING_THRESHOLD } from '$lib/privacy';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ locals, params, url, platform }) => {
-	const db = platform?.env?.DB;
+	const db = locals.db;
 	if (!db) throw error(500, 'D1 binding unavailable');
 	const v = await resolveVariantIdentifier(db, params.id, locals.tenant.scope);
 	if (!v) throw error(404, 'variant not found');

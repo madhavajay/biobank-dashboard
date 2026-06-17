@@ -13,6 +13,7 @@ const CORS: Record<string, string> = {
 export const handle: Handle = async ({ event, resolve }) => {
 	const override = event.url.searchParams.get('tenant');
 	event.locals.tenant = resolveTenant(event.request.headers.get('host'), override);
+	event.locals.db = event.platform?.env?.DB?.withSession('first-unconstrained');
 
 	const isApi = event.url.pathname.startsWith('/api');
 	if (isApi && event.request.method === 'OPTIONS') {

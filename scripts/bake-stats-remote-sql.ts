@@ -98,7 +98,7 @@ function buildStats(bids: number[]) {
 	const biobanks = banks.map((b) => {
 		const pops = q(
 			`SELECT p.id,p.name,p.country,p.country_code,p.lat,p.lon,c.id cohort_id,c.sample_count,
-			        (SELECT COUNT(*) FROM frequencies f WHERE f.cohort_id=c.id) variant_count
+			        (SELECT COUNT(DISTINCT f.variant_id) FROM frequencies f WHERE f.cohort_id=c.id AND f.ac > 0) variant_count
 			 FROM populations p JOIN cohorts c ON c.population_id=p.id WHERE p.biobank_id=? ORDER BY p.name`, b.id
 		);
 		const pids = pops.map((p) => p.id);

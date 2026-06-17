@@ -33,7 +33,7 @@
 				classes: {
 					root: 'z-30',
 					content:
-						'rounded-[1rem] border border-white/50 bg-white/70 px-3 py-2 text-foreground shadow-[0_16px_36px_rgba(31,49,87,0.14)] backdrop-blur-xl'
+						'rounded-[1rem] border border-white/50 bg-white/70 px-3 py-2 text-foreground shadow-[0_16px_36px_rgba(31,49,87,0.14)]'
 				}
 			}
 		}
