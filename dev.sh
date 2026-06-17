@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 SEED_MARKER=".wrangler/.seeded"
-MODE="${MODE:-remote}"
+MODE="${MODE:-vite}"
 PORT="${PORT:-8787}"
 REMOTE=0
 

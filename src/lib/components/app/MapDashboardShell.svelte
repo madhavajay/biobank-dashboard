@@ -275,6 +275,7 @@
 	let selectedCode = $state<string | null>(null);
 	let selectedDatasetSlug = $state<string | null>(null);
 	let searchQuery = $state('');
+	let countryPickerOpen = $state(false);
 
 	setContext(key, {
 		getMap: () => map
@@ -311,7 +312,7 @@
 				if (center) upsert(m.countryCode, m.country, m.sampleCount, p.variantCount, center, p.name);
 			}
 		}
-		return [...byCode.values()].sort((a, b) => b.samples - a.samples || a.name.localeCompare(b.name));
+		return [...byCode.values()].sort((a, b) => a.name.localeCompare(b.name));
 	});
 
 	const tenantFor = (slug?: string) => TENANTS.find((tenant) => tenant.slug === slug);
@@ -496,6 +497,12 @@
 		const country = findMapSearchMatch(searchQuery);
 		if (!country) return;
 		event.preventDefault();
+		flyToCountry(country);
+	}
+
+	function pickCountry(country: CountryRow) {
+		searchQuery = country.name;
+		countryPickerOpen = false;
 		flyToCountry(country);
 	}
 
@@ -695,6 +702,9 @@
 	}
 
 	function clearCountrySelection() {
+		if (selectedCountry && normalizeSearch(searchQuery) === normalizeSearch(selectedCountry.name)) {
+			searchQuery = '';
+		}
 		selectedCode = null;
 		if (selectedDataset) {
 			flyToDatasetView(selectedDataset);
@@ -849,6 +859,7 @@
 
 	function flyToCountry(country: CountryRow, options: { keepDataset?: boolean } = {}) {
 		selectedCode = country.code;
+		searchQuery = country.name;
 		if (!options.keepDataset && selectedDatasetSlug) {
 			const datasetCodes = selectedDataset ? countryCodesForDataset(selectedDataset) : [];
 			if (!datasetCodes.includes(country.code)) {
@@ -965,6 +976,33 @@
 	<div class="map" use:initMap></div>
 
 	<form method="GET" action="/explore" class="global-search" onsubmit={handleSearchSubmit}>
+		<div class="country-picker">
+			<button
+				type="button"
+				class="country-picker-trigger"
+				aria-expanded={countryPickerOpen}
+				onclick={() => (countryPickerOpen = !countryPickerOpen)}
+			>
+				<span>{tx('Countries', 'Países')}</span>
+				<strong>{countryRows.length}</strong>
+			</button>
+			{#if countryPickerOpen}
+				<div class="country-picker-menu">
+					{#each countryRows as country}
+						<button type="button" class:active={country.code === selectedCode} onclick={() => pickCountry(country)}>
+							<span class="country-main">
+								<span>{country.name}</span>
+								<small>{country.sources.slice(0, 2).join(' + ')}</small>
+							</span>
+							<span class="country-count">
+								<strong>{fmt(country.samples)}</strong>
+								<small>{country.code}</small>
+							</span>
+						</button>
+					{/each}
+				</div>
+			{/if}
+		</div>
 		<input
 			bind:value={searchQuery}
 			list="dashboard-search-suggestions"
@@ -983,7 +1021,7 @@
 			<option value="rs1050828">rsID</option>
 			<option value="chr17:43078520">{tx('Position', 'Posição')}</option>
 		</datalist>
-		<button>{tx('Explore', 'Explorar')}</button>
+		<button class="search-submit">{tx('Explore', 'Explorar')}</button>
 	</form>
 
 	<div class="floating-title">
@@ -1021,6 +1059,7 @@
 	</nav>
 
 	{#if isHome}
+	{#if selectedCountry || selectedDataset}
 	<aside class="country-panel" aria-label={tx('Countries by sample count', 'Países por número de amostras')}>
 		{#snippet panelLogo(slug?: string)}
 			{@const tenant = tenantFor(slug)}
@@ -1147,27 +1186,9 @@
 					</div>
 				</div>
 			</div>
-		{:else}
-			<div class="panel-heading">
-				<h2>{tx('Countries by samples', 'Países por amostras')}</h2>
-			</div>
-
-			<div class="country-list">
-				{#each countryRows as country}
-					<button type="button" class:active={country.code === selectedCode} onclick={() => flyToCountry(country)}>
-						<span class="country-main">
-							<span>{country.name}</span>
-							<small>{country.sources.slice(0, 2).join(' + ')}</small>
-						</span>
-						<span class="country-count">
-							<strong>{fmt(country.samples)}</strong>
-							<small>{country.code}</small>
-						</span>
-					</button>
-				{/each}
-			</div>
 		{/if}
 	</aside>
+	{/if}
 
 	<section class="variant-mix" aria-label={tx('Variants', 'Variantes')}>
 		<div class="variant-head">
@@ -1433,11 +1454,93 @@
 	}
 
 	.global-search input,
-	.global-search button {
+	.search-submit,
+	.country-picker-trigger {
 		box-sizing: border-box;
 		height: var(--search-control-height);
 		margin: 0;
 		border: 0;
+	}
+
+	.country-picker {
+		position: relative;
+		flex-shrink: 0;
+	}
+
+	.country-picker-trigger {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		border-radius: var(--om-radius-s);
+		background: color-mix(in srgb, var(--om-white) 92%, transparent);
+		box-shadow: var(--search-shadow);
+		padding: 0 14px;
+		font-family: 'Inter', system-ui, sans-serif;
+		color: var(--om-gray-700);
+		cursor: pointer;
+	}
+
+	.country-picker-trigger:hover,
+	.country-picker-trigger[aria-expanded='true'] {
+		background: color-mix(in srgb, var(--om-teal-100) 70%, var(--om-white));
+		color: var(--om-teal-700);
+	}
+
+	.country-picker-trigger span {
+		font-size: 13px;
+		font-weight: 800;
+		line-height: 1;
+	}
+
+	.country-picker-trigger strong {
+		display: grid;
+		min-width: 25px;
+		height: 24px;
+		place-items: center;
+		border-radius: 999px;
+		background: var(--om-gray-850);
+		padding: 0 8px;
+		font-size: 11px;
+		font-weight: 800;
+		line-height: 1;
+		color: var(--om-white);
+	}
+
+	.country-picker-menu {
+		position: absolute;
+		z-index: 5;
+		top: calc(100% + 8px);
+		left: 0;
+		display: grid;
+		width: min(360px, calc(100vw - 32px));
+		max-height: min(430px, calc(100vh - 110px));
+		overflow: auto;
+		border-radius: var(--om-radius-m);
+		background: color-mix(in srgb, var(--om-white) 94%, transparent);
+		box-shadow: 0 16px 42px rgb(46 43 59 / 0.14);
+		backdrop-filter: blur(16px);
+		padding: var(--om-space-xs);
+	}
+
+	.country-picker-menu button {
+		display: grid;
+		width: 100%;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		gap: var(--om-space-m);
+		border: 0;
+		border-radius: var(--om-radius-s);
+		background: transparent;
+		padding: var(--om-space-s) 9px;
+		color: var(--om-gray-850);
+		font-family: 'Inter', system-ui, sans-serif;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.country-picker-menu button:hover,
+	.country-picker-menu button.active {
+		background: color-mix(in srgb, var(--om-teal-100) 72%, var(--om-white));
 	}
 
 	.global-search input {
@@ -1465,7 +1568,7 @@
 			0 0 0 3px color-mix(in srgb, var(--om-teal-600) 18%, transparent);
 	}
 
-	.global-search button {
+	.search-submit {
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -1482,11 +1585,11 @@
 		appearance: none;
 	}
 
-	.global-search button:hover {
+	.search-submit:hover {
 		background: var(--om-green-600);
 	}
 
-	.global-search button:active {
+	.search-submit:active {
 		background: var(--om-teal-700);
 	}
 
@@ -1729,8 +1832,7 @@
 		cursor: pointer;
 	}
 
-	.country-list button:hover,
-	.country-list button.active {
+	.country-list button:hover {
 		background: color-mix(in srgb, var(--om-teal-100) 72%, var(--om-white));
 	}
 
