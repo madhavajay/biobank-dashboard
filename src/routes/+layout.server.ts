@@ -1,7 +1,8 @@
 import { error } from '@sveltejs/kit';
 import type { LayoutServerLoad } from './$types';
 import { themeVars } from '$lib/tenants';
-import { biobanksOverview, tenantStats, getDatasets, getStats } from '$lib/server/db/queries';
+import { biobanksOverview, tenantStats, getDatasets, getStats, exploreFilterOptions, showGenotypeCounts } from '$lib/server/db/queries';
+import { explorerDisplay } from '$lib/explorer';
 
 const ANALYTICS_SITE_ID = '179bcc95f91b';
 const ANALYTICS_SITE_DOMAIN = 'data.biovault.net';
@@ -30,6 +31,11 @@ export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 			: null;
 
 	let dashboard = null;
+	let options: { slug: string; name: string }[] = [];
+	let populations: { cohortId: number; name: string; biobankSlug: string; biobankName: string }[] = [];
+	let showGenotypeCountsFlag = true;
+	let display = explorerDisplay(locals.tenant.slug);
+
 	if (locals.tenant.slug === 'biovault') {
 		const db = locals.db;
 		if (!db) throw error(500, 'D1 binding unavailable — run with wrangler/vite dev');
@@ -38,22 +44,27 @@ export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 		const datasetRows = await getDatasets(db, scope);
 		const datasets = datasetRows.map((d) => ({ id: d.id, slug: d.slug, ...d.metadata }));
 		const cached = await getStats(db, `home:${scope ?? 'global'}`);
+		const filters = await exploreFilterOptions(db, scope);
+		options = filters.options;
+		populations = filters.populations;
+		showGenotypeCountsFlag = await showGenotypeCounts(db, scope);
+		display = explorerDisplay(locals.tenant.slug);
 
 		if (cached) {
 			dashboard = { ...cached, datasets };
 		} else {
 			const biobanks = await biobanksOverview(db, scope);
 			const stats = await tenantStats(db, scope);
-			const populations = biobanks.flatMap((b) => b.populations.map((p) => ({ ...p, biobankSlug: b.slug, biobankName: b.name })));
+			const dashboardPopulations = biobanks.flatMap((b) => b.populations.map((p) => ({ ...p, biobankSlug: b.slug, biobankName: b.name })));
 			dashboard = {
 				biobanks,
-				populations,
+				populations: dashboardPopulations,
 				datasets,
 				totals: {
-					participants: populations.reduce((s, p) => s + p.sampleCount, 0),
+					participants: dashboardPopulations.reduce((s, p) => s + p.sampleCount, 0),
 					datasetCount: datasets.length,
 					variants: stats.variants,
-					populations: populations.length
+					populations: dashboardPopulations.length
 				},
 				variantClasses: { common: stats.common, lowFreq: stats.lowFreq, rare: stats.rare }
 			};
@@ -65,6 +76,10 @@ export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 		themeStyle: themeVars(locals.tenant),
 		forceTenant: url.searchParams.get('tenant') ?? '',
 		analytics,
-		dashboard
+		dashboard,
+		options,
+		populations,
+		showGenotypeCounts: showGenotypeCountsFlag,
+		display
 	};
 };

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy, setContext } from 'svelte'
+	import { onDestroy, onMount, setContext } from 'svelte'
 	import { page } from '$app/state'
 	import type { Action } from 'svelte/action'
 	import type {
@@ -20,7 +20,7 @@
 	import VariantBrowser from '$lib/components/widgets/VariantBrowser.svelte'
 	import VariantDetailPage from '$lib/components/app/VariantDetailPage.svelte'
 	import type { PageServerData as VariantPageData } from '../../routes/explore/variant/[id]/$types'
-	import { goto } from '$app/navigation'
+	import { goto, replaceState } from '$app/navigation'
 	import * as Drawer from '$lib/components/ui/drawer/index.js'
 
 	type Population = {
@@ -651,6 +651,7 @@
 	let selectedCode = $state<string | null>(null)
 	let selectedDatasetSlug = $state<string | null>(null)
 	let searchQuery = $state('')
+	let appliedSearchQuery = $state('')
 	let countryPickerOpen = $state(false)
 	let drawerFiltersOpen = $state(false)
 	let filterGene = $state('')
@@ -677,6 +678,16 @@
 	let lastExploreQueryString = ''
 	let curlCopied = $state(false)
 	let shareCopied = $state(false)
+	let routerReady = $state(false)
+	let pendingResultsUrlOpen: boolean | null = null
+
+	onMount(() => {
+		routerReady = true
+		if (pendingResultsUrlOpen !== null) {
+			syncResultsUrl(pendingResultsUrlOpen)
+			pendingResultsUrlOpen = null
+		}
+	})
 
 	setContext(key, {
 		getMap: () => map,
@@ -766,9 +777,42 @@
 			Number(filterPageSize !== 50)
 	)
 
+	function exploreUrlKey(pathname: string, sp: URLSearchParams) {
+		const sorted = new URLSearchParams()
+		for (const key of [...new Set(sp.keys())].sort()) {
+			const value = sp.get(key)
+			if (value !== null) sorted.set(key, value)
+		}
+		const qs = sorted.toString()
+		return `${pathname}${qs ? `?${qs}` : ''}`
+	}
+
+	function exploreSearchParamsEqual(a: URLSearchParams, b: URLSearchParams) {
+		const keys = new Set([...a.keys(), ...b.keys()])
+		for (const key of keys) {
+			if (a.get(key) !== b.get(key)) return false
+		}
+		return true
+	}
+
+	const EXPLORE_UI_PARAMS = new Set(['results', 'tenant', 'page', 'pageSize'])
+
+	function hasExploreQueryContextFromParams(sp: URLSearchParams) {
+		for (const key of sp.keys()) {
+			if (!EXPLORE_UI_PARAMS.has(key)) return true
+		}
+		return false
+	}
+
+	let selfUrlSync = false
+
 	function hydrateExploreFiltersFromUrl(
 		sp: URLSearchParams,
-		{ syncSearch = true, clearSearch = false }: { syncSearch?: boolean; clearSearch?: boolean } = {}
+		{
+			syncSearch = true,
+			clearSearch = false,
+			syncMapSelection = true,
+		}: { syncSearch?: boolean; clearSearch?: boolean; syncMapSelection?: boolean } = {}
 	) {
 		const urlBanks = (sp.get('biobanks') ?? '').split(',').filter(Boolean)
 		const urlCohorts = new Set((sp.get('cohorts') ?? '').split(',').filter(Boolean).map(Number))
@@ -776,9 +820,24 @@
 		const urlConsequences = new Set((sp.get('vepConsequence') ?? '').split(',').filter(Boolean))
 
 		if (syncSearch) {
-			searchQuery = sp.get('q') ?? ''
+			const urlQ = sp.get('q') ?? ''
+			searchQuery = urlQ
+			appliedSearchQuery = urlQ
 		} else if (clearSearch && !sp.has('q')) {
 			searchQuery = ''
+			appliedSearchQuery = ''
+		}
+		if (syncMapSelection) {
+			const countryParam = sp.get('country')
+			selectedCode =
+				countryParam && countryRows.some((country) => country.code === countryParam)
+					? countryParam
+					: null
+			const datasetParam = sp.get('dataset')
+			selectedDatasetSlug =
+				datasetParam && displayDatasets.some((dataset) => dataset.slug === datasetParam)
+					? datasetParam
+					: null
 		}
 		filterGene = sp.get('gene') ?? ''
 		filterAfMin = sp.get('afMin') ?? ''
@@ -809,14 +868,19 @@
 				sp.has('vepConsequence') ? urlConsequences.has(value) : true,
 			])
 		)
-		resultsDrawerOpen = sp.get('results') === '1' || page.url.pathname === '/explore'
+		resultsDrawerOpen = hasExploreQueryContextFromParams(sp)
 	}
 
 	$effect(() => {
 		if (!filterBiobankOptions.length) return
 		const path = page.url.pathname
 		if (path !== '/' && path !== '/explore') return
-		const urlKey = `${path}?${page.url.search}`
+		const urlKey = exploreUrlKey(path, page.url.searchParams)
+		if (selfUrlSync) {
+			selfUrlSync = false
+			lastHydratedExploreUrl = urlKey
+			return
+		}
 		if (urlKey === lastHydratedExploreUrl) return
 
 		const prevPath = lastHydratedExploreUrl ? lastHydratedExploreUrl.split('?')[0] : ''
@@ -824,7 +888,8 @@
 		const pathChanged = Boolean(lastHydratedExploreUrl) && prevPath !== path
 		hydrateExploreFiltersFromUrl(page.url.searchParams, {
 			syncSearch: forceFullHydrate || pathChanged,
-			clearSearch: forceFullHydrate || pathChanged
+			clearSearch: forceFullHydrate || pathChanged,
+			syncMapSelection: forceFullHydrate || pathChanged,
 		})
 		lastHydratedExploreUrl = urlKey
 		filterStateHydrated = true
@@ -1152,9 +1217,41 @@
 		})
 	}
 
+	function isMapLocationQuery(query: string, country: CountryRow) {
+		const q = normalizeSearch(query)
+		return (
+			q === normalizeSearch(country.name) ||
+			q === normalizeSearch(country.code) ||
+			q === 'caribbean'
+		)
+	}
+
+	function findPopulationSearchMatch(query: string) {
+		const q = normalizeSearch(query)
+		if (!q) return undefined
+		return directPopulations.find((population) => normalizeSearch(population.name) === q)
+	}
+
 	function handleSearchSubmit(event: SubmitEvent) {
 		event.preventDefault()
-		openResultsDrawer()
+		const trimmed = searchQuery.trim()
+		const countryMatch = trimmed ? findMapSearchMatch(trimmed) : undefined
+		if (countryMatch && isMapLocationQuery(trimmed, countryMatch)) {
+			appliedSearchQuery = ''
+			flyToCountry(countryMatch)
+			return
+		}
+		const populationMatch = trimmed ? findPopulationSearchMatch(trimmed) : undefined
+		if (populationMatch) {
+			appliedSearchQuery = ''
+			const country = countryRows.find((row) => row.code === populationMatch.countryCode)
+			if (country) {
+				flyToCountry(country)
+				return
+			}
+		}
+		appliedSearchQuery = trimmed
+		openResultsDrawer(true)
 	}
 
 	function pickCountry(country: CountryRow) {
@@ -1220,7 +1317,9 @@
 
 	function buildExploreParams() {
 		const params = new URLSearchParams()
-		if (searchQuery.trim()) params.set('q', searchQuery.trim())
+		if (appliedSearchQuery) params.set('q', appliedSearchQuery)
+		if (selectedCode) params.set('country', selectedCode)
+		if (selectedDatasetSlug) params.set('dataset', selectedDatasetSlug)
 		if (filterGene.trim()) params.set('gene', filterGene.trim())
 		if (filterAfMin) params.set('afMin', filterAfMin)
 		if (filterAfMax) params.set('afMax', filterAfMax)
@@ -1265,6 +1364,17 @@
 		return params
 	}
 
+	function buildResultsSearchParams(open: boolean) {
+		const params = buildExploreParams()
+		if (open) params.set('results', '1')
+		else params.delete('results')
+		return params
+	}
+
+	function hasActiveExploreContext() {
+		return hasExploreQueryContextFromParams(buildExploreParams())
+	}
+
 	const exploreQueryString = $derived(buildExploreParams().toString())
 	const activeResultsQueryString = $derived(resultsTableQueryString || exploreQueryString)
 	const mapResultsPath = $derived.by(() => {
@@ -1282,7 +1392,7 @@
 		if (selectedCountry) parts.push(selectedCountry.name)
 		if (selectedDataset) parts.push(selectedDataset.title)
 		if (filterGene.trim()) parts.push(filterGene.trim())
-		if (searchQuery.trim()) parts.push(searchQuery.trim())
+		if (appliedSearchQuery) parts.push(appliedSearchQuery)
 		if (filterAfMin || filterAfMax) parts.push(`AF ${filterAfMin || '0'}-${filterAfMax || 'max'}`)
 		if (filterAcMin || filterAcMax) parts.push(`AC ${filterAcMin || '0'}-${filterAcMax || 'max'}`)
 		return parts.length
@@ -1325,7 +1435,11 @@
 		void goto(`${target.pathname}${target.search}`)
 	}
 
-	function openResultsDrawer() {
+	function openResultsDrawer(force = false) {
+		if (!force && !hasActiveExploreContext()) {
+			closeResultsDrawer()
+			return
+		}
 		resultsDrawerOpen = true
 		countryPickerOpen = false
 		syncResultsUrl(true)
@@ -1348,17 +1462,30 @@
 		setTimeout(() => (shareCopied = false), 1200)
 	}
 
-	function syncResultsUrl(open: boolean) {
+	function syncResultsUrl(drawerOpen: boolean) {
 		if (typeof location === 'undefined') return
 		const path = page.url.pathname
 		if (path !== '/' && path !== '/explore') return
-		const params = buildExploreParams()
-		if (open) params.set('results', '1')
-		else params.delete('results')
-		const qs = params.toString()
-		const urlKey = `${path}${qs ? `?${qs}` : ''}`
-		history.replaceState(history.state, '', urlKey)
-		lastHydratedExploreUrl = urlKey
+		// Keep drawer UI separate from URL: only write results=1 when there is shareable context.
+		const includeResultsInUrl = drawerOpen && hasActiveExploreContext()
+		const params = buildResultsSearchParams(includeResultsInUrl)
+		const urlKey = exploreUrlKey(path, params)
+		if (exploreSearchParamsEqual(params, page.url.searchParams)) {
+			lastHydratedExploreUrl = urlKey
+			return
+		}
+		if (!routerReady) {
+			pendingResultsUrlOpen = drawerOpen
+			return
+		}
+		selfUrlSync = true
+		try {
+			replaceState(urlKey, {})
+			lastHydratedExploreUrl = urlKey
+		} catch {
+			selfUrlSync = false
+			pendingResultsUrlOpen = drawerOpen
+		}
 	}
 
 	$effect(() => {
@@ -1369,7 +1496,12 @@
 		}
 		void resultsDrawerOpen
 		void exploreQueryString
-		if (!isVariantRoute) syncResultsUrl(resultsDrawerOpen)
+		if (isVariantRoute) return
+		const path = page.url.pathname
+		if (path !== '/' && path !== '/explore') return
+		const params = buildResultsSearchParams(resultsDrawerOpen && hasActiveExploreContext())
+		if (exploreUrlKey(path, params) === lastHydratedExploreUrl) return
+		syncResultsUrl(resultsDrawerOpen)
 	})
 
 	$effect(() => {
@@ -1558,6 +1690,7 @@
 		selectedDatasetSlug = null
 		selectedCode = null
 		searchQuery = ''
+		appliedSearchQuery = ''
 		countryPickerOpen = false
 		resultsDrawerOpen = false
 		resultsDrawerExpanded = false
@@ -1982,7 +2115,9 @@
 			class:dropdown-open={countryPickerOpen}
 			onsubmit={handleSearchSubmit}
 		>
-			<input type="hidden" name="results" value="1" />
+			{#if selectedCode}<input type="hidden" name="country" value={selectedCode} />{/if}
+			{#if selectedDatasetSlug}<input type="hidden" name="dataset" value={selectedDatasetSlug} />{/if}
+			{#if data.forceTenant}<input type="hidden" name="tenant" value={data.forceTenant} />{/if}
 			<div class="search-cluster">
 				<div class="country-picker">
 					<button
@@ -2326,13 +2461,13 @@
 								{tx('Back to results', 'Voltar aos resultados')}
 							</button>
 						</div>
-					{:else}
+					{:else if resultsDrawerOpen}
 						{#key resultsDrawerKey}
 							<VariantBrowser
 								forceTenant={data.forceTenant}
 								scoped={!!data.tenant.scope}
-								options={data.options ?? []}
-								populations={data.populations ?? []}
+								options={filterBiobankOptions}
+								populations={filterPopulationOptions}
 								initialParams={activeResultsQueryString}
 								syncToUrl={false}
 								showApiBar={false}
