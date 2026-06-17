@@ -574,6 +574,15 @@
 		syncUrl();
 	});
 
+	$effect(() => {
+		if (!initialParams) return;
+		const nextQ = new URLSearchParams(initialParams).get('q') ?? '';
+		if (nextQ.trim() === qA.trim()) return;
+		q = nextQ;
+		qA = nextQ;
+		offset = 0;
+	});
+
 	let timer: ReturnType<typeof setTimeout>;
 	function applyInputs() {
 		offset = 0;

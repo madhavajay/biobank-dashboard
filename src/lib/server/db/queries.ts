@@ -104,6 +104,27 @@ function normalizeHgvsSearch(raw: string): string | null {
 	return /^(?:p|c|n|m|r)\.[A-Za-z0-9_*?>=<+\-[\]();]+$/i.test(suffix) ? suffix : null;
 }
 
+const LOCUS_EXACT_POS_MIN_LEN = 8;
+const RSID_EXACT_MIN_LEN = 8;
+
+function looksLikeLocusToken(raw: string): boolean {
+	return /^chr(?:[0-9]+|[xyXYmtMT]|[-:]|$)/.test(raw.trim());
+}
+
+function rsidTokenCondition(digits: string): { sql: string; args: unknown[] } | null {
+	if (digits.length < 2) return null;
+	if (digits.length >= RSID_EXACT_MIN_LEN) return { sql: 'v.rsid=?', args: [Number(digits)] };
+	return { sql: 'CAST(v.rsid AS TEXT) LIKE ?', args: [`${digits}%`] };
+}
+
+function numericTokenCondition(raw: string): { sql: string; args: unknown[] } | null {
+	if (!/^\d+$/.test(raw)) return null;
+	if (raw.length >= RSID_EXACT_MIN_LEN) {
+		return { sql: '(v.id=? OR v.rsid=?)', args: [Number(raw), Number(raw)] };
+	}
+	return { sql: '(v.id=? OR CAST(v.rsid AS TEXT) LIKE ?)', args: [Number(raw), `${raw}%`] };
+}
+
 // A single search term -> a variant-matching SQL condition. Terms can be an rsID,
 // a VRS id, a chromosome, a position, or a range.
 function parseTerm(raw: string): { sql: string; args: unknown[] } | null {
@@ -112,7 +133,7 @@ function parseTerm(raw: string): { sql: string; args: unknown[] } | null {
 	const hgvs = normalizeHgvsSearch(s);
 	if (hgvs) return { sql: 'v.hgvs_consequence=?', args: [hgvs] };
 	let m = /^rs(\d+)$/i.exec(s);
-	if (m) return { sql: 'v.rsid=?', args: [Number(m[1])] };
+	if (m) return rsidTokenCondition(m[1]);
 	m = /^(?:ga4gh:VA\.)?([A-Za-z0-9_-]{32})$/.exec(s);
 	if (m) return { sql: 'v.vrs_digest=?', args: [m[1]] };
 	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:](\d+)-([A-Za-z]+)-([A-Za-z]+)$/i.exec(s);
@@ -125,17 +146,28 @@ function parseTerm(raw: string): { sql: string; args: unknown[] } | null {
 		const c = chromToCode(m[1]);
 		if (c) return { sql: '(v.chrom=? AND v.pos>=? AND v.pos<=?)', args: [c, Number(m[2]), Number(m[3])] };
 	}
-	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:]\s?(\d+)$/i.exec(s); // single position
+	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:]$/i.exec(s); // chr1- or chr17: while typing
 	if (m) {
 		const c = chromToCode(m[1]);
-		if (c) return { sql: '(v.chrom=? AND v.pos=?)', args: [c, Number(m[2])] };
+		if (c) return { sql: 'v.chrom=?', args: [c] };
+	}
+	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:]\s?(\d+)$/i.exec(s); // single position (exact or prefix)
+	if (m) {
+		const c = chromToCode(m[1]);
+		const posStr = m[2];
+		if (c) {
+			if (posStr.length >= LOCUS_EXACT_POS_MIN_LEN) {
+				return { sql: '(v.chrom=? AND v.pos=?)', args: [c, Number(posStr)] };
+			}
+			return { sql: '(v.chrom=? AND CAST(v.pos AS TEXT) LIKE ?)', args: [c, `${posStr}%`] };
+		}
 	}
 	m = /^(?:chr)?([0-9]+|x|y|mt|m)$/i.exec(s); // whole chromosome
 	if (m) {
 		const c = chromToCode(m[1]);
 		if (c) return { sql: 'v.chrom=?', args: [c] };
 	}
-	return null;
+	return numericTokenCondition(s);
 }
 
 // Compound query: term | term | term  -> OR of the terms (any type mix).
@@ -172,6 +204,83 @@ async function genesForSymbols(db: QueryDb, symbols: string[]): Promise<{ chrom:
 	}
 }
 
+async function genesForSymbolPrefix(
+	db: QueryDb,
+	prefix: string,
+	limit = 48
+): Promise<{ chrom: number; start: number; end: number }[]> {
+	const norm = normGeneSymbol(prefix);
+	if (norm.length < 2) return [];
+	try {
+		const r = await db
+			.prepare(`SELECT chrom,start,end FROM genes WHERE symbol_norm LIKE ? ORDER BY symbol_norm LIMIT ?`)
+			.bind(`${norm}%`, limit)
+			.all<{ chrom: number; start: number; end: number }>();
+		return r.results;
+	} catch {
+		return [];
+	}
+}
+
+function geneIntervalsToCondition(geneIntervals: { chrom: number; start: number; end: number }[]): {
+	sql: string;
+	args: unknown[];
+} | null {
+	if (!geneIntervals.length) return null;
+	if (geneIntervals.length === 1) {
+		const g = geneIntervals[0];
+		return { sql: '(v.chrom=? AND v.pos>=? AND v.pos<=?)', args: [g.chrom, g.start, g.end] };
+	}
+	return {
+		sql: '(' + geneIntervals.map(() => '(v.chrom=? AND v.pos>=? AND v.pos<=?)').join(' OR ') + ')',
+		args: geneIntervals.flatMap((g) => [g.chrom, g.start, g.end])
+	};
+}
+
+function rsidPrefixCondition(digits: string): { sql: string; args: unknown[] } | null {
+	return rsidTokenCondition(digits);
+}
+
+function geneSymbolContainsCondition(symbolNorm: string): { sql: string; args: unknown[] } | null {
+	if (symbolNorm.length < 2) return null;
+	return {
+		sql: `EXISTS (
+			SELECT 1 FROM genes g
+			WHERE g.chrom=v.chrom AND v.pos BETWEEN g.start AND g.end
+			AND g.symbol_norm LIKE ?
+		)`,
+		args: [`%${symbolNorm}%`]
+	};
+}
+
+async function geneConditionForQuery(
+	db: QueryDb,
+	raw: string
+): Promise<{ sql: string; args: unknown[] } | null> {
+	if (!looksLikeGeneSymbol(raw) || looksLikeLocusToken(raw)) return null;
+
+	const geneIntervals = await genesForSymbols(db, [raw]);
+	const exact = geneIntervalsToCondition(geneIntervals);
+	if (exact) return exact;
+
+	const prefix = normGeneSymbol(raw);
+	const prefixIntervals = await genesForSymbolPrefix(db, prefix);
+	const prefixCond = geneIntervalsToCondition(prefixIntervals);
+	if (prefixCond) return prefixCond;
+
+	return geneSymbolContainsCondition(prefix);
+}
+
+async function conditionForQueryToken(db: QueryDb, raw: string): Promise<{ sql: string; args: unknown[] } | null> {
+	const parsed = parseTerm(raw);
+	if (parsed) return parsed;
+
+	const s = raw.trim().replace(/,/g, '');
+	if (!s || looksLikeLocusToken(s)) return null;
+
+	return geneConditionForQuery(db, raw);
+}
+
 export async function attachGenesToRows<T extends { id: number }>(db: QueryDb, rows: T[]): Promise<(T & { genes: GeneHit[] })[]> {
 	const ids = rows.map((r) => r.id);
 	if (!ids.length) return rows.map((r) => ({ ...r, genes: [] }));
@@ -203,22 +312,6 @@ export async function attachGenesToRows<T extends { id: number }>(db: QueryDb, r
 	} catch {
 		return rows.map((r) => ({ ...r, genes: [] }));
 	}
-}
-
-async function conditionForQueryToken(db: QueryDb, raw: string): Promise<{ sql: string; args: unknown[] } | null> {
-	const parsed = parseTerm(raw);
-	if (parsed) return parsed;
-	if (!looksLikeGeneSymbol(raw)) return null;
-	const geneIntervals = await genesForSymbols(db, [raw]);
-	if (!geneIntervals.length) return { sql: '0', args: [] };
-	if (geneIntervals.length === 1) {
-		const g = geneIntervals[0];
-		return { sql: '(v.chrom=? AND v.pos>=? AND v.pos<=?)', args: [g.chrom, g.start, g.end] };
-	}
-	return {
-		sql: '(' + geneIntervals.map(() => '(v.chrom=? AND v.pos>=? AND v.pos<=?)').join(' OR ') + ')',
-		args: geneIntervals.flatMap((g) => [g.chrom, g.start, g.end])
-	};
 }
 
 async function parseQueryConditionWithGenes(db: QueryDb, q: string): Promise<{ sql: string; args: unknown[] } | null> {
@@ -365,26 +458,30 @@ async function resolveSearchCohortIds(db: QueryDb, params: SearchParams): Promis
 	return countryCohorts;
 }
 
-export async function searchVariants(
+type PreparedVariantSearch =
+	| { empty: true }
+	| {
+			whereSql: string;
+			args: unknown[];
+			candidate: { cte: string; args: unknown[] } | null;
+			biobankIds: number[];
+			cohortIds: number[];
+	  };
+
+async function prepareVariantSearchFilters(
 	db: QueryDb,
 	scopeSlug: string | null,
 	params: SearchParams
-): Promise<{ rows: VariantRow[]; total: number }> {
-	const limit = Math.min(Math.max(params.limit ?? 50, 1), 500);
-	const offset = Math.max(params.offset ?? 0, 0);
-
-	// Effective biobank set: a scoped tenant is a hard override; otherwise use the
-	// requested slugs (empty => all biobanks). `match` = ANY vs ALL of the set.
+): Promise<PreparedVariantSearch> {
 	const requested = scopeSlug ? [scopeSlug] : params.biobanks ?? [];
 	const biobankIds = requested.length ? await biobankIdsForSlugs(db, requested) : [];
-	if (scopeSlug && !biobankIds.length) return { rows: [], total: 0 };
+	if (scopeSlug && !biobankIds.length) return { empty: true };
 	const match = params.match === 'all' ? 'all' : 'any';
 	const cohortIds = await resolveSearchCohortIds(db, params);
-	if (params.country?.trim() && !cohortIds.length) return { rows: [], total: 0 };
+	if (params.country?.trim() && !cohortIds.length) return { empty: true };
 	const cohortMatch = params.cohortMatch === 'all' ? 'all' : 'any';
 	const where: string[] = [];
 	const args: unknown[] = [];
-	// free-text query — supports compound `a|b|c` (OR of rsID / VRS / locus / range)
 	if (params.q && params.q.trim()) {
 		const cond = await parseQueryConditionWithGenes(db, params.q);
 		if (cond) {
@@ -393,15 +490,14 @@ export async function searchVariants(
 		}
 	}
 	if (params.gene && params.gene.trim()) {
-		const geneIntervals = await genesForSymbols(db, [params.gene]);
-		if (geneIntervals.length) {
-			where.push('(' + geneIntervals.map(() => '(v.chrom=? AND v.pos>=? AND v.pos<=?)').join(' OR ') + ')');
-			args.push(...geneIntervals.flatMap((g) => [g.chrom, g.start, g.end]));
+		const cond = await geneConditionForQuery(db, params.gene);
+		if (cond) {
+			where.push(cond.sql);
+			args.push(...cond.args);
 		} else {
 			where.push('0');
 		}
 	}
-	// structured params (direct API use)
 	if (params.chrom) {
 		where.push('v.chrom=?');
 		args.push(params.chrom);
@@ -429,10 +525,6 @@ export async function searchVariants(
 		args.push(...vepConsequences);
 	}
 
-	// af/count-range fragment reused inside each frequency EXISTS clause.
-	// Always require the alt allele to be actually OBSERVED (ac>0): never surface
-	// phantom monomorphic rows the harmonizer emitted for unobserved alt alleles
-	// (those carry only hom_ref counts and aren't real variants).
 	const baseRange: string[] = ['f.ac > 0'];
 	const baseRangeArgs: unknown[] = [];
 	const range: string[] = [...baseRange];
@@ -477,14 +569,12 @@ export async function searchVariants(
 	function frequencyCandidateSql(): { cte: string; args: unknown[] } | null {
 		if (!hasFrequencySelector) return null;
 		const sets: { sql: string; args: unknown[] }[] = [];
-
 		const addSet = (conditions: string[], setArgs: unknown[]) => {
 			sets.push({
 				sql: `SELECT DISTINCT f.variant_id FROM frequencies f WHERE ${conditions.join(' AND ')}`,
 				args: setArgs
 			});
 		};
-
 		const needsBaseSet = biobankIds.length === 0 || match !== 'all';
 		if (needsBaseSet) {
 			const baseWhere = [...range];
@@ -519,13 +609,11 @@ export async function searchVariants(
 			args.push(...rangeArgs);
 		}
 	} else if (!candidate && match === 'all') {
-		// variant must have a qualifying frequency in EVERY selected biobank
 		for (const bid of biobankIds) {
 			where.push(`EXISTS (SELECT 1 FROM frequencies f WHERE f.variant_id=v.id AND f.biobank_id=?${rangeSql})`);
 			args.push(bid, ...rangeArgs);
 		}
 	} else if (!candidate) {
-		// ANY: qualifying frequency in at least one selected biobank
 		const ph = biobankIds.map(() => '?').join(',');
 		where.push(`EXISTS (SELECT 1 FROM frequencies f WHERE f.variant_id=v.id AND f.biobank_id IN (${ph})${rangeSql})`);
 		args.push(...biobankIds, ...rangeArgs);
@@ -537,7 +625,167 @@ export async function searchVariants(
 		}
 	}
 
-	const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+	return {
+		whereSql: where.length ? 'WHERE ' + where.join(' AND ') : '',
+		args,
+		candidate,
+		biobankIds,
+		cohortIds
+	};
+}
+
+function frequencyScopeSql(biobankIds: number[], cohortIds: number[]) {
+	const parts: string[] = [];
+	const args: unknown[] = [];
+	if (biobankIds.length) {
+		parts.push(`f.biobank_id IN (${biobankIds.map(() => '?').join(',')})`);
+		args.push(...biobankIds);
+	}
+	if (cohortIds.length) {
+		parts.push(`f.cohort_id IN (${cohortIds.map(() => '?').join(',')})`);
+		args.push(...cohortIds);
+	}
+	return {
+		sql: parts.length ? ` AND ${parts.join(' AND ')}` : '',
+		args
+	};
+}
+
+function variantStatsFromRows(rows: VariantRow[], biobankSlugs: string[], cohortIds: number[]): TenantStats {
+	let common = 0;
+	let lowFreq = 0;
+	let rare = 0;
+	for (const row of rows) {
+		const freqs = row.frequencies.filter((f) => {
+			if (biobankSlugs.length && !biobankSlugs.includes(f.biobankSlug)) return false;
+			if (cohortIds.length && !cohortIds.includes(f.cohortId)) return false;
+			return (f.ac ?? 0) > 0;
+		});
+		if (!freqs.length) continue;
+		const maxAf = Math.max(...freqs.map((f) => f.af ?? 0));
+		if (maxAf >= 0.05) common++;
+		else if (maxAf >= 0.01) lowFreq++;
+		else rare++;
+	}
+	return { variants: common + lowFreq + rare, common, lowFreq, rare };
+}
+
+async function searchVariantStatsFromCache(
+	db: QueryDb,
+	scopeSlug: string | null,
+	params: SearchParams,
+	prepared: Exclude<PreparedVariantSearch, { empty: true }>
+): Promise<TenantStats | null> {
+	if (params.biobanks?.includes('__none__')) return { variants: 0, common: 0, lowFreq: 0, rare: 0 };
+	const cached = await getStats(db, `explore:${scopeSlug ?? 'global'}`);
+	if (!cached?.rows?.length) return null;
+
+	const cohortIds = await resolveSearchCohortIds(db, params);
+	if (params.country?.trim() && !cohortIds.length) return { variants: 0, common: 0, lowFreq: 0, rare: 0 };
+	const freqParams = cohortIds.length ? { ...params, cohorts: cohortIds } : params;
+	const biobankSlugs = scopeSlug
+		? [scopeSlug]
+		: (params.biobanks ?? []).filter((slug) => slug && slug !== '__none__');
+	const vepImpacts = [...new Set((params.vepImpacts ?? []).map((v) => v.trim().toUpperCase()).filter((v) => VALID_VEP_IMPACTS.has(v)))];
+	const vepConsequences = [...new Set((params.vepConsequences ?? []).map((v) => v.trim()).filter(Boolean))];
+
+	let rows = sanitizeVariantRowsForPublic(cached.rows) as VariantRow[];
+	rows = applyScopeToRows(rows, scopeSlug);
+	rows = rows.filter((row) => {
+		if (params.q?.trim() && !cachedRowMatchesQuery(row, params.q)) return false;
+		if (params.gene?.trim() && !cachedRowMatchesGene(row, params.gene)) return false;
+		if (params.chrom != null && row.chrom !== params.chrom) return false;
+		if (params.posMin != null && row.pos < params.posMin) return false;
+		if (params.posMax != null && row.pos > params.posMax) return false;
+		if (params.rsid != null && row.rsid !== params.rsid) return false;
+		if (vepImpacts.length && (!row.vepImpact || !vepImpacts.includes(row.vepImpact.toUpperCase()))) return false;
+		if (vepConsequences.length && (!row.vepLabel || !vepConsequences.includes(row.vepLabel))) return false;
+		return rowQualifiesFrequencies(row, freqParams, biobankSlugs);
+	});
+	return variantStatsFromRows(rows, biobankSlugs, prepared.cohortIds);
+}
+
+export async function searchVariantStats(
+	db: QueryDb,
+	scopeSlug: string | null,
+	params: SearchParams
+): Promise<TenantStats> {
+	const prepared = await prepareVariantSearchFilters(db, scopeSlug, params);
+	if ('empty' in prepared) return { variants: 0, common: 0, lowFreq: 0, rare: 0 };
+
+	if (await variantsTableEmpty(db)) {
+		const cached = await searchVariantStatsFromCache(db, scopeSlug, params, prepared);
+		if (cached) return cached;
+	}
+
+	const { whereSql, args, candidate, biobankIds, cohortIds } = prepared;
+	const freqScope = frequencyScopeSql(biobankIds, cohortIds);
+	const statsSql = candidate
+		? `WITH ${candidate.cte}, variant_hits AS (
+				SELECT v.id
+				FROM candidate c
+				JOIN variants v ON v.id=c.variant_id
+				${whereSql}
+			), variant_af AS (
+				SELECT vh.id,
+					(SELECT MAX(f.public_af) FROM frequencies f
+					 WHERE f.variant_id=vh.id AND f.ac > 0${freqScope.sql}) AS max_af
+				FROM variant_hits vh
+			)
+			SELECT
+				COUNT(*) AS variants,
+				SUM(CASE WHEN max_af >= 0.05 THEN 1 ELSE 0 END) AS common,
+				SUM(CASE WHEN max_af >= 0.01 AND max_af < 0.05 THEN 1 ELSE 0 END) AS lowFreq,
+				SUM(CASE WHEN max_af < 0.01 THEN 1 ELSE 0 END) AS rare
+			FROM variant_af
+			WHERE max_af IS NOT NULL`
+		: `WITH variant_hits AS (
+				SELECT v.id
+				FROM variants v
+				${whereSql}
+			), variant_af AS (
+				SELECT vh.id,
+					(SELECT MAX(f.public_af) FROM frequencies f
+					 WHERE f.variant_id=vh.id AND f.ac > 0${freqScope.sql}) AS max_af
+				FROM variant_hits vh
+			)
+			SELECT
+				COUNT(*) AS variants,
+				SUM(CASE WHEN max_af >= 0.05 THEN 1 ELSE 0 END) AS common,
+				SUM(CASE WHEN max_af >= 0.01 AND max_af < 0.05 THEN 1 ELSE 0 END) AS lowFreq,
+				SUM(CASE WHEN max_af < 0.01 THEN 1 ELSE 0 END) AS rare
+			FROM variant_af
+			WHERE max_af IS NOT NULL`;
+
+	const row = candidate
+		? await db
+				.prepare(statsSql)
+				.bind(...candidate.args, ...args, ...freqScope.args)
+				.first<any>()
+		: await db
+				.prepare(statsSql)
+				.bind(...args, ...freqScope.args)
+				.first<any>();
+
+	return {
+		variants: row?.variants ?? 0,
+		common: row?.common ?? 0,
+		lowFreq: row?.lowFreq ?? 0,
+		rare: row?.rare ?? 0
+	};
+}
+
+export async function searchVariants(
+	db: QueryDb,
+	scopeSlug: string | null,
+	params: SearchParams
+): Promise<{ rows: VariantRow[]; total: number }> {
+	const limit = Math.min(Math.max(params.limit ?? 50, 1), 500);
+	const offset = Math.max(params.offset ?? 0, 0);
+
+	const prepared = await prepareVariantSearchFilters(db, scopeSlug, params);
+	if ('empty' in prepared) return { rows: [], total: 0 };
+	const { whereSql, args, candidate, biobankIds, cohortIds } = prepared;
 
 	// sort
 	const dir = params.dir === 'desc' ? 'DESC' : 'ASC';
@@ -697,33 +945,89 @@ async function variantsTableEmpty(db: QueryDb): Promise<boolean> {
 	}
 }
 
-function cachedRowMatchesToken(row: VariantRow, raw: string): boolean {
+function rowMatchesRsidToken(row: Pick<VariantRow, 'id' | 'rsid'>, raw: string): boolean {
+	const s = raw.trim().replace(/,/g, '');
+	let m = /^rs(\d+)$/i.exec(s);
+	if (m) {
+		const digits = m[1];
+		if (row.rsid == null) return false;
+		if (digits.length >= RSID_EXACT_MIN_LEN) return row.rsid === Number(digits);
+		return String(row.rsid).startsWith(digits);
+	}
+	if (/^\d+$/.test(s)) {
+		if (s.length >= RSID_EXACT_MIN_LEN) return row.id === Number(s) || row.rsid === Number(s);
+		if (row.rsid != null && String(row.rsid).startsWith(s)) return true;
+		return row.id === Number(s);
+	}
+	return false;
+}
+
+function rowMatchesGeneToken(row: Pick<VariantRow, 'genes'>, raw: string): boolean {
+	if (looksLikeLocusToken(raw)) return false;
+	const norm = normGeneSymbol(raw);
+	if (norm.length < 2 || !looksLikeGeneSymbol(raw)) return false;
+	return row.genes.some((g) => {
+		const sym = normGeneSymbol(g.symbol);
+		const ens = normGeneSymbol(g.ensemblId.split('.')[0]);
+		if (sym === norm || ens === norm) return true;
+		if (sym.startsWith(norm) || ens.startsWith(norm)) return true;
+		return sym.includes(norm) || g.ensemblId.toUpperCase().includes(norm);
+	});
+}
+
+function looksLikeStructuredSearchToken(raw: string): boolean {
+	const s = raw.trim().replace(/,/g, '');
+	if (!s) return true;
+	if (looksLikeLocusToken(s)) return true;
+	if (/^rs\d+/i.test(s)) return true;
+	if (/^\d+$/.test(s)) return true;
+	if (looksLikeGeneSymbol(s)) return true;
+	if (normalizeHgvsSearch(s)) return true;
+	if (/^(?:ga4gh:VA\.)?[A-Za-z0-9_-]{32}$/.test(s)) return true;
+	return false;
+}
+
+function rowMatchesLocusToken(row: Pick<VariantRow, 'chrom' | 'pos'>, raw: string): boolean {
 	const s = raw.trim().replace(/,/g, '');
 	if (!s) return false;
-	if (variantTokenMatchesRow(row, s)) return true;
-	const hgvs = normalizeHgvsSearch(s);
-	if (hgvs && (row.hgvsConsequence ?? '').toLowerCase() === hgvs.toLowerCase()) return true;
 	let m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:]\s?(\d+)\s*-\s*(\d+)$/i.exec(s);
 	if (m) {
 		const c = chromToCode(m[1]);
 		if (c && row.chrom === c && row.pos >= Number(m[2]) && row.pos <= Number(m[3])) return true;
 	}
+	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:]$/i.exec(s);
+	if (m) {
+		const c = chromToCode(m[1]);
+		if (c && row.chrom === c) return true;
+	}
 	m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:]\s?(\d+)$/i.exec(s);
 	if (m) {
 		const c = chromToCode(m[1]);
-		if (c && row.chrom === c && row.pos === Number(m[2])) return true;
+		const posStr = m[2];
+		if (c && row.chrom === c) {
+			if (posStr.length >= LOCUS_EXACT_POS_MIN_LEN) return row.pos === Number(posStr);
+			return String(row.pos).startsWith(posStr);
+		}
 	}
 	m = /^(?:chr)?([0-9]+|x|y|mt|m)$/i.exec(s);
 	if (m) {
 		const c = chromToCode(m[1]);
 		if (c && row.chrom === c) return true;
 	}
-	if (looksLikeGeneSymbol(s)) {
-		const norm = normGeneSymbol(s);
-		return row.genes.some(
-			(g) => normGeneSymbol(g.symbol) === norm || normGeneSymbol(g.ensemblId.split('.')[0]) === norm
-		);
-	}
+	return false;
+}
+
+function cachedRowMatchesToken(row: VariantRow, raw: string): boolean {
+	const s = raw.trim().replace(/,/g, '');
+	if (!s) return false;
+	if (variantTokenMatchesRow(row, s)) return true;
+	if (rowMatchesRsidToken(row, s)) return true;
+	const hgvs = normalizeHgvsSearch(s);
+	if (hgvs && (row.hgvsConsequence ?? '').toLowerCase() === hgvs.toLowerCase()) return true;
+	if (rowMatchesLocusToken(row, s)) return true;
+	if (looksLikeLocusToken(s)) return false;
+	if (rowMatchesGeneToken(row, s)) return true;
+	if (looksLikeStructuredSearchToken(s)) return false;
 	const variantKey = `${row.chromName}-${row.pos}-${row.ref}-${row.alt}`.toLowerCase();
 	const rsKey = row.rsid ? `rs${row.rsid}` : '';
 	const needle = s.toLowerCase();
@@ -752,13 +1056,7 @@ function cachedRowMatchesQuery(row: VariantRow, q: string): boolean {
 }
 
 function cachedRowMatchesGene(row: VariantRow, gene: string): boolean {
-	const norm = normGeneSymbol(gene);
-	return row.genes.some(
-		(g) =>
-			normGeneSymbol(g.symbol) === norm ||
-			normGeneSymbol(g.ensemblId.split('.')[0]) === norm ||
-			g.ensemblId.toUpperCase().includes(norm)
-	);
+	return rowMatchesGeneToken(row, gene);
 }
 
 function hasFrequencyRangeParams(params: SearchParams): boolean {
@@ -986,7 +1284,7 @@ async function resolveVariantFromExploreCache(db: QueryDb, raw: string, scopeSlu
 	const cached = await getStats(db, `explore:${scopeSlug ?? 'global'}`);
 	if (!cached?.rows?.length) return null;
 	const rows = sanitizeVariantRowsForPublic(cached.rows) as VariantRow[];
-	const hit = rows.find((row) => variantTokenMatchesRow(row, token));
+	const hit = rows.find((row) => cachedRowMatchesToken(row, token));
 	if (!hit) return null;
 	if (scopeSlug) {
 		const frequencies = hit.frequencies.filter((f) => f.biobankSlug === scopeSlug);
@@ -1000,31 +1298,19 @@ export async function resolveVariantIdentifier(db: QueryDb, raw: string, scopeSl
 	const token = decodeURIComponent(raw).trim();
 	if (!token) return null;
 
-	let variant: VariantRow | null = null;
-
-	if (/^\d+$/.test(token)) variant = await getVariantBySql(db, 'v.id=?', [Number(token)], scopeSlug);
-
-	if (!variant) {
-		let m = /^rs(\d+)$/i.exec(token);
-		if (m) variant = await getVariantBySql(db, 'v.rsid=?', [Number(m[1])], scopeSlug);
+	const termCond = parseTerm(token);
+	if (termCond) {
+		const variant = await getVariantBySql(db, termCond.sql, termCond.args, scopeSlug);
+		if (variant) return variant;
 	}
 
-	if (!variant) {
-		const m = /^(?:ga4gh:VA\.)?([A-Za-z0-9_-]{32})$/.exec(token);
-		if (m) variant = await getVariantBySql(db, 'v.vrs_digest=?', [m[1]], scopeSlug);
+	const geneCond = await geneConditionForQuery(db, token);
+	if (geneCond) {
+		const variant = await getVariantBySql(db, geneCond.sql, geneCond.args, scopeSlug);
+		if (variant) return variant;
 	}
 
-	if (!variant) {
-		const m = /^(?:chr)?([0-9]+|x|y|mt|m)[-:](\d+)-([A-Za-z]+)-([A-Za-z]+)$/i.exec(token.replace(/,/g, ''));
-		if (m) {
-			const chrom = chromToCode(m[1]);
-			if (chrom) {
-				variant = await getVariantBySql(db, 'v.chrom=? AND v.pos=? AND v.ref=? AND v.alt=?', [chrom, Number(m[2]), m[3].toUpperCase(), m[4].toUpperCase()], scopeSlug);
-			}
-		}
-	}
-
-	return variant ?? resolveVariantFromExploreCache(db, raw, scopeSlug);
+	return resolveVariantFromExploreCache(db, raw, scopeSlug);
 }
 
 export interface BiobankOverview {
