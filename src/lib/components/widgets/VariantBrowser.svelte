@@ -866,7 +866,7 @@
 			vepExpand ? barMax : `minmax(5rem,${barMax})`, // bar: fixed when VEP absorbs slack, else stretches to fill
 			'4rem', // freq
 			...(acAnSplit ? ['2.75rem', '3.5rem'] : [showGeno ? '4.5rem' : 'max-content']), // ac/an (split: separate right-aligned cols)
-			...(showGeno ? ['2rem', '3rem', '3rem'] : []), // het, hom_alt, hom_ref
+			...(showGeno ? ['2rem', '2.55rem', '2.55rem'] : []), // HET, HOM_A, HOM_R
 		]
 			.filter(Boolean)
 			.join(' ')
@@ -1293,7 +1293,9 @@
 						{/if}
 						<th class={embedded ? 'vb-head-cell vb-head-cell-pop' : 'px-3 py-2 font-medium'}>
 							<div
-								class={embedded ? 'vb-head-grid' : 'grid items-center gap-x-2 uppercase'}
+								class={embedded
+									? 'vb-head-grid'
+									: `grid items-center ${showGeno ? 'gap-x-1' : 'gap-x-2'} uppercase`}
 								style={`grid-template-columns:${popTmpl}`}
 							>
 								{#if multiPop}<span
@@ -1352,14 +1354,14 @@
 											? 'vb-head-text cursor-help text-right'
 											: 'cursor-help text-right text-[9px] tracking-tight'}
 										title="HOM_ALT: homozygous-alternate individuals (two copies of the alternate allele)."
-										>HOM_ALT</span
+										>HOM_A</span
 									>
 									<span
 										class={embedded
 											? 'vb-head-text cursor-help text-right'
 											: 'cursor-help text-right text-[9px] tracking-tight'}
 										title="HOM_REF: homozygous-reference individuals (no copies of the alternate allele)."
-										>HOM_REF</span
+										>HOM_R</span
 									>
 								{/if}
 							</div>
@@ -1497,7 +1499,7 @@
 							{/if}
 							<td class="px-3 py-2">
 								<div
-									class="grid items-center gap-x-2 gap-y-1"
+									class={`grid items-center ${showGeno ? 'gap-x-1' : 'gap-x-2'} gap-y-1`}
 									style={`grid-template-columns:${popTmpl}`}
 								>
 									{#each r.frequencies as f}
