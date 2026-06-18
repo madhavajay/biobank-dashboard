@@ -5,7 +5,7 @@ import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	const db = locals.db;
-	if (!db) throw error(500, 'D1 binding unavailable');
+	if (!db) throw error(500, 'PostgreSQL connection unavailable');
 	const digest = params.digest.replace(/^ga4gh:VA\./, '');
 	const v = await db
 		.prepare('SELECT id, chrom, pos, ref, alt, rsid, vrs_digest FROM variants WHERE vrs_digest=? LIMIT 1')

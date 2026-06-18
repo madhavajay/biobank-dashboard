@@ -1,6 +1,6 @@
 /**
  * Shared variant search token parsing, classification, and row matching.
- * Used by the map search bar (client) and D1 query layer (server).
+ * Used by the map search bar (client) and PostgreSQL query layer (server).
  */
 
 export const LOCUS_EXACT_POS_MIN_LEN = 8;

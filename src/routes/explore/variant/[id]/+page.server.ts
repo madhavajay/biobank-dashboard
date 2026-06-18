@@ -4,7 +4,7 @@ import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals, params, platform, url }) => {
 	const db = locals.db;
-	if (!db) throw error(500, 'D1 binding unavailable');
+	if (!db) throw error(500, 'PostgreSQL connection unavailable');
 
 	const variant = await resolveVariantIdentifier(db, params.id, locals.tenant.scope);
 	if (!variant) throw error(404, 'variant not found');

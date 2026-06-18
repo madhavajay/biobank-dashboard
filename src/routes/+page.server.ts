@@ -6,7 +6,7 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 	if (locals.tenant.slug === 'biovault') return {};
 
 	const db = locals.db;
-	if (!db) throw error(500, 'D1 binding unavailable — run with wrangler/vite dev');
+	if (!db) throw error(500, 'PostgreSQL connection unavailable — check DATABASE_URL or Hyperdrive');
 
 	const scope = locals.tenant.scope;
 	const datasetRows = await getDatasets(db, scope);

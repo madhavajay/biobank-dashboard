@@ -1,5 +1,5 @@
 // Source-of-truth registry for biobanks / populations / cohorts.
-// Seeded verbatim into D1; harmonizers map source files onto cohort ids.
+// Seeded verbatim into PostgreSQL; harmonizers map source files onto cohort ids.
 import { ONE_KGP_POPULATIONS, type OneKgpSuperPopulation } from './one-thousand-genomes';
 
 export interface Biobank {

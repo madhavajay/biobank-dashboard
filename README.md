@@ -43,25 +43,39 @@ You can preview the production build with `npm run preview`.
 
 ## BioVault Ops
 
-Routine UI deploy:
+Local development starts Docker PostgreSQL and runs the Worker locally:
+
+```sh
+./dev.sh
+```
+
+Force a local Postgres reseed from normalized source data:
+
+```sh
+SEED=1 ./dev.sh
+```
+
+Production deploy builds the SvelteKit Worker and deploys it with the Hyperdrive
+binding from `wrangler.jsonc`:
 
 ```sh
 ./deploy.sh
 ```
 
-When variant/frequency/gene/dataset/cohort/population data changes, refresh the remote
-default explore cache:
+The live database connection is stored in Cloudflare Hyperdrive. Local development
+uses `DATABASE_URL` from `.env` when present, otherwise it falls back to the Docker
+PostgreSQL URL:
 
 ```sh
-bun run db:refresh-stats:remote
+postgresql://biovault_data_user:biovault_data_password@127.0.0.1:55432/biovault_data?sslmode=disable
 ```
 
-The deploy script verifies the required `explore:*` cache rows by default. For a
-data-changing deploy, use:
+## PostgreSQL Data
+
+PostgreSQL is the only runtime database for local development and production.
+
+To reseed the local Docker database from the normalized source data:
 
 ```sh
-DATA_CHANGED=1 ./deploy.sh
+bun run db:pg:seed
 ```
-
-Normal D1 Sessions/read replicas reduce global read latency; the `stats` cache avoids
-running expensive default explore queries at all. They are complementary.

@@ -6,7 +6,7 @@ const FILTER_KEYS = ['q', 'gene', 'country', 'chrom', 'posMin', 'posMax', 'rsid'
 
 export const GET: RequestHandler = async ({ url, locals }) => {
 	const db = locals.db;
-	if (!db) throw error(500, 'D1 binding unavailable');
+	if (!db) throw error(500, 'PostgreSQL connection unavailable');
 
 	const num = (k: string) => (url.searchParams.has(k) ? Number(url.searchParams.get(k)) : undefined);
 	const biobanksParam = url.searchParams.get('biobanks');

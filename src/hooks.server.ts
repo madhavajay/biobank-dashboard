@@ -1,4 +1,6 @@
 import type { Handle } from '@sveltejs/kit';
+import { env as privateEnv } from '$env/dynamic/private';
+import { createPostgresDb } from '$lib/server/db/postgres';
 import { resolveTenant } from '$lib/tenants';
 
 // Public, read-only API → open CORS so the tenant domains (and external sites
@@ -13,7 +15,19 @@ const CORS: Record<string, string> = {
 export const handle: Handle = async ({ event, resolve }) => {
 	const override = event.url.searchParams.get('tenant');
 	event.locals.tenant = resolveTenant(event.request.headers.get('host'), override);
-	event.locals.db = event.platform?.env?.DB?.withSession('first-unconstrained');
+	const hyperdriveConnectionString = event.platform?.env?.HYPERDRIVE?.connectionString;
+	const directConnectionString = event.platform?.env?.DATABASE_URL ?? privateEnv.DATABASE_URL;
+	const connectionString =
+		hyperdriveConnectionString ??
+		directConnectionString;
+	const db = createPostgresDb(connectionString);
+	event.locals.db = db;
+	event.locals.dbBackend =
+		db && 'close' in db
+			? hyperdriveConnectionString
+				? 'hyperdrive-postgres'
+				: 'direct-postgres'
+			: 'none';
 
 	const isApi = event.url.pathname.startsWith('/api');
 	if (isApi && event.request.method === 'OPTIONS') {
@@ -21,6 +35,10 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 
 	const response = await resolve(event);
-	if (isApi) for (const [k, v] of Object.entries(CORS)) response.headers.set(k, v);
+	if (db && 'close' in db && typeof db.close === 'function') event.platform?.context.waitUntil(db.close());
+	if (isApi) {
+		for (const [k, v] of Object.entries(CORS)) response.headers.set(k, v);
+		response.headers.set('X-BioVault-DB-Backend', event.locals.dbBackend ?? 'none');
+	}
 	return response;
 };

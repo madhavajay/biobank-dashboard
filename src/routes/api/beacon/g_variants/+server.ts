@@ -24,7 +24,7 @@ function refNameToCode(name: string): number | null {
 
 export const GET: RequestHandler = async ({ url, locals, platform }) => {
 	const db = locals.db;
-	if (!db) throw error(500, 'D1 binding unavailable');
+	if (!db) throw error(500, 'PostgreSQL connection unavailable');
 	const q = url.searchParams;
 	const refName = q.get('referenceName');
 	const code = refName ? refNameToCode(refName) : null;
