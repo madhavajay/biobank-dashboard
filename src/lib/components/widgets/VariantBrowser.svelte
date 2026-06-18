@@ -866,7 +866,7 @@
 			vepExpand ? barMax : `minmax(5rem,${barMax})`, // bar: fixed when VEP absorbs slack, else stretches to fill
 			'4rem', // freq
 			...(acAnSplit ? ['2.75rem', '3.5rem'] : [showGeno ? '4.5rem' : 'max-content']), // ac/an (split: separate right-aligned cols)
-			...(showGeno ? ['2rem', '3rem', '3rem'] : []), // het, hom_alt, hom_ref
+			...(showGeno ? ['2rem', '2.55rem', '2.55rem'] : []), // HET, HOM_A, HOM_R
 		]
 			.filter(Boolean)
 			.join(' ')
@@ -947,22 +947,211 @@
 		</div>
 	{/if}
 
-	{#if showApiBar}
-		<!-- live curl for the current query -->
-		<div class="mb-3 flex items-center gap-2">
-			<code
-				class="min-w-0 flex-1 truncate rounded-md border bg-muted/40 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground"
-				>{curlCmd}</code
-			>
-			<button
-				onclick={copyCurl}
-				class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
-				>{curlCopied ? tr($lang, 'copiedLabel') : tr($lang, 'copyCurl')}</button
-			>
-			<a href={apiLink} class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
-				>API ↗</a
-			>
+	{#if !embedded}
+		{#if showFilter}
+			<div class="relative z-30 mb-3 flex flex-wrap items-start gap-x-5 gap-y-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
+				<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'biobanks')}</span>
+				<details class="relative" data-explorer-filter-menu="biobanks">
+					<summary class="flex cursor-pointer list-none items-center gap-2 rounded-md border bg-card px-2.5 py-1.5 text-xs font-medium hover:bg-muted">
+						<span>Biobanks</span>
+						<span class="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{bankFilterSummary}</span>
+					</summary>
+					<div class="absolute left-0 top-full z-[80] mt-2 w-72 rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
+						<div class="mb-2 flex items-center justify-between border-b pb-2">
+							<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Biobanks</span>
+							<div class="flex gap-1">
+								<button type="button" onclick={() => setAllBanks(true)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">All</button>
+								<button type="button" onclick={() => setAllBanks(false)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">None</button>
+							</div>
+						</div>
+						<div class="grid gap-1.5">
+							{#each options as o}
+								<label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-muted">
+									<input type="checkbox" checked={selected[o.slug]} onchange={() => toggleBank(o.slug)} class="accent-[var(--primary)]" />
+									<span class="min-w-0 truncate">{o.name}</span>
+								</label>
+							{/each}
+						</div>
+					</div>
+				</details>
+				<div class="flex items-center gap-3" class:opacity-40={selectedSlugs.length < 2}>
+					<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'match')}</span>
+					<label class="flex cursor-pointer items-center gap-1.5">
+						<input type="radio" name="match" checked={matchMode === 'any'} onchange={() => setMatch('any')} disabled={selectedSlugs.length < 2} class="accent-[var(--primary)]" />
+						<span>Either biobank</span>
+					</label>
+					<label class="flex cursor-pointer items-center gap-1.5">
+						<input type="radio" name="match" checked={matchMode === 'all'} onchange={() => setMatch('all')} disabled={selectedSlugs.length < 2} class="accent-[var(--primary)]" />
+						<span>All selected biobanks</span>
+					</label>
+				</div>
+			</div>
+		{/if}
+
+		{#if showPopFilter}
+			<div class="relative z-20 mb-3 flex flex-wrap items-start gap-x-5 gap-y-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
+				<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'populations')}</span>
+				<details class="relative" data-explorer-filter-menu="populations">
+					<summary class="flex cursor-pointer list-none items-center gap-2 rounded-md border bg-card px-2.5 py-1.5 text-xs font-medium hover:bg-muted">
+						<span>Populations</span>
+						<span class="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{populationFilterSummary}</span>
+					</summary>
+					<div class="absolute left-0 top-full z-[70] mt-2 max-h-[28rem] w-80 overflow-y-auto rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
+						<div class="mb-2 flex items-center justify-between border-b pb-2">
+							<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Populations</span>
+							<div class="flex gap-1">
+								<button type="button" onclick={() => setAllPops(true)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">All</button>
+								<button type="button" onclick={() => setAllPops(false)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">None</button>
+							</div>
+						</div>
+						<div class="grid gap-2">
+							{#each populationsByBiobank as group}
+								<div class="rounded border bg-card/60 p-2" class:opacity-40={showFilter && selected[group.slug] === false}>
+									<div class="mb-1.5 flex items-center justify-between gap-2">
+										<span class="min-w-0 truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{group.name}</span>
+										{#if populationsByBiobank.length > 1}
+											<div class="flex shrink-0 gap-1">
+												<button type="button" onclick={() => setBankPops(group.slug, true)} class="rounded border px-1.5 py-0.5 text-[10px] hover:bg-muted">All</button>
+												<button type="button" onclick={() => setBankPops(group.slug, false)} class="rounded border px-1.5 py-0.5 text-[10px] hover:bg-muted">None</button>
+											</div>
+										{/if}
+									</div>
+									<div class="grid gap-1">
+										{#each group.pops as pop}
+											<label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1 hover:bg-muted">
+												<input type="checkbox" checked={selectedPops[pop.cohortId]} onchange={() => togglePop(pop.cohortId)} class="accent-[var(--primary)]" />
+												<span class="min-w-0 truncate">{pop.name}</span>
+											</label>
+										{/each}
+									</div>
+								</div>
+							{/each}
+						</div>
+					</div>
+				</details>
+				<div class="flex items-center gap-3" class:opacity-40={selectedFilterCohortIds.length < 2}>
+					<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'match')}</span>
+					<label class="flex cursor-pointer items-center gap-1.5">
+						<input type="radio" name="cohort-match" value="any" checked={populationMatchMode === 'any'} onchange={() => setPopulationMatch('any')} disabled={selectedFilterCohortIds.length < 2} class="accent-[var(--primary)]" />
+						<span>Either population</span>
+					</label>
+					<label class="flex cursor-pointer items-center gap-1.5">
+						<input type="radio" name="cohort-match" value="all" checked={populationMatchMode === 'all'} onchange={() => setPopulationMatch('all')} disabled={selectedFilterCohortIds.length < 2} class="accent-[var(--primary)]" />
+						<span>All selected populations</span>
+					</label>
+				</div>
+			</div>
+		{/if}
+
+		{#if examples.length}
+			<div class="mb-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+				<span>{tr($lang, 'tryLabel')}</span>
+				{#each examples as ex}
+					<button onclick={() => runExample(ex)} class="rounded-full border px-2 py-0.5 font-mono hover:bg-muted hover:text-foreground">{ex}</button>
+				{/each}
+			</div>
+		{/if}
+
+		<div class="mb-3 flex flex-col gap-2">
+			<div class="flex flex-wrap items-end gap-2">
+				<div class="relative min-w-56 flex-1">
+					<input bind:value={q} oninput={onInput} onkeydown={(e) => e.key === 'Enter' && go()} placeholder="rs123 · p.Arg124His · chr7 · 1:1000000-1100000 · 1:1000000-1100000 ISG15" class="w-full rounded-md border bg-background px-3 py-2 pr-9 text-sm outline-none focus:ring-2 focus:ring-ring" />
+					{#if loading}
+						<span class="absolute right-2.5 top-1/2 size-4 -translate-y-1/2 animate-spin rounded-full border-2 border-muted border-t-primary"></span>
+					{/if}
+				</div>
+				<div class="flex flex-col gap-1">
+					<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'gene')}</span>
+					<input bind:value={gene} oninput={onInput} onkeydown={(e) => e.key === 'Enter' && go()} placeholder="ISG15" class="w-24 rounded-md border bg-background px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-ring" />
+				</div>
+				<div class="flex flex-col gap-1">
+					<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'alleleFreq')}</span>
+					<div class="flex items-center gap-1">
+						<input bind:value={afMin} oninput={onInput} placeholder="min" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" />
+						<span class="text-muted-foreground">–</span>
+						<input bind:value={afMax} oninput={onInput} placeholder="max" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" />
+					</div>
+				</div>
+				<div class="flex flex-col gap-1">
+					<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'alleleCount')}</span>
+					<div class="flex items-center gap-1">
+						<input bind:value={acMin} oninput={onInput} min={alleleCountReportingThreshold} type="number" placeholder={String(alleleCountReportingThreshold)} class="w-16 rounded-md border bg-background px-2 py-2 text-sm" title={`Exact AC filters use reportable values only (AC >= ${alleleCountReportingThreshold}).`} />
+						<span class="text-muted-foreground">–</span>
+						<input bind:value={acMax} oninput={onInput} min={alleleCountReportingThreshold} type="number" placeholder="max" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" title={`Exact AC filters use reportable values only (AC >= ${alleleCountReportingThreshold}).`} />
+					</div>
+				</div>
+			</div>
+			<div class="flex flex-wrap items-end gap-2">
+				<div class="relative flex flex-col gap-1">
+					<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">VEP impact</span>
+					<details class="relative" data-explorer-filter-menu="vep-impact">
+						<summary class="flex h-9 min-w-32 cursor-pointer list-none items-center justify-between gap-2 rounded-md border bg-background px-2.5 text-sm hover:bg-muted">
+							<span class="truncate">{vepImpactSummary}</span>
+							<span class="text-[10px] text-muted-foreground">▾</span>
+						</summary>
+						<div class="absolute left-0 top-full z-[70] mt-2 w-52 rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
+							<div class="mb-2 flex items-center justify-between border-b pb-2">
+								<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Impact</span>
+								<div class="flex items-center gap-1 text-[11px]">
+									<button type="button" onclick={() => setAllVepImpacts(true)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">All</button>
+									<button type="button" onclick={() => setAllVepImpacts(false)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">None</button>
+								</div>
+							</div>
+							<div class="grid gap-1">
+								{#each VEP_IMPACT_OPTIONS as impact}
+									<label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-muted">
+										<input type="checkbox" checked={selectedVepImpacts[impact]} onchange={() => toggleVepImpact(impact)} class="accent-[var(--primary)]" />
+										<span class={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${impactClass(impact)}`}>{impact}</span>
+									</label>
+								{/each}
+							</div>
+						</div>
+					</details>
+				</div>
+				<div class="relative flex flex-col gap-1">
+					<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">VEP consequence</span>
+					<details class="relative" data-explorer-filter-menu="vep-consequence">
+						<summary class="flex h-9 min-w-40 cursor-pointer list-none items-center justify-between gap-2 rounded-md border bg-background px-2.5 text-sm hover:bg-muted">
+							<span class="truncate">{vepConsequenceSummary}</span>
+							<span class="text-[10px] text-muted-foreground">▾</span>
+						</summary>
+						<div class="absolute left-0 top-full z-[70] mt-2 max-h-80 w-72 overflow-y-auto rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
+							<div class="sticky top-0 mb-2 flex items-center justify-between border-b bg-popover pb-2">
+								<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Consequence</span>
+								<div class="flex items-center gap-1 text-[11px]">
+									<button type="button" onclick={() => setAllVepConsequences(true)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">All</button>
+									<button type="button" onclick={() => setAllVepConsequences(false)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">None</button>
+								</div>
+							</div>
+							<div class="grid gap-1">
+								{#each VEP_CONSEQUENCE_OPTIONS as consequence}
+									<label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-muted">
+										<input type="checkbox" checked={selectedVepConsequences[consequence]} onchange={() => toggleVepConsequence(consequence)} class="accent-[var(--primary)]" />
+										<span class="min-w-0 truncate">{consequence}</span>
+									</label>
+								{/each}
+							</div>
+						</div>
+					</details>
+				</div>
+				<label class="flex flex-col text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+					{tr($lang, 'perPage')}
+					<select value={pageSize} onchange={(e) => setPageSize(Number((e.target as HTMLSelectElement).value))} class="rounded-md border bg-background px-2 py-2 text-sm text-foreground">
+						{#each [25, 50, 100, 200, 500] as n}<option value={n}>{n}</option>{/each}
+					</select>
+				</label>
+				<button onclick={reset} class="h-9 rounded-md border px-3 text-sm hover:bg-muted">{tr($lang, 'reset')}</button>
+				<button onclick={go} class="h-10 cursor-pointer rounded-md bg-primary px-6 text-sm font-bold text-primary-foreground shadow-sm hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2">Go</button>
+			</div>
 		</div>
+
+		{#if showApiBar}
+			<div class="mb-3 flex items-center gap-2">
+				<code class="min-w-0 flex-1 truncate rounded-md border bg-muted/40 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground">{curlCmd}</code>
+				<button onclick={copyCurl} class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">{curlCopied ? tr($lang, 'copiedLabel') : tr($lang, 'copyCurl')}</button>
+				<a href={apiLink} class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">API ↗</a>
+			</div>
+		{/if}
 	{/if}
 
 	<div class:vb-drawer-controls={embedded}>
@@ -1104,7 +1293,9 @@
 						{/if}
 						<th class={embedded ? 'vb-head-cell vb-head-cell-pop' : 'px-3 py-2 font-medium'}>
 							<div
-								class={embedded ? 'vb-head-grid' : 'grid items-center gap-x-2 uppercase'}
+								class={embedded
+									? 'vb-head-grid'
+									: `grid items-center ${showGeno ? 'gap-x-1' : 'gap-x-2'} uppercase`}
 								style={`grid-template-columns:${popTmpl}`}
 							>
 								{#if multiPop}<span
@@ -1163,14 +1354,14 @@
 											? 'vb-head-text cursor-help text-right'
 											: 'cursor-help text-right text-[9px] tracking-tight'}
 										title="HOM_ALT: homozygous-alternate individuals (two copies of the alternate allele)."
-										>HOM_ALT</span
+										>HOM_A</span
 									>
 									<span
 										class={embedded
 											? 'vb-head-text cursor-help text-right'
 											: 'cursor-help text-right text-[9px] tracking-tight'}
 										title="HOM_REF: homozygous-reference individuals (no copies of the alternate allele)."
-										>HOM_REF</span
+										>HOM_R</span
 									>
 								{/if}
 							</div>
@@ -1292,9 +1483,6 @@
 											title={vepTitle(r)}
 										>
 											<span class="min-w-0 truncate">{r.vepLabel}</span>
-											{#if r.vepHasMultipleConsequences}<span
-													class="shrink-0 text-[10px] opacity-75">+</span
-												>{/if}
 										</a>
 									{:else if r.vepImpact}
 										<a
@@ -1311,7 +1499,7 @@
 							{/if}
 							<td class="px-3 py-2">
 								<div
-									class="grid items-center gap-x-2 gap-y-1"
+									class={`grid items-center ${showGeno ? 'gap-x-1' : 'gap-x-2'} gap-y-1`}
 									style={`grid-template-columns:${popTmpl}`}
 								>
 									{#each r.frequencies as f}

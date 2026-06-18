@@ -1022,7 +1022,7 @@
 							<dd>
 								{#if v.vepLabel}
 									<a href={explorerFilterHref('vepConsequence', v.vepLabel)} onclick={(event) => openExploreLink(explorerFilterHref('vepConsequence', v.vepLabel), event)} class={`vep-chip ${vepImpactClass(v.vepImpact)}`} title={vepSummaryTitle}>
-										{v.vepLabel}{#if v.vepHasMultipleConsequences}+{/if}
+										{v.vepLabel}
 									</a>
 								{:else}
 									-
@@ -1137,7 +1137,6 @@
 						title={vepSummaryTitle}
 					>
 						<span class="min-w-0 truncate">{v.vepLabel}</span>
-						{#if v.vepHasMultipleConsequences}<span class="shrink-0 text-[10px] opacity-75">+</span>{/if}
 					</a>
 				{:else}
 					<span class="text-muted-foreground">-</span>

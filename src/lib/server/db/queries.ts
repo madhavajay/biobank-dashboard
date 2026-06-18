@@ -447,6 +447,16 @@ async function prepareVariantSearchFilters(
 		where.push(`v.vep_label IN (${vepConsequences.map(() => '?').join(',')})`);
 		args.push(...vepConsequences);
 	}
+	const hasVariantSelector = Boolean(
+		params.q?.trim() ||
+			params.gene?.trim() ||
+			params.chrom ||
+			params.posMin != null ||
+			params.posMax != null ||
+			params.rsid != null ||
+			vepImpacts.length ||
+			vepConsequences.length
+	);
 
 	const baseRange: string[] = ['f.ac > 0'];
 	const baseRangeArgs: unknown[] = [];
@@ -490,7 +500,7 @@ async function prepareVariantSearchFilters(
 	const hasFrequencySelector = biobankIds.length > 0 || cohortIds.length > 0 || hasFrequencyRange;
 
 	function frequencyCandidateSql(): { cte: string; args: unknown[] } | null {
-		if (!hasFrequencySelector) return null;
+		if (!hasFrequencySelector || hasVariantSelector) return null;
 		const sets: { sql: string; args: unknown[] }[] = [];
 		const addSet = (conditions: string[], setArgs: unknown[]) => {
 			sets.push({
