@@ -1,6 +1,7 @@
 // See https://svelte.dev/docs/kit/types#app.d.ts
 // for information about these interfaces
 import type { Tenant } from '$lib/tenants';
+import type { PostgresDatabase } from '$lib/server/db/postgres';
 
 declare global {
 	interface Window {
@@ -13,13 +14,15 @@ declare global {
 		// interface Error {}
 		interface Locals {
 			tenant: Tenant;
-			db?: D1Database | D1DatabaseSession;
+			db?: PostgresDatabase;
+			dbBackend?: 'hyperdrive-postgres' | 'direct-postgres' | 'none';
 		}
 		// interface PageData {}
 		// interface PageState {}
 		interface Platform {
 			env: {
-				DB: D1Database;
+				DATABASE_URL?: string;
+				HYPERDRIVE?: Hyperdrive;
 			};
 			context: ExecutionContext;
 			caches: CacheStorage & { default: Cache };

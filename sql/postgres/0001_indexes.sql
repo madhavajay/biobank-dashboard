@@ -1,0 +1,42 @@
+CREATE UNIQUE INDEX IF NOT EXISTS variants_locus_idx ON variants(chrom, pos, ref, alt);
+CREATE INDEX IF NOT EXISTS variants_rsid_idx ON variants(rsid);
+CREATE INDEX IF NOT EXISTS variants_chrom_pos_idx ON variants(chrom, pos);
+CREATE INDEX IF NOT EXISTS variants_vep_impact_locus_idx ON variants(vep_impact, chrom, pos, id);
+CREATE INDEX IF NOT EXISTS variants_vep_label_locus_idx ON variants(vep_label, chrom, pos, id);
+CREATE INDEX IF NOT EXISTS variants_hgvs_consequence_idx ON variants(hgvs_consequence);
+CREATE INDEX IF NOT EXISTS variants_vrs_digest_idx ON variants(vrs_digest);
+CREATE INDEX IF NOT EXISTS variants_chrom_pos_id_idx ON variants(chrom, pos, id);
+
+CREATE INDEX IF NOT EXISTS genes_symbol_norm_idx ON genes(symbol_norm);
+CREATE INDEX IF NOT EXISTS genes_region_idx ON genes(chrom, start, "end");
+CREATE INDEX IF NOT EXISTS genes_symbol_norm_region_idx ON genes(symbol_norm, chrom, start, "end");
+CREATE INDEX IF NOT EXISTS genes_chrom_start_end_symbol_idx ON genes(chrom, start, "end", symbol_norm);
+
+CREATE INDEX IF NOT EXISTS frequencies_cohort_idx ON frequencies(cohort_id);
+CREATE INDEX IF NOT EXISTS frequencies_biobank_variant_idx ON frequencies(biobank_id, variant_id);
+CREATE INDEX IF NOT EXISTS frequencies_public_ac_idx ON frequencies(public_ac);
+CREATE INDEX IF NOT EXISTS frequencies_public_af_idx ON frequencies(public_af);
+CREATE INDEX IF NOT EXISTS frequencies_cohort_variant_idx ON frequencies(cohort_id, variant_id);
+CREATE INDEX IF NOT EXISTS frequencies_variant_public_af_idx ON frequencies(variant_id, public_af);
+CREATE INDEX IF NOT EXISTS frequencies_biobank_variant_public_af_idx ON frequencies(biobank_id, variant_id, public_af);
+CREATE INDEX IF NOT EXISTS frequencies_variant_observed_idx ON frequencies(variant_id) WHERE ac > 0;
+CREATE INDEX IF NOT EXISTS frequencies_biobank_variant_observed_idx ON frequencies(biobank_id, variant_id) WHERE ac > 0;
+CREATE INDEX IF NOT EXISTS frequencies_cohort_variant_observed_idx ON frequencies(cohort_id, variant_id) WHERE ac > 0;
+CREATE INDEX IF NOT EXISTS frequencies_public_ac_variant_observed_idx ON frequencies(public_ac, variant_id) WHERE ac > 0 AND public_ac IS NOT NULL;
+CREATE INDEX IF NOT EXISTS frequencies_public_af_variant_observed_idx ON frequencies(public_af, variant_id) WHERE ac > 0 AND public_ac IS NOT NULL;
+CREATE INDEX IF NOT EXISTS frequencies_biobank_public_af_variant_observed_idx ON frequencies(biobank_id, public_af, variant_id) WHERE ac > 0 AND public_ac IS NOT NULL;
+CREATE INDEX IF NOT EXISTS frequencies_cohort_public_af_variant_observed_idx ON frequencies(cohort_id, public_af, variant_id) WHERE ac > 0 AND public_ac IS NOT NULL;
+CREATE INDEX IF NOT EXISTS frequencies_biobank_public_ac_variant_observed_idx ON frequencies(biobank_id, public_ac, variant_id) WHERE ac > 0 AND public_ac IS NOT NULL;
+CREATE INDEX IF NOT EXISTS frequencies_cohort_public_ac_variant_observed_idx ON frequencies(cohort_id, public_ac, variant_id) WHERE ac > 0 AND public_ac IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS population_country_mappings_population_idx ON population_country_mappings(population_id);
+CREATE INDEX IF NOT EXISTS population_country_mappings_country_idx ON population_country_mappings(country_code);
+CREATE INDEX IF NOT EXISTS biobanks_slug_idx ON biobanks(slug);
+CREATE INDEX IF NOT EXISTS populations_biobank_name_idx ON populations(biobank_id, name);
+CREATE INDEX IF NOT EXISTS populations_country_code_idx ON populations(country_code);
+CREATE INDEX IF NOT EXISTS cohorts_biobank_population_idx ON cohorts(biobank_id, population_id);
+CREATE INDEX IF NOT EXISTS cohorts_population_idx ON cohorts(population_id);
+CREATE INDEX IF NOT EXISTS cohorts_dataset_idx ON cohorts(dataset_id);
+CREATE INDEX IF NOT EXISTS datasets_biobank_idx ON datasets(biobank_id);
+CREATE INDEX IF NOT EXISTS datasets_biobank_id_idx ON datasets(biobank_id, id);
+CREATE INDEX IF NOT EXISTS datasets_slug_idx ON datasets(slug);

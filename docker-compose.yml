@@ -1,0 +1,21 @@
+services:
+  biovault-postgres:
+    image: postgres:16-alpine
+    container_name: biovault-postgres
+    environment:
+      POSTGRES_DB: biovault_data
+      POSTGRES_USER: biovault_data_user
+      POSTGRES_PASSWORD: biovault_data_password
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - biovault_postgres_data:/var/lib/postgresql/data
+      - ./sql/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U biovault_data_user -d biovault_data"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  biovault_postgres_data:

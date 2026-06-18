@@ -5,7 +5,7 @@ import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ locals, params, url, platform }) => {
 	const db = locals.db;
-	if (!db) throw error(500, 'D1 binding unavailable');
+	if (!db) throw error(500, 'PostgreSQL connection unavailable');
 	const v = await resolveVariantIdentifier(db, params.id, locals.tenant.scope);
 	if (!v) throw error(404, 'variant not found');
 	if (url.searchParams.get('format') === 'vrs') {

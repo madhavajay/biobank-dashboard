@@ -1,4 +1,5 @@
-// Engine query layer — runs directly on the D1 binding for predictable analytics.
+// Engine query layer — runs on the request PostgreSQL connection for predictable analytics.
+import type { PostgresDatabase } from './postgres';
 import { CODE_CHROM, REFGET_SQ } from './chroms';
 import { publicVariantId } from '$lib/variant-id';
 import { ALLELE_COUNT_REPORTING_THRESHOLD, alleleFrequencyUpperBound, isAlleleCountMasked, isGenotypeMasked } from '$lib/privacy';
@@ -14,7 +15,7 @@ import {
 	rowMatchesSearchToken
 } from '$lib/search/variant-search';
 
-type QueryDb = D1Database | D1DatabaseSession;
+type QueryDb = PostgresDatabase;
 
 export interface FreqCell {
 	cohortId: number;
@@ -118,7 +119,7 @@ async function genesForSymbols(db: QueryDb, symbols: string[]): Promise<{ chrom:
 	const ph = norms.map(() => '?').join(',');
 	try {
 		const r = await db
-			.prepare(`SELECT chrom,start,end FROM genes WHERE symbol_norm IN (${ph})`)
+			.prepare(`SELECT chrom, start, "end" AS end FROM genes WHERE symbol_norm IN (${ph})`)
 			.bind(...norms)
 			.all<{ chrom: number; start: number; end: number }>();
 		return r.results;
@@ -136,7 +137,7 @@ async function genesForSymbolPrefix(
 	if (norm.length < GENE_SEARCH_MIN_LEN) return [];
 	try {
 		const r = await db
-			.prepare(`SELECT chrom,start,end FROM genes WHERE symbol_norm LIKE ? ORDER BY symbol_norm LIMIT ?`)
+			.prepare(`SELECT chrom, start, "end" AS end FROM genes WHERE symbol_norm LIKE ? ORDER BY symbol_norm LIMIT ?`)
 			.bind(`${norm}%`, limit)
 			.all<{ chrom: number; start: number; end: number }>();
 		return r.results;
@@ -165,7 +166,7 @@ function geneSymbolContainsCondition(symbolNorm: string): { sql: string; args: u
 	return {
 		sql: `EXISTS (
 			SELECT 1 FROM genes g
-			WHERE g.chrom=v.chrom AND v.pos BETWEEN g.start AND g.end
+			WHERE g.chrom=v.chrom AND v.pos BETWEEN g.start AND g."end"
 			AND g.symbol_norm LIKE ?
 		)`,
 		args: [`%${symbolNorm}%`]
@@ -214,9 +215,9 @@ export async function attachGenesToRows<T extends { id: number }>(db: QueryDb, r
 	try {
 		const grows = await db
 			.prepare(`
-			SELECT v.id variant_id, g.ensembl_id, g.symbol, g.gene_type, g.start, g.end, g.strand
+			SELECT v.id variant_id, g.ensembl_id, g.symbol, g.gene_type, g.start, g."end" AS end, g.strand
 			FROM variants v
-			JOIN genes g ON g.chrom=v.chrom AND v.pos BETWEEN g.start AND g.end
+			JOIN genes g ON g.chrom=v.chrom AND v.pos BETWEEN g.start AND g."end"
 			WHERE v.id IN (${placeholders})
 			ORDER BY g.symbol`)
 			.bind(...ids)
@@ -258,7 +259,7 @@ async function parseQueryConditionWithGenes(db: QueryDb, q: string): Promise<{ s
 					.map((t) => conditionForQueryToken(db, t))
 			)
 		).filter((t): t is { sql: string; args: unknown[] } => t !== null);
-		if (!orConds.length) return { sql: '0', args: [] };
+		if (!orConds.length) return { sql: 'FALSE', args: [] };
 		if (orConds.length === 1) andConds.push(orConds[0]);
 		else andConds.push({ sql: '(' + orConds.map((c) => c.sql).join(' OR ') + ')', args: orConds.flatMap((c) => c.args) });
 	}
@@ -418,7 +419,7 @@ async function prepareVariantSearchFilters(
 			where.push(cond.sql);
 			args.push(...cond.args);
 		} else {
-			where.push('0');
+			where.push('FALSE');
 		}
 	}
 	if (params.chrom) {
@@ -727,7 +728,7 @@ export async function searchVariants(
 	if (params.sort === 'rsid') orderExpr = `v.rsid ${dir}`;
 	else if (params.sort === 'vrs') orderExpr = `v.vrs_digest ${dir}`;
 	else if (params.sort === 'gene') {
-		const geneExpr = `(SELECT MIN(g.symbol_norm) FROM genes g WHERE g.chrom=v.chrom AND v.pos BETWEEN g.start AND g.end)`;
+		const geneExpr = `(SELECT MIN(g.symbol_norm) FROM genes g WHERE g.chrom=v.chrom AND v.pos BETWEEN g.start AND g."end")`;
 		orderExpr = `CASE WHEN ${geneExpr} IS NULL THEN 1 ELSE 0 END ASC, ${geneExpr} ${dir}`;
 	}
 	else if (params.sort === 'maxaf') {
@@ -760,7 +761,7 @@ export async function searchVariants(
 							SELECT v.id, MIN(g.symbol_norm) gene_sort
 							FROM candidate c
 							JOIN variants v ON v.id=c.variant_id
-							JOIN genes g ON g.chrom=v.chrom AND v.pos BETWEEN g.start AND g.end
+							JOIN genes g ON g.chrom=v.chrom AND v.pos BETWEEN g.start AND g."end"
 							${whereSql}
 							GROUP BY v.id
 							ORDER BY gene_sort ${dir}, v.chrom, v.pos
@@ -778,7 +779,7 @@ export async function searchVariants(
 							`WITH gene_hits AS (
 							SELECT v.id, MIN(g.symbol_norm) gene_sort
 							FROM genes g
-							JOIN variants v INDEXED BY variants_chrom_pos_idx ON v.chrom=g.chrom AND v.pos BETWEEN g.start AND g.end
+							JOIN variants v ON v.chrom=g.chrom AND v.pos BETWEEN g.start AND g."end"
 							${whereSql}
 							GROUP BY v.id
 							ORDER BY gene_sort ${dir}, v.chrom, v.pos
@@ -820,9 +821,9 @@ export async function searchVariants(
 		ORDER BY COALESCE(f.public_af, f.af_upper_bound, 0) DESC, p.name`;
 	const frows = await db.prepare(freqSql).bind(...ids, ...biobankIds, ...cohortIds).all<any>();
 	const growSql = `
-		SELECT v.id variant_id, g.ensembl_id, g.symbol, g.gene_type, g.start, g.end, g.strand
+		SELECT v.id variant_id, g.ensembl_id, g.symbol, g.gene_type, g.start, g."end" AS end, g.strand
 		FROM variants v
-		JOIN genes g ON g.chrom=v.chrom AND v.pos BETWEEN g.start AND g.end
+		JOIN genes g ON g.chrom=v.chrom AND v.pos BETWEEN g.start AND g."end"
 		WHERE v.id IN (${placeholders})
 		ORDER BY g.symbol`;
 	const grows = await db.prepare(growSql).bind(...ids).all<any>();

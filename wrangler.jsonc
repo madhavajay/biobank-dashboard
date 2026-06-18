@@ -8,16 +8,33 @@
 		"binding": "ASSETS"
 	},
 	"compatibility_date": "2026-04-15",
-	"compatibility_flags": ["nodejs_compat"],
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
 	// One Worker, multiple custom domains. The app resolves the tenant by hostname
-	// (see src/lib/tenants.ts); the D1 database + API live on this Worker and are
+	// (see src/lib/tenants.ts); the PostgreSQL-backed API lives on this Worker and is
 	// reachable from each tenant domain (and cross-origin via CORS on /api).
 	"routes": [
-		{ "pattern": "data.biovault.net", "custom_domain": true },
-		{ "pattern": "bipmed.biovault.net", "custom_domain": true },
-		{ "pattern": "carigenetics.biovault.net", "custom_domain": true },
-		{ "pattern": "pgp-harvard.biovault.net", "custom_domain": true },
-		{ "pattern": "1kgp.biovault.net", "custom_domain": true }
+		{
+			"pattern": "data.biovault.net",
+			"custom_domain": true
+		},
+		{
+			"pattern": "bipmed.biovault.net",
+			"custom_domain": true
+		},
+		{
+			"pattern": "carigenetics.biovault.net",
+			"custom_domain": true
+		},
+		{
+			"pattern": "pgp-harvard.biovault.net",
+			"custom_domain": true
+		},
+		{
+			"pattern": "1kgp.biovault.net",
+			"custom_domain": true
+		}
 		// Enable once these zones are proxied in this Cloudflare account:
 		// { "pattern": "bipmed.org", "custom_domain": true }
 		// { "pattern": "data.carigenetics.com", "custom_domain": true }
@@ -25,12 +42,10 @@
 	"observability": {
 		"enabled": true
 	},
-	"d1_databases": [
+	"hyperdrive": [
 		{
-			"binding": "DB",
-			"database_name": "biovault-data",
-			"database_id": "6cfe544e-9782-457f-95ac-a000001e387f",
-			"preview_database_id": "6cfe544e-9782-457f-95ac-a000001e387f"
+			"binding": "HYPERDRIVE",
+			"id": "70d4955886f04344b9a061a2c940e8cf"
 		}
 	]
 }

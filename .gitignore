@@ -5,6 +5,7 @@ node_modules
 .vercel
 .netlify
 .wrangler
+.postgres
 /.svelte-kit
 /build
 /dist
