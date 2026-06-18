@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 SEED_MARKER=".wrangler/.seeded"
-MODE="${MODE:-vite}"
+MODE="${MODE:-worker}"
 PORT="${PORT:-8787}"
 REMOTE=0
 
@@ -38,13 +38,22 @@ fi
 
 case "$MODE" in
 	vite|hmr)
-		echo "==> Starting Vite dev server with HMR on http://localhost:${PORT}"
+		if [ "$MODE" = "hmr" ]; then
+			export VITE_HMR=1
+			export VITE_HMR_PORT="$PORT"
+			echo "==> Starting Vite dev server with HMR on http://localhost:${PORT}"
+		else
+			export VITE_HMR=0
+			echo "==> Starting Vite dev server without HMR on http://localhost:${PORT}"
+		fi
 		echo "==> Cloudflare bindings are provided by adapter-cloudflare's local platform proxy"
 		exec bun run dev -- --host 0.0.0.0 --port "$PORT" --strictPort
 		;;
 	wrangler|worker)
+		echo "==> Building Worker bundle"
+		bun run build
 		echo "==> Starting Wrangler in local Worker mode on http://localhost:${PORT}"
-		echo "==> HMR is limited in this mode; use MODE=vite ./dev.sh for frontend hot reload"
+		echo "==> HMR is disabled in this mode; use MODE=vite ./dev.sh for frontend hot reload"
 		exec bunx wrangler dev --port "$PORT"
 		;;
 	remote|wrangler-remote)

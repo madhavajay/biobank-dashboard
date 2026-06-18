@@ -14,6 +14,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const filters = await exploreFilterOptions(db, locals.tenant.scope);
 	return {
 		...filters,
+		q: url.searchParams.get('q') ?? '',
 		showGenotypeCounts: await showGenotypeCounts(db, locals.tenant.scope),
 		display: explorerDisplay(locals.tenant.slug)
 	};
