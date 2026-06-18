@@ -2,14 +2,14 @@ import { json, error } from '@sveltejs/kit';
 import { searchVariantStats, tenantStats, getStats, type SearchParams } from '$lib/server/db/queries';
 import type { RequestHandler } from './$types';
 
-const FILTER_KEYS = ['q', 'gene', 'country', 'chrom', 'posMin', 'posMax', 'rsid', 'afMin', 'afMax', 'acMin', 'acMax', 'vepImpact', 'vepConsequence', 'cohorts', 'cohortMatch', 'biobanks'];
+const FILTER_KEYS = ['q', 'gene', 'country', 'chrom', 'posMin', 'posMax', 'rsid', 'afMin', 'afMax', 'acMin', 'acMax', 'vepImpact', 'vepConsequence', 'cohorts', 'cohortMatch', 'source', 'biobanks', 'dataset'];
 
 export const GET: RequestHandler = async ({ url, locals }) => {
 	const db = locals.db;
 	if (!db) throw error(500, 'PostgreSQL connection unavailable');
 
 	const num = (k: string) => (url.searchParams.has(k) ? Number(url.searchParams.get(k)) : undefined);
-	const biobanksParam = url.searchParams.get('biobanks');
+	const biobanksParam = url.searchParams.get('source') ?? url.searchParams.get('biobanks');
 	const biobanks = biobanksParam ? biobanksParam.split(',').filter(Boolean) : undefined;
 	const splitList = (k: string) => url.searchParams.get(k)?.split(',').map((v) => v.trim()).filter(Boolean);
 	const match = url.searchParams.get('match') === 'all' ? 'all' : 'any';
@@ -24,6 +24,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		rsid: num('rsid'),
 		gene: sp.get('gene') ?? undefined,
 		country: sp.get('country') ?? undefined,
+		dataset: sp.get('dataset') ?? undefined,
 		afMin: num('afMin'),
 		afMax: num('afMax'),
 		acMin: num('acMin'),
@@ -38,8 +39,12 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		match
 	};
 
+	if (biobanks?.includes('__none__')) {
+		return json({ variants: 0, common: 0, lowFreq: 0, rare: 0 });
+	}
+
 	const isUnfiltered =
-		!FILTER_KEYS.some((k) => sp.get(k)) && !sp.get('dataset');
+		!FILTER_KEYS.some((k) => sp.get(k));
 	if (isUnfiltered) {
 		const scope = locals.tenant.scope;
 		const cached = await getStats(db, `home:${scope ?? 'global'}`);

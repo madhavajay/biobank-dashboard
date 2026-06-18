@@ -8,6 +8,9 @@
 	import { ClinpgxClient, type ClinpgxClinicalAnnotation, type ClinpgxVariant } from '../../../../utils/clinpgx/js/clinpgx.mjs';
 	import { ClinvarClient } from '../../../../utils/clinvar/js/clinvar.mjs';
 	import type { PageServerData } from '../../../routes/explore/variant/[id]/$types';
+	import { Button } from '$lib/components/ui/button';
+	import * as Popover from '$lib/components/ui/popover';
+	import * as Tabs from '$lib/components/ui/tabs';
 
 	type VariantDetailPart = 'all' | 'panel' | 'tables';
 	type VariantDetailData = Pick<PageServerData, 'tenantName' | 'forceTenant' | 'variant' | 'vrs'>;
@@ -25,7 +28,7 @@
 	} = $props();
 	const showPanel = $derived(part === 'all' || part === 'panel');
 	const showTables = $derived(part === 'all' || part === 'tables');
-	const exploreBase = $derived(page.data.tenant?.slug === 'biovault' ? '/' : '/explore');
+	const exploreBase = '/explore';
 	const exploreBackHref = $derived.by(() => {
 		if (exploreReturnHref) return exploreReturnHref;
 		const sp = new URLSearchParams();
@@ -311,8 +314,8 @@
 		return `${exploreBase}?${sp.toString()}`;
 	};
 	const geneHref = (symbol: string) => exploreHref({ gene: symbol });
-	const explorerFilterHref = (key: 'vepConsequence' | 'vepImpact', value: string) =>
-		exploreHref({ [key]: value });
+	const explorerFilterHref = (key: 'vepConsequence' | 'vepImpact', value: string | null | undefined) =>
+		exploreHref({ [key]: value ?? '' });
 	function openExploreLink(href: string, event: MouseEvent) {
 		if (!onExploreNavigate) return;
 		event.preventDefault();
@@ -926,26 +929,6 @@
 			void loadGnomad();
 			void loadClinpgx();
 		}
-
-		const closeFilterMenus = (event: PointerEvent) => {
-			const target = event.target;
-			if (!(target instanceof Node)) return;
-			for (const details of document.querySelectorAll<HTMLDetailsElement>('details[data-external-filter-menu]')) {
-				if (!details.contains(target)) details.open = false;
-			}
-		};
-		const closeFilterMenusOnEscape = (event: KeyboardEvent) => {
-			if (event.key !== 'Escape') return;
-			for (const details of document.querySelectorAll<HTMLDetailsElement>('details[data-external-filter-menu]')) {
-				details.open = false;
-			}
-		};
-		document.addEventListener('pointerdown', closeFilterMenus, true);
-		document.addEventListener('keydown', closeFilterMenusOnEscape);
-		return () => {
-			document.removeEventListener('pointerdown', closeFilterMenus, true);
-			document.removeEventListener('keydown', closeFilterMenusOnEscape);
-		};
 	});
 </script>
 
@@ -1050,36 +1033,46 @@
 			</div>
 		</aside>
 	{:else}
-		<div class="mb-4">
-			<a href={exploreBackHref} onclick={(event) => openExploreLink(exploreBackHref, event)} class="mb-2 inline-flex text-sm text-muted-foreground hover:text-primary hover:underline">
-				← {tr($lang, 'explore')}
-			</a>
-			<div class="flex flex-wrap items-center gap-2.5">
-				<h1 class="mr-2 max-w-full truncate font-mono text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1>
-				{#if v.rsid}
-					<a class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted" href={`https://www.ncbi.nlm.nih.gov/snp/rs${v.rsid}`} target="_blank" rel="noreferrer">
-						<img src={dbsnpIconUrl} alt="" class="h-4 w-auto invert dark:invert-0" />
-						<span>dbSNP</span>
+		<div class="mb-4 rounded-lg border bg-card px-4 py-4">
+			<div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+				<a href={exploreBackHref} onclick={(event) => openExploreLink(exploreBackHref, event)} class="inline-flex text-sm font-medium text-muted-foreground hover:text-primary hover:underline">
+					← {tr($lang, 'explore')}
+				</a>
+				<div class="flex flex-wrap items-center gap-2">
+					{#if v.rsid}
+						<a class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted" href={`https://www.ncbi.nlm.nih.gov/snp/rs${v.rsid}`} target="_blank" rel="noreferrer">
+							<img src={dbsnpIconUrl} alt="" class="h-4 w-auto invert dark:invert-0" />
+							<span>dbSNP</span>
+						</a>
+					{/if}
+					<a class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted" href={gnomadUrl} target="_blank" rel="noopener">
+						<img src="/icons/gnomad.png" alt="" class="size-4 opacity-75" />
+						<span>gnomAD</span>
 					</a>
-				{/if}
-				<a class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted" href={gnomadUrl} target="_blank" rel="noopener">
-					<img src="/icons/gnomad.png" alt="" class="size-4 opacity-75" />
-					<span>gnomAD</span>
-				</a>
-				<a class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted" href={clinvarSearchUrl} target="_blank" rel="noreferrer">
-					<img src="/icons/clinvar.svg" alt="" class="h-4 w-auto" />
-					<span>ClinVar</span>
-				</a>
-				{#if v.rsid}
-					<a class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted" href={clinpgxSearchHref(`rs${v.rsid}`)} target="_blank" rel="noreferrer">
-						<img src="/icons/clinpgx.svg" alt="" class="size-4" />
-						<span>ClinPGx</span>
+					<a class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted" href={clinvarSearchUrl} target="_blank" rel="noreferrer">
+						<img src="/icons/clinvar.svg" alt="" class="h-4 w-auto" />
+						<span>ClinVar</span>
 					</a>
-				{/if}
-				<a class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted" href={apiUrl}>
-					<Code class="size-4" strokeWidth={1.8} />
-					<span>API</span>
-				</a>
+					{#if v.rsid}
+						<a class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted" href={clinpgxSearchHref(`rs${v.rsid}`)} target="_blank" rel="noreferrer">
+							<img src="/icons/clinpgx.svg" alt="" class="size-4" />
+							<span>ClinPGx</span>
+						</a>
+					{/if}
+					<a class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted" href={apiUrl}>
+						<Code class="size-4" strokeWidth={1.8} />
+						<span>API</span>
+					</a>
+				</div>
+			</div>
+			<div class="flex flex-col gap-2">
+				<p class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Variant</p>
+				<h1 class="max-w-full truncate font-mono text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1>
+				<div class="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+					{#if rsidSummary}<span class="font-mono">{rsidSummary}</span>{/if}
+					<span>{geneSummary}</span>
+					{#if v.vepLabel}<span>{v.vepLabel}</span>{/if}
+				</div>
 			</div>
 		</div>
 
@@ -1172,19 +1165,13 @@
 {#if showTables}
 	<div class="variant-detail-tables" class:is-tabbed={useTableTabs}>
 		{#if useTableTabs}
-			<div class="variant-detail-tabs" role="tablist" aria-label="Variant data tables">
-				{#each tableTabs as tab (tab.id)}
-					<button
-						type="button"
-						role="tab"
-						class:active={activeTableTab === tab.id}
-						aria-selected={activeTableTab === tab.id}
-						onclick={() => (activeTableTab = tab.id)}
-					>
-						{tab.label}
-					</button>
-				{/each}
-			</div>
+			<Tabs.Root bind:value={activeTableTab} class="mb-3">
+				<Tabs.List aria-label="Variant data tables">
+					{#each tableTabs as tab (tab.id)}
+						<Tabs.Trigger value={tab.id}>{tab.label}</Tabs.Trigger>
+					{/each}
+				</Tabs.List>
+			</Tabs.Root>
 		{/if}
 		<div class="variant-detail-tab-panels" class:is-tabbed={useTableTabs}>
 
@@ -1422,17 +1409,17 @@
 			{/if}
 			<div class="flex shrink-0 items-center gap-2">
 				{#if clinvarSignificanceOptions.length}
-					<details class="relative z-[100]" data-external-filter-menu>
-						<summary class="inline-flex cursor-pointer list-none items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">
+					<Popover.Root>
+						<Popover.Trigger class="inline-flex cursor-pointer list-none items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">
 							<span>Significance</span>
 							<span class="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{clinvarFilterSummary}</span>
-						</summary>
-						<div class="absolute right-0 z-[200] mt-2 w-64 rounded-md border bg-background p-2 text-xs shadow-lg">
+						</Popover.Trigger>
+						<Popover.Content align="end" class="z-[200] w-64 text-xs">
 							<div class="mb-2 flex items-center justify-between gap-2 border-b pb-2">
 								<span class="font-medium text-foreground">Show significance</span>
 								<span class="inline-flex items-center gap-1">
-									<button onclick={showAllClinvarSignificance} class="rounded px-1.5 py-1 text-primary hover:bg-muted">All</button>
-									<button onclick={hideAllClinvarSignificance} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">None</button>
+									<Button onclick={showAllClinvarSignificance} variant="ghost" size="xs" class="text-primary">All</Button>
+									<Button onclick={hideAllClinvarSignificance} variant="ghost" size="xs">None</Button>
 								</span>
 							</div>
 							<div class="space-y-1">
@@ -1450,21 +1437,21 @@
 									</label>
 								{/each}
 							</div>
-						</div>
-					</details>
+						</Popover.Content>
+					</Popover.Root>
 				{/if}
 				{#if clinvarReviewStatusOptions.length}
-					<details class="relative z-[100]" data-external-filter-menu>
-						<summary class="inline-flex cursor-pointer list-none items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">
+					<Popover.Root>
+						<Popover.Trigger class="inline-flex cursor-pointer list-none items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">
 							<span>Review</span>
 							<span class="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{clinvarReviewStatusFilterSummary}</span>
-						</summary>
-						<div class="absolute right-0 z-[200] mt-2 w-72 rounded-md border bg-background p-2 text-xs shadow-lg">
+						</Popover.Trigger>
+						<Popover.Content align="end" class="z-[200] w-72 text-xs">
 							<div class="mb-2 flex items-center justify-between gap-2 border-b pb-2">
 								<span class="font-medium text-foreground">Show review status</span>
 								<span class="inline-flex items-center gap-1">
-									<button onclick={showAllClinvarReviewStatus} class="rounded px-1.5 py-1 text-primary hover:bg-muted">All</button>
-									<button onclick={hideAllClinvarReviewStatus} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">None</button>
+									<Button onclick={showAllClinvarReviewStatus} variant="ghost" size="xs" class="text-primary">All</Button>
+									<Button onclick={hideAllClinvarReviewStatus} variant="ghost" size="xs">None</Button>
 								</span>
 							</div>
 							<div class="space-y-1">
@@ -1480,8 +1467,8 @@
 									</label>
 								{/each}
 							</div>
-						</div>
-					</details>
+						</Popover.Content>
+					</Popover.Root>
 				{/if}
 				<a href={clinvarSearchUrl} target="_blank" rel="noreferrer" class="inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">
 					<img src="/icons/clinvar.svg" alt="" class="h-3.5 w-auto" />
@@ -1612,17 +1599,17 @@
 			{/if}
 			<div class="flex shrink-0 items-center gap-2">
 				{#if clinpgxLevelOptions.length}
-					<details class="relative z-[100]" data-external-filter-menu>
-						<summary class="inline-flex cursor-pointer list-none items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">
+					<Popover.Root>
+						<Popover.Trigger class="inline-flex cursor-pointer list-none items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">
 							<span>Level</span>
 							<span class="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{clinpgxLevelFilterSummary}</span>
-						</summary>
-						<div class="absolute right-0 z-[200] mt-2 w-56 rounded-md border bg-background p-2 text-xs shadow-lg">
+						</Popover.Trigger>
+						<Popover.Content align="end" class="z-[200] w-56 text-xs">
 							<div class="mb-2 flex items-center justify-between gap-2 border-b pb-2">
 								<span class="font-medium text-foreground">Show level</span>
 								<span class="inline-flex items-center gap-1">
-									<button onclick={showAllClinpgxLevels} class="rounded px-1.5 py-1 text-primary hover:bg-muted">All</button>
-									<button onclick={hideAllClinpgxLevels} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">None</button>
+									<Button onclick={showAllClinpgxLevels} variant="ghost" size="xs" class="text-primary">All</Button>
+									<Button onclick={hideAllClinpgxLevels} variant="ghost" size="xs">None</Button>
 								</span>
 							</div>
 							<div class="space-y-1">
@@ -1640,8 +1627,8 @@
 									</label>
 								{/each}
 							</div>
-						</div>
-					</details>
+						</Popover.Content>
+					</Popover.Root>
 				{/if}
 				<a href={clinpgxLevelInfoUrl} target="_blank" rel="noreferrer" class="inline-flex size-8 shrink-0 items-center justify-center rounded-md border text-muted-foreground hover:bg-muted hover:text-foreground" title="ClinPGx clinical annotation levels" aria-label="ClinPGx clinical annotation levels">
 					<svg viewBox="0 0 512 512" class="size-3.5" aria-hidden="true">
@@ -1815,9 +1802,9 @@
 			{:else}
 			<span class="variant-detail-toolbar-meta">GA4GH VRS allele</span>
 			{/if}
-			<button onclick={copyVrsAllele} class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">
+			<Button onclick={copyVrsAllele} variant="outline" size="xs" class="shrink-0">
 				{copiedVrs ? 'copied!' : 'Copy VRS'}
-			</button>
+			</Button>
 		</div>
 		<pre class="max-h-96 overflow-auto bg-muted/35 p-4 text-xs leading-relaxed"><code>{vrsJson}</code></pre>
 	</section>

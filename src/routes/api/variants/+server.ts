@@ -4,7 +4,7 @@ import { ALLELE_COUNT_REPORTING_THRESHOLD } from '$lib/privacy';
 import type { RequestHandler } from './$types';
 
 // params that, if present, mean this is NOT an unfiltered listing → must compute its total live.
-const FILTER_KEYS = ['q', 'gene', 'country', 'chrom', 'posMin', 'posMax', 'rsid', 'afMin', 'afMax', 'acMin', 'acMax', 'vepImpact', 'vepConsequence', 'cohorts', 'cohortMatch', 'biobanks', 'sort'];
+const FILTER_KEYS = ['q', 'gene', 'country', 'chrom', 'posMin', 'posMax', 'rsid', 'afMin', 'afMax', 'acMin', 'acMax', 'vepImpact', 'vepConsequence', 'cohorts', 'cohortMatch', 'source', 'biobanks', 'dataset', 'sort'];
 const TOTAL_FILTER_KEYS = FILTER_KEYS.filter((key) => key !== 'sort');
 const MAX_PAGE_BROWSABLE_ROWS = 10_000;
 
@@ -13,7 +13,7 @@ export const GET: RequestHandler = async ({ url, locals, platform }) => {
 	const db = locals.db;
 	if (!db) throw error(500, 'PostgreSQL connection unavailable');
 	const num = (k: string) => (url.searchParams.has(k) ? Number(url.searchParams.get(k)) : undefined);
-	const biobanksParam = url.searchParams.get('biobanks');
+	const biobanksParam = url.searchParams.get('source') ?? url.searchParams.get('biobanks');
 	const biobanks = biobanksParam ? biobanksParam.split(',').filter(Boolean) : undefined;
 	const splitList = (k: string) => url.searchParams.get(k)?.split(',').map((v) => v.trim()).filter(Boolean);
 	const match = url.searchParams.get('match') === 'all' ? 'all' : 'any';
@@ -21,6 +21,16 @@ export const GET: RequestHandler = async ({ url, locals, platform }) => {
 	const offset = Math.max(num('offset') ?? 0, 0);
 	const limit = Math.min(Math.max(num('limit') ?? 50, 1), 500);
 	const maxOffset = Math.max(MAX_PAGE_BROWSABLE_ROWS - limit, 0);
+
+	if (biobanks?.includes('__none__')) {
+		return json({
+			tenant: locals.tenant.slug,
+			total: 0,
+			count: 0,
+			alleleCountReportingThreshold: ALLELE_COUNT_REPORTING_THRESHOLD,
+			rows: []
+		});
+	}
 
 	if (offset > maxOffset) {
 		return json(
@@ -74,6 +84,7 @@ export const GET: RequestHandler = async ({ url, locals, platform }) => {
 		rsid: num('rsid'),
 		gene: url.searchParams.get('gene') ?? undefined,
 		country: url.searchParams.get('country') ?? undefined,
+		dataset: url.searchParams.get('dataset') ?? undefined,
 		afMin: num('afMin'),
 		afMax: num('afMax'),
 		acMin: num('acMin'),

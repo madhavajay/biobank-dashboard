@@ -13,6 +13,21 @@ export interface TenantTheme {
 	mapPin: string;
 }
 
+export type MapRegionMode = 'bubbles' | 'zones';
+
+export interface MapProfile {
+	/** ISO 3166-1 alpha-2 codes highlighted on the portal home map */
+	countryCodes?: string[];
+	/** Mapbox maxBounds as [[west, south], [east, north]] in lng/lat */
+	maxBounds?: [[number, number], [number, number]];
+	minZoom?: number;
+	defaultZoom?: number;
+	/** Point bubbles (default) or polygon highlight zones for sub-country regions */
+	regionMode?: MapRegionMode;
+	/** GeoJSON feature property used as the region code on zone layers */
+	zoneCodeProperty?: string;
+}
+
 export interface Tenant {
 	slug: string;
 	hosts: string[];
@@ -24,6 +39,7 @@ export interface Tenant {
 	langs?: ('en' | 'pt')[]; // language switcher (first = default)
 	scope: string | null; // biobank slug, or null for global
 	map: { center: [number, number]; zoom: number };
+	mapProfile?: MapProfile;
 	theme: TenantTheme;
 }
 
@@ -58,7 +74,16 @@ export const TENANTS: Tenant[] = [
 		logoEmoji: '🌴',
 		logoImg: '/tenants/carigenetics/logo.png',
 		scope: 'carigenetics',
-		map: { center: [17.9, -68.5], zoom: 12 },
+		map: { center: [17.9, -68.5], zoom: 4.8 },
+		mapProfile: {
+			countryCodes: ['BS', 'BB', 'BM', 'VG', 'LC', 'TT'],
+			maxBounds: [
+				[-85.5, 10],
+				[-58.5, 27.5]
+			],
+			minZoom: 1.1,
+			defaultZoom: 4.5
+		},
 		theme: {
 			primary: 'oklch(0.68 0.13 215)',
 			primaryFg: 'oklch(0.99 0 0)',
@@ -80,7 +105,18 @@ export const TENANTS: Tenant[] = [
 		logoImg: '/tenants/bipmed/logo.png',
 		langs: ['en', 'pt'],
 		scope: 'bipmed',
-		map: { center: [-14.235, -51.925], zoom: 4.2 },
+		map: { center: [-14.235, -51.925], zoom: 3.8 },
+		mapProfile: {
+			countryCodes: ['BR'],
+			maxBounds: [
+				[-74, -34],
+				[-32, 5]
+			],
+			minZoom: 1.1,
+			defaultZoom: 3.8,
+			regionMode: 'zones',
+			zoneCodeProperty: 'sigla'
+		},
 		theme: {
 			primary: 'oklch(0.34 0.06 235)',
 			primaryFg: 'oklch(0.99 0 0)',
@@ -101,7 +137,16 @@ export const TENANTS: Tenant[] = [
 		logoEmoji: '🧬',
 		logoImg: '/tenants/pgp-harvard/logo.png',
 		scope: 'pgp-harvard',
-		map: { center: [39.83, -98.58], zoom: 3.1 },
+		map: { center: [39.83, -98.58], zoom: 3.5 },
+		mapProfile: {
+			countryCodes: ['US'],
+			maxBounds: [
+				[-130, 22],
+				[-63, 50]
+			],
+			minZoom: 1.1,
+			defaultZoom: 3.5
+		},
 		theme: {
 			primary: 'oklch(0.45 0.17 18)',
 			primaryFg: 'oklch(0.99 0 0)',
@@ -160,6 +205,101 @@ export function themeVars(t: Tenant): string {
 		`--brand-from:${th.brandFrom}`,
 		`--brand-to:${th.brandTo}`,
 		`--map-land:${th.mapLand}`,
-		`--map-pin:${th.mapPin}`
+		`--map-pin:${th.mapPin}`,
+		`--variant-common:color-mix(in oklch, ${th.brandFrom} 36%, white)`,
+		`--variant-low-freq:color-mix(in oklch, ${th.primary} 72%, ${th.brandFrom})`,
+		`--variant-rare:color-mix(in oklch, ${th.brandTo} 58%, ${th.accent})`
 	].join(';');
+}
+
+export const VARIANT_CLASS_COLORS = {
+	common: 'var(--variant-common)',
+	lowFreq: 'var(--variant-low-freq)',
+	rare: 'var(--variant-rare)'
+} as const;
+
+/** Mapbox uses [lng, lat]; tenant.map.center is stored as [lat, lng]. */
+export function mapboxCenter(tenant: Tenant): [number, number] {
+	const [lat, lon] = tenant.map.center;
+	return [lon, lat];
+}
+
+export function mapboxZoom(tenant: Tenant): number {
+	const portalZoom = tenant.scope ? portalMapFit(tenant.scope).maxZoom : null;
+	return portalZoom ?? tenant.mapProfile?.defaultZoom ?? tenant.map.zoom;
+}
+
+/** Scoped portals omit maxBounds so the home map can zoom out to regional/world context. */
+export function mapboxBounds(tenant: Tenant): [[number, number], [number, number]] | null {
+	if (tenant.scope) return null;
+	return (
+		tenant.mapProfile?.maxBounds ?? [
+			[-180, -58],
+			[180, 78]
+		]
+	);
+}
+
+export interface PortalMapFit {
+	maxZoom: number;
+	marginRatio: number;
+	singleCountryZoom: number;
+}
+
+export function portalMapFit(scope: string): PortalMapFit {
+	switch (scope) {
+		case 'carigenetics':
+			return {
+				maxZoom: 4.8,
+				marginRatio: 0.22,
+				singleCountryZoom: 4.8
+			};
+		case 'bipmed':
+			return {
+				maxZoom: 3.6,
+				marginRatio: 0.24,
+				singleCountryZoom: 3.6
+			};
+		case 'pgp-harvard':
+			return { maxZoom: 3.5, marginRatio: 0.22, singleCountryZoom: 3.5 };
+		case '1kgp':
+			return { maxZoom: 2.8, marginRatio: 0.18, singleCountryZoom: 2.5 };
+		default:
+			return { maxZoom: 3.2, marginRatio: 0.2, singleCountryZoom: 3.2 };
+	}
+}
+
+export interface TenantPortalUrlOptions {
+	hostname?: string | null;
+	port?: string | null;
+	protocol?: string;
+}
+
+function isLocalDevHost(hostname: string | null | undefined): boolean {
+	if (!hostname) return false;
+	const host = hostname.split(':')[0].toLowerCase();
+	return host === 'localhost' || host === '127.0.0.1' || host.endsWith('.localhost');
+}
+
+/** Portal URL for a scoped biobank slug. Uses *.localhost in local dev, *.biovault.net in prod. */
+export function tenantPortalUrl(
+	biobankSlug: string,
+	options: TenantPortalUrlOptions = {}
+): string | null {
+	const tenant = TENANTS.find((t) => t.scope === biobankSlug);
+	if (!tenant) return null;
+
+	const hostname = options.hostname?.split(':')[0].toLowerCase() ?? '';
+	const portSuffix = options.port ? `:${options.port}` : '';
+
+	if (isLocalDevHost(hostname)) {
+		const devHost = tenant.hosts.find(
+			(h) => h.endsWith('.localhost') && h !== 'localhost'
+		);
+		if (devHost) return `http://${devHost}${portSuffix}`;
+		return `http://localhost${portSuffix}/?tenant=${encodeURIComponent(tenant.slug)}`;
+	}
+
+	const prodHost = tenant.hosts.find((h) => h.endsWith('.biovault.net'));
+	return prodHost ? `https://${prodHost}` : null;
 }

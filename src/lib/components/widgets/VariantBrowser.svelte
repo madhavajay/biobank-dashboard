@@ -31,10 +31,14 @@
 	import { replaceState } from '$app/navigation'
 	import { page } from '$app/state'
 	import SearchIcon from '@lucide/svelte/icons/search'
-	import { lang, tr } from '$lib/i18n'
+				import { lang, tr } from '$lib/i18n'
 	import { DEFAULTS, type ExplorerDisplay } from '$lib/explorer'
 	import { publicVariantId } from '$lib/variant-id'
-	import type { Snippet } from 'svelte'
+	import { Button } from '$lib/components/ui/button'
+				import * as Card from '$lib/components/ui/card'
+	import * as Popover from '$lib/components/ui/popover'
+	import * as Select from '$lib/components/ui/select'
+	import { onMount, type Snippet } from 'svelte'
 	let {
 		forceTenant = '',
 		title = '',
@@ -42,7 +46,6 @@
 		scoped = false,
 		options = [],
 		examples = ['BRCA1', 'rs2465136', 'p.Arg124His', '1:1000000-1100000', 'chr7'],
-		initialQuery = '',
 		initialParams = '',
 		syncFromParentParams = false,
 		syncToUrl = true,
@@ -71,7 +74,6 @@
 		scoped?: boolean
 		options?: { slug: string; name: string }[]
 		examples?: string[]
-		initialQuery?: string
 		initialParams?: string
 		syncFromParentParams?: boolean
 		syncToUrl?: boolean
@@ -91,7 +93,7 @@
 		onFilterToggle?: () => void
 		filterPanel?: Snippet
 		showGenotypeCounts?: boolean
-		populations?: { cohortId: number; name: string; biobankSlug?: string; biobankName?: string }[]
+		populations?: { cohortId: number; name: string; biobankSlug?: string; biobankName?: string; countryCodes?: string[] }[]
 		display?: ExplorerDisplay
 	} = $props()
 
@@ -126,7 +128,7 @@
 	const explorerFilterHref = (key: 'vepConsequence' | 'vepImpact', value: string) => {
 		const sp = new URLSearchParams({ [key]: value })
 		if (forceTenant) sp.set('tenant', forceTenant)
-		return `/?${sp.toString()}`
+		return `/explore?${sp.toString()}`
 	}
 	const VEP_IMPACT_OPTIONS = ['HIGH', 'MODERATE', 'LOW', 'MODIFIER']
 	const VEP_CONSEQUENCE_OPTIONS = [
@@ -168,14 +170,20 @@
 				: new URLSearchParams()
 	}
 	const sp0 = initialSearchParams()
-	const sp0Cohorts = (sp0.get('cohorts') ?? '').split(',').filter(Boolean).map(Number)
+	const sp0Cohorts = (sp0.get('cohorts') ?? '')
+		.split(',')
+		.filter(Boolean)
+		.map(Number)
+		.filter((cohortId) => cohortId > 0)
+	const sp0Country = sp0.get('country')?.trim().toUpperCase() ?? ''
 	const sp0HasVepImpact = sp0.has('vepImpact')
 	const sp0HasVepConsequence = sp0.has('vepConsequence')
 	const sp0VepImpacts = (sp0.get('vepImpact') ?? '').split(',').filter(Boolean)
 	const sp0VepConsequences = (sp0.get('vepConsequence') ?? '').split(',').filter(Boolean)
+	const sp0Query = sp0.get('q')
 
-	// biobank filter (global view only): which biobanks + ANY/ALL match
-	const sp0Banks = (sp0.get('biobanks') ?? '').split(',').filter(Boolean)
+	// source filter (global view only): public URL param is `source`; legacy `biobanks` still works.
+	const sp0Banks = (sp0.get('source') ?? sp0.get('biobanks') ?? '').split(',').filter(Boolean)
 	const initialSelected = () =>
 		Object.fromEntries(
 			options.map((o) => [o.slug, sp0Banks.length ? sp0Banks.includes(o.slug) : true])
@@ -185,6 +193,13 @@
 	const selectedSlugs = $derived(options.filter((o) => selected[o.slug]).map((o) => o.slug))
 	const bankFilterSummary = $derived(
 		selectedSlugs.length === options.length ? 'All' : `${selectedSlugs.length}/${options.length}`
+	)
+	const bankFilterLabel = $derived(
+		selectedSlugs.length === options.length
+			? 'All biobanks'
+			: selectedSlugs.length === 0
+				? 'No biobanks'
+				: `${selectedSlugs.length} biobank${selectedSlugs.length === 1 ? '' : 's'}`
 	)
 	const showFilter = $derived(!scoped && options.length > 1)
 
@@ -202,14 +217,23 @@
 	}
 
 	// population (cohort) checkboxes — carigenetics-style multi-population tenants
-	let selectedPops = $state<Record<number, boolean>>(
-		Object.fromEntries(
-			populations.map((p) => [
-				p.cohortId,
-				sp0Cohorts.length ? sp0Cohorts.includes(p.cohortId) : true,
-			])
+	function countryCohortIds(countryCode: string) {
+		const code = countryCode.trim().toUpperCase()
+		if (!code) return []
+		return populations
+			.filter((population) =>
+				(population.countryCodes ?? []).some((country) => country.toUpperCase() === code)
+			)
+			.map((population) => population.cohortId)
+	}
+	function selectedPopsForParams(cohorts: number[], countryCode: string) {
+		const countryCohorts = cohorts.length ? [] : countryCohortIds(countryCode)
+		const activeCohorts = cohorts.length ? cohorts : countryCohorts
+		return Object.fromEntries(
+			populations.map((p) => [p.cohortId, activeCohorts.length ? activeCohorts.includes(p.cohortId) : true])
 		)
-	)
+	}
+	let selectedPops = $state<Record<number, boolean>>(selectedPopsForParams(sp0Cohorts, sp0Country))
 	const showPopFilter = $derived(populations.length > 1)
 	let populationMatchMode = $state<'any' | 'all'>(sp0.get('cohortMatch') === 'all' ? 'all' : 'any')
 	const activePopulations = $derived(
@@ -223,6 +247,13 @@
 		selectedPopCount === activePopulations.length
 			? 'All'
 			: `${selectedPopCount}/${activePopulations.length}`
+	)
+	const populationFilterLabel = $derived(
+		selectedPopCount === activePopulations.length
+			? 'All populations'
+			: selectedPopCount === 0
+				? 'No populations'
+				: `${selectedPopCount} population${selectedPopCount === 1 ? '' : 's'}`
 	)
 	const populationsByBiobank = $derived.by(() => {
 		const groups = new Map<string, { slug: string; name: string; pops: typeof populations }>()
@@ -369,14 +400,16 @@
 	const clampOffset = (value: number, size: number) =>
 		Math.min(Math.max(value, 0), Math.floor(maxOffsetForPageSize(size) / size) * size)
 
-	let q = $state(sp0.get('q') ?? initialQuery) // bound to the text input
+	let q = $state(sp0Query ?? '') // bound to the text input
 	let gene = $state(sp0.get('gene') ?? '')
+	let sourceA = $state(sp0.get('source') ?? '')
 	let countryA = $state(sp0.get('country') ?? '')
+	let datasetA = $state(sp0.get('dataset') ?? '')
 	let afMin = $state(sp0.get('afMin') ?? '')
 	let afMax = $state(sp0.get('afMax') ?? '')
 	let acMin = $state(sp0.get('acMin') ?? '')
 	let acMax = $state(sp0.get('acMax') ?? '')
-	let qA = $state(sp0.get('q') ?? initialQuery) // debounced/applied values that actually drive queries
+	let qA = $state(sp0Query ?? '') // debounced/applied values that actually drive queries
 	let geneA = $state(sp0.get('gene') ?? '')
 	let afMinA = $state(sp0.get('afMin') ?? '')
 	let afMaxA = $state(sp0.get('afMax') ?? '')
@@ -389,16 +422,23 @@
 	let tableLoading = $state(false)
 	let lastTrackedQueryKey = ''
 
+
 	const tenantQ = $derived(forceTenant ? `&tenant=${forceTenant}` : '')
 	const initialPageSize = Number(sp0.get('pageSize')) || 50
 	let pageSize = $state(initialPageSize)
+	let pageSizeOption = $state(String(initialPageSize))
 	let offset = $state(
 		clampOffset(((Number(sp0.get('page')) || 1) - 1) * initialPageSize, initialPageSize)
 	)
 	function setPageSize(n: number) {
 		pageSize = n
+		pageSizeOption = String(n)
 		offset = 0
 	}
+	$effect(() => {
+		const next = Number(pageSizeOption)
+		if (next && next !== pageSize) setPageSize(next)
+	})
 
 	type SortCol = '' | 'variant' | 'rsid' | 'gene' | 'maxaf' | 'vrs'
 	let sortCol = $state<SortCol>(
@@ -420,7 +460,9 @@
 		const p = new URLSearchParams()
 		if (qA.trim()) p.set('q', qA.trim())
 		if (geneA.trim()) p.set('gene', geneA.trim())
+		if (!showFilter && sourceA.trim()) p.set('source', sourceA.trim())
 		if (countryA.trim()) p.set('country', countryA.trim())
+		if (datasetA.trim()) p.set('dataset', datasetA.trim())
 		if (afMinA) p.set('afMin', afMinA)
 		if (afMaxA) p.set('afMax', afMaxA)
 		if (acMinA) p.set('acMin', acMinA)
@@ -450,7 +492,7 @@
 			selectedSlugs.length &&
 			(matchMode === 'all' || selectedSlugs.length < options.length)
 		) {
-			p.set('biobanks', selectedSlugs.join(','))
+			p.set('source', selectedSlugs.join(','))
 			p.set('match', matchMode)
 		}
 		return p.toString() + tenantQ + extra
@@ -499,7 +541,8 @@
 			parsed.get('vepConsequence') ?? '',
 			parsed.get('cohorts') ?? '',
 			parsed.get('cohortMatch') ?? '',
-			parsed.get('biobanks') ?? '',
+			parsed.get('source') ?? parsed.get('biobanks') ?? '',
+			parsed.get('dataset') ?? '',
 			parsed.get('match') ?? '',
 			parsed.get('sort') ?? '',
 			parsed.get('dir') ?? '',
@@ -526,7 +569,8 @@
 			vep_consequence: parsed.get('vepConsequence') ?? '',
 			cohorts: parsed.get('cohorts') ?? '',
 			cohort_match_mode: parsed.get('cohortMatch') ?? 'any',
-			biobanks: parsed.get('biobanks') ?? '',
+			source: parsed.get('source') ?? parsed.get('biobanks') ?? '',
+			dataset: parsed.get('dataset') ?? '',
 			match_mode: parsed.get('match') ?? 'any',
 			sort: parsed.get('sort') ?? '',
 			sort_dir: parsed.get('dir') ?? '',
@@ -548,7 +592,9 @@
 					parsed.get('vepConsequence') ||
 					parsed.get('cohorts') ||
 					parsed.get('cohortMatch') ||
+					parsed.get('source') ||
 					parsed.get('biobanks') ||
+					parsed.get('dataset') ||
 					parsed.get('match')
 			),
 			api_querystring: params,
@@ -561,7 +607,9 @@
 		const sp = new URLSearchParams()
 		if (qA.trim()) sp.set('q', qA.trim())
 		if (geneA.trim()) sp.set('gene', geneA.trim())
+		if (!showFilter && sourceA.trim()) sp.set('source', sourceA.trim())
 		if (countryA.trim()) sp.set('country', countryA.trim())
+		if (datasetA.trim()) sp.set('dataset', datasetA.trim())
 		if (afMinA) sp.set('afMin', afMinA)
 		if (afMaxA) sp.set('afMax', afMaxA)
 		if (acMinA) sp.set('acMin', acMinA)
@@ -590,13 +638,18 @@
 			selectedSlugs.length &&
 			(matchMode === 'all' || selectedSlugs.length < options.length)
 		) {
-			sp.set('biobanks', selectedSlugs.join(','))
+			sp.set('source', selectedSlugs.join(','))
 			sp.set('match', matchMode)
 		}
 		if (forceTenant) sp.set('tenant', forceTenant)
 		const qs = sp.toString()
 		try {
 			replaceState(`${location.pathname}${qs ? `?${qs}` : ''}`, {})
+			window.dispatchEvent(
+				new CustomEvent('biovault:explore-query-change', {
+					detail: { q: qA.trim(), params: qs },
+				})
+			)
 		} catch {
 			/* router not ready */
 		}
@@ -660,7 +713,9 @@
 	$effect(() => {
 		void qA
 		void geneA
+		void sourceA
 		void countryA
+		void datasetA
 		void afMinA
 		void afMaxA
 		void acMinA
@@ -689,7 +744,9 @@
 		qA = nextQ
 		gene = sp.get('gene') ?? ''
 		geneA = gene
+		sourceA = sp.get('source') ?? ''
 		countryA = sp.get('country') ?? ''
+		datasetA = sp.get('dataset') ?? ''
 		afMin = sp.get('afMin') ?? ''
 		afMax = sp.get('afMax') ?? ''
 		acMin = sp.get('acMin') ?? ''
@@ -712,28 +769,33 @@
 				VEP_CONSEQUENCE_OPTIONS.map((value) => [value, consequences.includes(value)])
 			)
 		}
-		if (sp.has('biobanks') && showFilter) {
-			const banks = (sp.get('biobanks') ?? '').split(',').filter(Boolean)
+		if ((sp.has('source') || sp.has('biobanks')) && showFilter) {
+			const banks = (sp.get('source') ?? sp.get('biobanks') ?? '').split(',').filter(Boolean)
 			selected = Object.fromEntries(
 				options.map((option) => [option.slug, banks.includes(option.slug)])
 			)
 			matchMode = sp.get('match') === 'all' ? 'all' : 'any'
 		}
-		if (sp.has('cohorts') && showPopFilter) {
+		if ((sp.has('cohorts') || sp.has('country')) && showPopFilter) {
 			const cohorts = new Set(
 				(sp.get('cohorts') ?? '')
 					.split(',')
 					.filter(Boolean)
 					.map(Number)
-					.filter((n) => !Number.isNaN(n))
+					.filter((n) => n > 0)
 			)
-			selectedPops = Object.fromEntries(
-				populations.map((population) => [population.cohortId, cohorts.has(population.cohortId)])
+			const cohortIds = [...cohorts]
+			selectedPops = selectedPopsForParams(
+				cohortIds,
+				cohortIds.length ? '' : (sp.get('country') ?? '')
 			)
 			populationMatchMode = sp.get('cohortMatch') === 'all' ? 'all' : 'any'
 		}
 		const nextPageSize = Number(sp.get('pageSize'))
-		if (nextPageSize) pageSize = nextPageSize
+		if (nextPageSize) {
+			pageSize = nextPageSize
+			pageSizeOption = String(nextPageSize)
+		}
 	}
 
 	$effect(() => {
@@ -758,6 +820,21 @@
 		clearTimeout(timer)
 		timer = setTimeout(applyInputs, 250)
 	}
+	onMount(() => {
+		const onHeaderSearchQuery = (event: Event) => {
+			const detail = (event as CustomEvent<{ q?: string; immediate?: boolean }>).detail
+			const nextQ = detail?.q ?? ''
+			if (q === nextQ && qA === nextQ) return
+
+			q = nextQ
+			offset = 0
+			clearTimeout(timer)
+			applyInputs()
+		}
+
+		window.addEventListener('biovault:header-search-query', onHeaderSearchQuery)
+		return () => window.removeEventListener('biovault:header-search-query', onHeaderSearchQuery)
+	})
 	// explicit "Go" — run the query now
 	function go() {
 		clearTimeout(timer)
@@ -783,16 +860,50 @@
 		offset = 0
 	}
 
-	// live curl for the current query (matches what just ran)
-	const origin = $derived(typeof location !== 'undefined' ? location.origin : '')
-	const curlCmd = $derived(`curl '${origin}/api/variants?${buildParams()}'`)
-	let curlCopied = $state(false)
-	function copyCurl() {
-		navigator.clipboard?.writeText(curlCmd)
-		curlCopied = true
-		setTimeout(() => (curlCopied = false), 1200)
-	}
-	const apiLink = $derived(forceTenant ? `/api?tenant=${forceTenant}` : '/api')
+	const countryLabel = $derived.by(() => {
+		const code = countryA.trim().toUpperCase()
+		if (!code) return ''
+		return (
+			populations.find((population) =>
+				(population.countryCodes ?? []).some((countryCode) => countryCode.toUpperCase() === code)
+			)?.name ?? code
+		)
+	})
+	const activeFilterCount = $derived.by(() => {
+		let count = 0
+		if (showFilter && selectedSlugs.length < options.length) count++
+		if (!countryA.trim() && showPopFilter && selectedFilterCohortIds.length < activePopulations.length)
+			count++
+		if (countryA.trim()) count++
+		if (datasetA.trim()) count++
+		if (geneA.trim()) count++
+		if (afMinA || afMaxA) count++
+		if (acMinA || acMaxA) count++
+		if (selectedVepImpactValues.length < VEP_IMPACT_OPTIONS.length) count++
+		if (selectedVepConsequenceValues.length < VEP_CONSEQUENCE_OPTIONS.length) count++
+		if (pageSize !== 50) count++
+		return count
+	})
+	const activeChips = $derived.by(() => {
+		const chips: { label: string; value: string }[] = []
+		if (countryA.trim()) chips.push({ label: 'Country', value: countryLabel || countryA.trim() })
+		if (datasetA.trim()) chips.push({ label: 'Dataset', value: datasetA.trim() })
+		if (showFilter && selectedSlugs.length < options.length)
+			chips.push({ label: 'BioBanks', value: bankFilterSummary })
+		if (!countryA.trim() && showPopFilter && selectedFilterCohortIds.length < activePopulations.length)
+			chips.push({ label: 'Populations', value: populationFilterSummary })
+		if (geneA.trim()) chips.push({ label: 'Gene', value: geneA.trim() })
+		if (afMinA || afMaxA) chips.push({ label: 'AF', value: `${afMinA || '0'}-${afMaxA || 'max'}` })
+		if (acMinA || acMaxA) chips.push({ label: 'AC', value: `${acMinA || '0'}-${acMaxA || 'max'}` })
+		if (selectedVepImpactValues.length < VEP_IMPACT_OPTIONS.length)
+			chips.push({ label: 'Impact', value: vepImpactSummary })
+		if (selectedVepConsequenceValues.length < VEP_CONSEQUENCE_OPTIONS.length)
+			chips.push({ label: 'Consequence', value: vepConsequenceSummary })
+		return chips
+	})
+	const showPrimaryControls = $derived(
+		activeChips.length > 0 || examples.length > 0
+	)
 
 	const totalPages = $derived(Math.max(1, Math.ceil(total / pageSize)))
 	const reachablePages = $derived(
@@ -917,7 +1028,12 @@
 					? 'border-emerald-200 bg-emerald-50 text-emerald-700'
 					: 'border-slate-200 bg-slate-50 text-slate-700'
 	const vepTitle = (r: VRow) =>
-		[r.vepLabel ? `Worst: ${r.vepLabel}` : null, r.vepImpact ? `Category: ${r.vepImpact}` : null]
+		[
+			r.vepLabel ? `Consequence: ${r.vepLabel}` : null,
+			r.vepImpact ? `Impact: ${r.vepImpact}` : null,
+			r.hgvsConsequence ? `HGVS: ${r.hgvsConsequence}` : null,
+			r.vepHasMultipleConsequences ? 'Multiple VEP annotations on this variant' : null,
+		]
 			.filter(Boolean)
 			.join('\n')
 	let copied = $state<string | null>(null)
@@ -926,42 +1042,93 @@
 		copied = d
 		setTimeout(() => (copied = null), 1200)
 	}
+
+	const origin = $derived(typeof location !== 'undefined' ? location.origin : '')
+	const curlCmd = $derived(`curl '${origin}/api/variants?${buildParams()}'`)
+	let curlCopied = $state(false)
+	function copyCurl() {
+		navigator.clipboard?.writeText(curlCmd)
+		curlCopied = true
+		setTimeout(() => (curlCopied = false), 1200)
+	}
+	const apiLink = $derived(forceTenant ? `/api?tenant=${forceTenant}` : '/api')
+
+	let queryLinkCopied = $state(false)
+	function copyQueryLink() {
+		if (onShareQuery) {
+			onShareQuery()
+			return
+		}
+		navigator.clipboard?.writeText(typeof location !== 'undefined' ? location.href : '')
+		queryLinkCopied = true
+		setTimeout(() => (queryLinkCopied = false), 1200)
+	}
 </script>
 
-<section class="card-surface p-5 sm:p-6" class:vb-embedded={embedded}>
+<Card.Root class={`explore-results-card p-1 ${embedded ? 'vb-embedded' : ''}`}>
 	{#if loading}
 		<div class="fixed inset-x-0 top-0 z-[60] h-1 overflow-hidden bg-primary/15">
 			<div class="bv-loadbar"></div>
 		</div>
 	{/if}
-	{#if showTitle}
-		<div class="mb-4">
-			<h3 class="text-lg font-semibold">{title || tr($lang, 'variantBrowser')}</h3>
-			<p class="text-sm text-muted-foreground">{subtitle || tr($lang, 'vbSubtitle')}</p>
-		</div>
-	{/if}
+	<Card.Content class="pt-2">
+		{#if showTitle}
+			<div class="mb-4">
+				<h3 class="text-lg font-semibold">{title || tr($lang, 'variantBrowser')}</h3>
+				<p class="text-sm text-muted-foreground">{subtitle || tr($lang, 'vbSubtitle')}</p>
+			</div>
+		{/if}
 
-	{#if showContextHeader && subtitle}
-		<div class="vb-context-header">
-			<p>{subtitle}</p>
-		</div>
-	{/if}
+		{#if showContextHeader && subtitle}
+			<div class="vb-context-header">
+				<p>{subtitle}</p>
+			</div>
+		{/if}
 
-	{#if !embedded}
+		{#if !embedded && showPrimaryControls}
+		<div class="explore-primary-controls">
+			{#if activeChips.length}
+				<div class="explore-active-chips" aria-label="Active query context">
+					{#each activeChips as chip}
+						<span class="explore-chip">
+							<span>{chip.label}</span>
+							<strong>{chip.value}</strong>
+						</span>
+					{/each}
+				</div>
+			{/if}
+
+			{#if examples.length}
+				<div class="explore-examples">
+					<span>{tr($lang, 'tryLabel')}</span>
+					{#each examples as ex}
+						<Button onclick={() => runExample(ex)} variant="outline" size="xs" class="rounded-full font-mono">{ex}</Button>
+					{/each}
+				</div>
+			{/if}
+
+			</div>
+			{/if}
+
+			{#if !embedded}
+		<div class="explore-filter-panel">
 		{#if showFilter}
-			<div class="relative z-30 mb-3 flex flex-wrap items-start gap-x-5 gap-y-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
-				<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'biobanks')}</span>
-				<details class="relative" data-explorer-filter-menu="biobanks">
-					<summary class="flex cursor-pointer list-none items-center gap-2 rounded-md border bg-card px-2.5 py-1.5 text-xs font-medium hover:bg-muted">
-						<span>Biobanks</span>
-						<span class="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{bankFilterSummary}</span>
-					</summary>
-					<div class="absolute left-0 top-full z-[80] mt-2 w-72 rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
+			<div class="explore-filter-row relative z-30">
+				<span class="explore-filter-label">Biobanks</span>
+				<Popover.Root>
+					<Popover.Trigger class="explore-filter-trigger">
+						<span class="min-w-0 truncate">{bankFilterLabel}</span>
+						{#if bankFilterSummary !== 'All'}
+							<span class="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{bankFilterSummary}</span>
+						{/if}
+						<span class="shrink-0 text-[10px] text-muted-foreground" aria-hidden="true">▾</span>
+					</Popover.Trigger>
+					<Popover.Content align="start" class="z-[80] w-72">
 						<div class="mb-2 flex items-center justify-between border-b pb-2">
 							<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Biobanks</span>
 							<div class="flex gap-1">
-								<button type="button" onclick={() => setAllBanks(true)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">All</button>
-								<button type="button" onclick={() => setAllBanks(false)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">None</button>
+								<Button type="button" onclick={() => setAllBanks(true)} variant="outline" size="xs">All</Button>
+								<Button type="button" onclick={() => setAllBanks(false)} variant="outline" size="xs">None</Button>
 							</div>
 						</div>
 						<div class="grid gap-1.5">
@@ -972,36 +1139,39 @@
 								</label>
 							{/each}
 						</div>
-					</div>
-				</details>
-				<div class="flex items-center gap-3" class:opacity-40={selectedSlugs.length < 2}>
-					<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'match')}</span>
-					<label class="flex cursor-pointer items-center gap-1.5">
+					</Popover.Content>
+				</Popover.Root>
+				<div class="explore-match-group" class:opacity-40={selectedSlugs.length < 2}>
+					<span>{tr($lang, 'match')}</span>
+					<label>
 						<input type="radio" name="match" checked={matchMode === 'any'} onchange={() => setMatch('any')} disabled={selectedSlugs.length < 2} class="accent-[var(--primary)]" />
-						<span>Either biobank</span>
+						<span>Either source</span>
 					</label>
-					<label class="flex cursor-pointer items-center gap-1.5">
+					<label>
 						<input type="radio" name="match" checked={matchMode === 'all'} onchange={() => setMatch('all')} disabled={selectedSlugs.length < 2} class="accent-[var(--primary)]" />
-						<span>All selected biobanks</span>
+						<span>All selected sources</span>
 					</label>
 				</div>
 			</div>
 		{/if}
 
 		{#if showPopFilter}
-			<div class="relative z-20 mb-3 flex flex-wrap items-start gap-x-5 gap-y-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
-				<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'populations')}</span>
-				<details class="relative" data-explorer-filter-menu="populations">
-					<summary class="flex cursor-pointer list-none items-center gap-2 rounded-md border bg-card px-2.5 py-1.5 text-xs font-medium hover:bg-muted">
-						<span>Populations</span>
-						<span class="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{populationFilterSummary}</span>
-					</summary>
-					<div class="absolute left-0 top-full z-[70] mt-2 max-h-[28rem] w-80 overflow-y-auto rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
+			<div class="explore-filter-row relative z-20">
+				<span class="explore-filter-label">{tr($lang, 'populations')}</span>
+				<Popover.Root>
+					<Popover.Trigger class="explore-filter-trigger">
+						<span class="min-w-0 truncate">{populationFilterLabel}</span>
+						{#if populationFilterSummary !== 'All'}
+							<span class="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{populationFilterSummary}</span>
+						{/if}
+						<span class="shrink-0 text-[10px] text-muted-foreground" aria-hidden="true">▾</span>
+					</Popover.Trigger>
+					<Popover.Content align="start" class="z-[70] max-h-[28rem] w-80 overflow-y-auto">
 						<div class="mb-2 flex items-center justify-between border-b pb-2">
 							<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Populations</span>
 							<div class="flex gap-1">
-								<button type="button" onclick={() => setAllPops(true)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">All</button>
-								<button type="button" onclick={() => setAllPops(false)} class="rounded border px-2 py-1 text-[11px] hover:bg-muted">None</button>
+								<Button type="button" onclick={() => setAllPops(true)} variant="outline" size="xs">All</Button>
+								<Button type="button" onclick={() => setAllPops(false)} variant="outline" size="xs">None</Button>
 							</div>
 						</div>
 						<div class="grid gap-2">
@@ -1011,8 +1181,8 @@
 										<span class="min-w-0 truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{group.name}</span>
 										{#if populationsByBiobank.length > 1}
 											<div class="flex shrink-0 gap-1">
-												<button type="button" onclick={() => setBankPops(group.slug, true)} class="rounded border px-1.5 py-0.5 text-[10px] hover:bg-muted">All</button>
-												<button type="button" onclick={() => setBankPops(group.slug, false)} class="rounded border px-1.5 py-0.5 text-[10px] hover:bg-muted">None</button>
+												<Button type="button" onclick={() => setBankPops(group.slug, true)} variant="outline" size="xs" class="h-5 px-1.5 text-[10px]">All</Button>
+												<Button type="button" onclick={() => setBankPops(group.slug, false)} variant="outline" size="xs" class="h-5 px-1.5 text-[10px]">None</Button>
 											</div>
 										{/if}
 									</div>
@@ -1027,15 +1197,15 @@
 								</div>
 							{/each}
 						</div>
-					</div>
-				</details>
-				<div class="flex items-center gap-3" class:opacity-40={selectedFilterCohortIds.length < 2}>
-					<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'match')}</span>
-					<label class="flex cursor-pointer items-center gap-1.5">
+					</Popover.Content>
+				</Popover.Root>
+				<div class="explore-match-group" class:opacity-40={selectedFilterCohortIds.length < 2}>
+					<span>{tr($lang, 'match')}</span>
+					<label>
 						<input type="radio" name="cohort-match" value="any" checked={populationMatchMode === 'any'} onchange={() => setPopulationMatch('any')} disabled={selectedFilterCohortIds.length < 2} class="accent-[var(--primary)]" />
 						<span>Either population</span>
 					</label>
-					<label class="flex cursor-pointer items-center gap-1.5">
+					<label>
 						<input type="radio" name="cohort-match" value="all" checked={populationMatchMode === 'all'} onchange={() => setPopulationMatch('all')} disabled={selectedFilterCohortIds.length < 2} class="accent-[var(--primary)]" />
 						<span>All selected populations</span>
 					</label>
@@ -1043,26 +1213,11 @@
 			</div>
 		{/if}
 
-		{#if examples.length}
-			<div class="mb-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-				<span>{tr($lang, 'tryLabel')}</span>
-				{#each examples as ex}
-					<button onclick={() => runExample(ex)} class="rounded-full border px-2 py-0.5 font-mono hover:bg-muted hover:text-foreground">{ex}</button>
-				{/each}
-			</div>
-		{/if}
-
-		<div class="mb-3 flex flex-col gap-2">
-			<div class="flex flex-wrap items-end gap-2">
-				<div class="relative min-w-56 flex-1">
-					<input bind:value={q} oninput={onInput} onkeydown={(e) => e.key === 'Enter' && go()} placeholder="rs123 · p.Arg124His · chr7 · 1:1000000-1100000 · 1:1000000-1100000 ISG15" class="w-full rounded-md border bg-background px-3 py-2 pr-9 text-sm outline-none focus:ring-2 focus:ring-ring" />
-					{#if loading}
-						<span class="absolute right-2.5 top-1/2 size-4 -translate-y-1/2 animate-spin rounded-full border-2 border-muted border-t-primary"></span>
-					{/if}
-				</div>
+		<div class="explore-advanced-filters">
+			<div class="explore-filter-controls">
 				<div class="flex flex-col gap-1">
 					<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'gene')}</span>
-					<input bind:value={gene} oninput={onInput} onkeydown={(e) => e.key === 'Enter' && go()} placeholder="ISG15" class="w-24 rounded-md border bg-background px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-ring" />
+					<input bind:value={gene} oninput={onInput} onkeydown={(event: KeyboardEvent) => event.key === 'Enter' && go()} placeholder="ISG15" class="w-24 rounded-md border bg-background px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-ring" />
 				</div>
 				<div class="flex flex-col gap-1">
 					<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{tr($lang, 'alleleFreq')}</span>
@@ -1080,21 +1235,19 @@
 						<input bind:value={acMax} oninput={onInput} min={alleleCountReportingThreshold} type="number" placeholder="max" class="w-16 rounded-md border bg-background px-2 py-2 text-sm" title={`Exact AC filters use reportable values only (AC >= ${alleleCountReportingThreshold}).`} />
 					</div>
 				</div>
-			</div>
-			<div class="flex flex-wrap items-end gap-2">
 				<div class="relative flex flex-col gap-1">
 					<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">VEP impact</span>
-					<details class="relative" data-explorer-filter-menu="vep-impact">
-						<summary class="flex h-9 min-w-32 cursor-pointer list-none items-center justify-between gap-2 rounded-md border bg-background px-2.5 text-sm hover:bg-muted">
+					<Popover.Root>
+						<Popover.Trigger class="flex h-9 min-w-32 cursor-pointer list-none items-center justify-between gap-2 rounded-md border bg-background px-2.5 text-sm hover:bg-muted">
 							<span class="truncate">{vepImpactSummary}</span>
 							<span class="text-[10px] text-muted-foreground">▾</span>
-						</summary>
-						<div class="absolute left-0 top-full z-[70] mt-2 w-52 rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
+						</Popover.Trigger>
+						<Popover.Content align="start" class="z-[70] w-52">
 							<div class="mb-2 flex items-center justify-between border-b pb-2">
 								<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Impact</span>
 								<div class="flex items-center gap-1 text-[11px]">
-									<button type="button" onclick={() => setAllVepImpacts(true)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">All</button>
-									<button type="button" onclick={() => setAllVepImpacts(false)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">None</button>
+									<Button type="button" onclick={() => setAllVepImpacts(true)} variant="ghost" size="xs">All</Button>
+									<Button type="button" onclick={() => setAllVepImpacts(false)} variant="ghost" size="xs">None</Button>
 								</div>
 							</div>
 							<div class="grid gap-1">
@@ -1105,22 +1258,22 @@
 									</label>
 								{/each}
 							</div>
-						</div>
-					</details>
+						</Popover.Content>
+					</Popover.Root>
 				</div>
 				<div class="relative flex flex-col gap-1">
 					<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">VEP consequence</span>
-					<details class="relative" data-explorer-filter-menu="vep-consequence">
-						<summary class="flex h-9 min-w-40 cursor-pointer list-none items-center justify-between gap-2 rounded-md border bg-background px-2.5 text-sm hover:bg-muted">
+					<Popover.Root>
+						<Popover.Trigger class="flex h-9 min-w-40 cursor-pointer list-none items-center justify-between gap-2 rounded-md border bg-background px-2.5 text-sm hover:bg-muted">
 							<span class="truncate">{vepConsequenceSummary}</span>
 							<span class="text-[10px] text-muted-foreground">▾</span>
-						</summary>
-						<div class="absolute left-0 top-full z-[70] mt-2 max-h-80 w-72 overflow-y-auto rounded-md border bg-popover p-2 text-popover-foreground shadow-xl">
+						</Popover.Trigger>
+						<Popover.Content align="start" class="z-[70] max-h-80 w-72 overflow-y-auto">
 							<div class="sticky top-0 mb-2 flex items-center justify-between border-b bg-popover pb-2">
 								<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Consequence</span>
 								<div class="flex items-center gap-1 text-[11px]">
-									<button type="button" onclick={() => setAllVepConsequences(true)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">All</button>
-									<button type="button" onclick={() => setAllVepConsequences(false)} class="rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">None</button>
+									<Button type="button" onclick={() => setAllVepConsequences(true)} variant="ghost" size="xs">All</Button>
+									<Button type="button" onclick={() => setAllVepConsequences(false)} variant="ghost" size="xs">None</Button>
 								</div>
 							</div>
 							<div class="grid gap-1">
@@ -1131,30 +1284,43 @@
 									</label>
 								{/each}
 							</div>
-						</div>
-					</details>
+						</Popover.Content>
+					</Popover.Root>
 				</div>
 				<label class="flex flex-col text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
 					{tr($lang, 'perPage')}
-					<select value={pageSize} onchange={(e) => setPageSize(Number((e.target as HTMLSelectElement).value))} class="rounded-md border bg-background px-2 py-2 text-sm text-foreground">
-						{#each [25, 50, 100, 200, 500] as n}<option value={n}>{n}</option>{/each}
-					</select>
+					<Select.Root type="single" bind:value={pageSizeOption}>
+						<Select.Trigger class="w-24 text-foreground">{pageSize}</Select.Trigger>
+						<Select.Content>
+							{#each [25, 50, 100, 200, 500] as n}
+								<Select.Item value={String(n)}>{n}</Select.Item>
+							{/each}
+						</Select.Content>
+					</Select.Root>
 				</label>
-				<button onclick={reset} class="h-9 rounded-md border px-3 text-sm hover:bg-muted">{tr($lang, 'reset')}</button>
-				<button onclick={go} class="h-10 cursor-pointer rounded-md bg-primary px-6 text-sm font-bold text-primary-foreground shadow-sm hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2">Go</button>
+				<Button onclick={go} size="lg" class="px-6 font-bold">Go</Button>
 			</div>
 		</div>
+		</div>
 
-		{#if showApiBar}
+		{/if}
+
+		{#if !embedded && showApiBar}
 			<div class="mb-3 flex items-center gap-2">
 				<code class="min-w-0 flex-1 truncate rounded-md border bg-muted/40 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground">{curlCmd}</code>
-				<button onclick={copyCurl} class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">{curlCopied ? tr($lang, 'copiedLabel') : tr($lang, 'copyCurl')}</button>
-				<a href={apiLink} class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted">API ↗</a>
+				<Button type="button" onclick={copyCurl} variant="outline" size="sm" class="shrink-0">
+					{curlCopied ? tr($lang, 'copiedLabel') : tr($lang, 'copyCurl')}
+				</Button>
+				{#if syncToUrl || onShareQuery}
+					<Button type="button" onclick={copyQueryLink} variant="outline" size="sm" class="shrink-0">
+						{queryLinkCopied || shareQueryCopied ? shareQueryCopiedLabel : 'Copy query link'}
+					</Button>
+				{/if}
+				<Button href={apiLink} variant="outline" size="sm" class="shrink-0">API ↗</Button>
 			</div>
 		{/if}
-	{/if}
 
-	<div class:vb-drawer-controls={embedded}>
+	<div class:vb-drawer-controls={embedded} class:explore-results-controls={!embedded}>
 		<div
 			class="mb-3 flex flex-wrap items-center justify-between gap-2"
 			class:vb-toolbar-row={embedded}
@@ -1172,16 +1338,10 @@
 							<strong>{filterCount}</strong>{/if}
 					</button>
 				{/if}
-				{@render pagerSummary()}
-				{#if onShareQuery}
-					<button
-						type="button"
-						onclick={onShareQuery}
-						class="rounded-md border border-primary/25 bg-primary/8 px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary/12"
-					>
-						{shareQueryCopied ? shareQueryCopiedLabel : shareQueryLabel}
-					</button>
+				{#if !embedded}
+					<span class="text-sm font-semibold text-foreground">Results</span>
 				{/if}
+				{@render pagerSummary()}
 			</div>
 			<div class="flex flex-wrap items-center gap-1">
 				{@render pagerControls()}
@@ -1614,8 +1774,22 @@
 					{/each}
 					{#if !visibleRows.length && !loading}
 						<tr
-							><td colspan={colCount} class="px-3 py-10 text-center text-muted-foreground"
-								>{tr($lang, 'noVariants')}</td
+							><td colspan={colCount} class="px-3 py-10 text-center">
+								<div class="explore-empty-state">
+									<strong>{tr($lang, 'noVariants')}</strong>
+									{#if qA.trim() || activeFilterCount}
+										{#if qA.trim() && countryLabel}
+											<p>No results for “{qA.trim()}” in {countryLabel}.</p>
+										{:else if qA.trim()}
+											<p>No results for “{qA.trim()}”.</p>
+										{:else if countryLabel}
+											<p>No results in {countryLabel}.</p>
+										{:else}
+											<p>No results for the active filters.</p>
+										{/if}
+									{/if}
+								</div>
+							</td
 							></tr
 						>
 					{/if}
@@ -1633,7 +1807,9 @@
 			</div>
 		{/if}
 	</div>
-</section>
+
+	</Card.Content>
+</Card.Root>
 
 {#snippet pagerSummary()}
 	<span class="text-sm text-muted-foreground">
@@ -1647,32 +1823,224 @@
 {/snippet}
 
 {#snippet pagerControls()}
-	<button
+	<Button
 		onclick={() => goPage(curPage - 1)}
 		disabled={curPage <= 1}
-		class="cursor-pointer rounded-md border px-2.5 py-1 disabled:cursor-default disabled:opacity-40 hover:bg-muted"
-		>{tr($lang, 'prev')}</button
+		variant="outline"
+		size="sm"
+		>{tr($lang, 'prev')}</Button
 	>
 	{#each pageItems as it}
 		{#if it === '…'}
 			<span class="px-1 text-muted-foreground">…</span>
 		{:else}
-			<button
+			<Button
 				onclick={() => goPage(it)}
-				class={`min-w-8 cursor-pointer rounded-md border px-2 py-1 ${it === curPage ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
-				>{it}</button
+				variant={it === curPage ? 'default' : 'outline'}
+				size="sm"
+				class="min-w-8"
+				>{it}</Button
 			>
 		{/if}
 	{/each}
-	<button
+	<Button
 		onclick={() => goPage(curPage + 1)}
 		disabled={curPage >= reachablePages}
-		class="cursor-pointer rounded-md border px-2.5 py-1 disabled:cursor-default disabled:opacity-40 hover:bg-muted"
-		>{tr($lang, 'next')}</button
+		variant="outline"
+		size="sm"
+		>{tr($lang, 'next')}</Button
 	>
 {/snippet}
 
 <style>
+	.explore-primary-controls {
+		display: grid;
+		gap: 0.5rem;
+		margin-bottom: 0.55rem;
+	}
+
+	.explore-search-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 0.5rem;
+	}
+
+	.explore-active-chips,
+	.explore-examples {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.4rem;
+		color: var(--muted-foreground);
+		font-size: 0.75rem;
+	}
+
+	.explore-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		border: 1px solid color-mix(in oklch, var(--primary) 18%, var(--border));
+		border-radius: 999px;
+		background: color-mix(in oklch, var(--primary) 7%, var(--background));
+		padding: 0.25rem 0.55rem;
+		color: var(--muted-foreground);
+		line-height: 1.2;
+	}
+
+	.explore-chip strong {
+		max-width: 18rem;
+		overflow: hidden;
+		color: var(--foreground);
+		font-weight: 650;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.explore-filter-panel {
+		display: grid;
+		gap: 0;
+		margin-bottom: 0.75rem;
+		overflow: hidden;
+		border: 1px solid var(--border);
+		border-radius: 0.5rem;
+		background: color-mix(in oklch, var(--card) 90%, var(--muted));
+	}
+
+	.explore-filter-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.55rem 1rem;
+		min-height: 3rem;
+		padding: 0.55rem 0.75rem;
+		border-bottom: 1px solid color-mix(in oklch, var(--border) 72%, transparent);
+		font-size: 0.8125rem;
+	}
+
+	.explore-filter-label {
+		width: 6.5rem;
+		color: var(--muted-foreground);
+		font-size: 0.6875rem;
+		font-weight: 650;
+		letter-spacing: 0.03em;
+		text-transform: uppercase;
+	}
+
+	.explore-filter-trigger {
+		display: inline-flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.45rem;
+		min-width: 9.5rem;
+		height: 2rem;
+		cursor: pointer;
+		border: 1px solid var(--border);
+		border-radius: 0.375rem;
+		background: var(--background);
+		padding: 0 0.65rem;
+		font-size: 0.8125rem;
+		font-weight: 600;
+		color: var(--foreground);
+	}
+
+	.explore-filter-trigger:hover {
+		background: var(--muted);
+	}
+
+	.explore-match-group {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.55rem 0.8rem;
+		color: var(--foreground);
+		font-size: 0.8125rem;
+	}
+
+	.explore-match-group > span {
+		color: var(--muted-foreground);
+		font-size: 0.6875rem;
+		font-weight: 650;
+		letter-spacing: 0.03em;
+		text-transform: uppercase;
+	}
+
+	.explore-match-group label {
+		display: inline-flex;
+		cursor: pointer;
+		align-items: center;
+		gap: 0.35rem;
+	}
+
+	.explore-advanced-filters {
+		padding: 0.85rem 0.75rem 0.75rem;
+		border-top: 1px solid color-mix(in oklch, var(--border) 72%, transparent);
+		background: color-mix(in oklch, var(--background) 88%, var(--muted));
+		border-bottom-left-radius: 0.5rem;
+		border-bottom-right-radius: 0.5rem;
+	}
+
+	.explore-filter-controls {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: end;
+		gap: 0.55rem;
+	}
+
+	.explore-empty-state {
+		display: inline-grid;
+		max-width: 32rem;
+		justify-items: center;
+		gap: 0.55rem;
+		color: var(--muted-foreground);
+	}
+
+	.explore-empty-state strong {
+		color: var(--foreground);
+		font-size: 0.95rem;
+	}
+
+	.explore-empty-state p {
+		margin: 0;
+		font-size: 0.875rem;
+	}
+
+	.explore-results-card {
+		border-radius: 0.5rem;
+		box-shadow: none;
+	}
+
+	.explore-results-controls :global(> div:first-child) {
+		margin-bottom: 0.45rem;
+		padding-top: 0.1rem;
+	}
+
+	@media (max-width: 720px) {
+		.explore-filter-label {
+			width: 5.5rem;
+		}
+
+		.explore-filter-row,
+		.explore-advanced-filters {
+			padding-inline: 0.6rem;
+		}
+
+		.explore-filter-row {
+			gap: 0.45rem 0.65rem;
+			min-height: 0;
+		}
+
+		.explore-match-group {
+			gap: 0.4rem 0.6rem;
+			font-size: 0.75rem;
+		}
+
+		.explore-filter-controls {
+			gap: 0.45rem;
+		}
+	}
+
 	.vrs-collapse-content {
 		display: block;
 		width: 100%;
@@ -1728,6 +2096,16 @@
 		border-top-color: var(--primary);
 		border-radius: 9999px;
 		animation: variant-table-spin 0.72s linear infinite;
+	}
+
+	.variant-results-shell {
+		max-width: 100%;
+		overflow: hidden;
+	}
+
+	.variant-results-shell > .overflow-x-auto {
+		max-width: 100%;
+		overflow-x: auto;
 	}
 
 	@keyframes variant-table-spin {
@@ -1935,10 +2313,6 @@
 		min-height: 0;
 	}
 
-	.vb-embedded .variant-results-shell > .overflow-x-auto {
-		overflow-x: auto;
-	}
-
 	.variant-table-auto {
 		width: max-content;
 		min-width: 100%;
@@ -1948,4 +2322,5 @@
 	.variant-table-auto th {
 		white-space: nowrap;
 	}
+
 </style>
