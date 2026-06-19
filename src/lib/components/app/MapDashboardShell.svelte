@@ -3454,7 +3454,8 @@
 		--top-search-width: clamp(560px, 52vw, 920px);
 		--results-drawer-top: 84px;
 		--results-drawer-bottom: 28px;
-		--drawer-track-height: calc(100vh - var(--results-drawer-top) - var(--results-drawer-bottom));
+		--map-viewport-height: 100vh;
+		--drawer-track-height: calc(var(--map-viewport-height) - var(--results-drawer-top) - var(--results-drawer-bottom));
 		--explore-side-panel-gap: var(--screen-inset);
 		--explore-side-panel-padding-x: 16px;
 		--explore-side-panel-max-height: min(680px, calc(var(--drawer-track-height) * 0.8));
@@ -3480,7 +3481,7 @@
 		--panel-shadow: 0 10px 28px rgb(46 43 59 / 0.08);
 			position: relative;
 			height: 100%;
-			min-height: calc(100vh - 65px);
+			min-height: var(--map-viewport-height);
 			width: 100%;
 			overflow: hidden;
 		background: var(--om-gray-50);
@@ -3859,7 +3860,7 @@
 		.map-dashboard-panel--right {
 			right: var(--screen-inset);
 			width: var(--side-panel-width);
-			max-height: min(430px, calc(100vh - 140px));
+			max-height: min(430px, calc(var(--map-viewport-height) - 140px));
 			padding: 0;
 			display: flex;
 			flex-direction: column;
@@ -3977,7 +3978,8 @@
 		}
 
 		.dashboard-shell.map-mode {
-			min-height: 100vh;
+			height: var(--map-viewport-height);
+			min-height: var(--map-viewport-height);
 		}
 
 		p,
@@ -4043,7 +4045,7 @@
 		bottom: var(--bottom-inset);
 		display: flex;
 		width: min(360px, calc(100vw - 48px));
-		max-height: min(340px, calc(100vh - 140px));
+		max-height: min(340px, calc(var(--map-viewport-height) - 140px));
 		height: auto;
 		flex-direction: column;
 		overflow: hidden;
@@ -4055,7 +4057,7 @@
 		left: var(--screen-inset);
 		width: calc(var(--results-drawer-left-edge) - (2 * var(--screen-inset)));
 		max-width: calc(var(--results-drawer-left-edge) - (2 * var(--screen-inset)));
-		height: calc((100vh - var(--results-drawer-top) - var(--results-drawer-bottom)) / 2);
+		height: calc((var(--map-viewport-height) - var(--results-drawer-top) - var(--results-drawer-bottom)) / 2);
 		max-height: none;
 	}
 
@@ -4563,7 +4565,7 @@
 				left: var(--screen-inset);
 				right: var(--screen-inset);
 				bottom: var(--bottom-inset);
-				max-height: min(56dvh, calc(100dvh - var(--results-drawer-top) - 16px));
+				max-height: min(56vh, calc(var(--map-viewport-height) - var(--results-drawer-top) - 16px));
 				overflow-x: hidden;
 				overflow-y: auto;
 				overscroll-behavior: contain;
@@ -4615,7 +4617,7 @@
 
 			.map-dashboard-dock > .map-dashboard-panel--right {
 				display: flex;
-				max-height: min(28dvh, 190px);
+				max-height: min(28vh, 190px);
 				flex-direction: column;
 				overflow: hidden;
 			}
