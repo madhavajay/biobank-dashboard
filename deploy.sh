@@ -7,6 +7,6 @@ cd "$(dirname "$0")"
 
 echo "==> Building + deploying the Worker"
 bun run build
-wrangler deploy
+bunx wrangler deploy
 
 echo "==> Done. Live on data/bipmed/carigenetics/pgp-harvard/1kgp.biovault.net"

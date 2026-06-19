@@ -58,7 +58,7 @@
 			</span>
 			<div class="min-w-0">
 				<p class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">BioVault Biobank</p>
-				<h1 class="text-3xl font-bold tracking-tight">{source.name}</h1>
+				<h1 class="text-2xl font-bold tracking-tight sm:text-3xl">{source.name}</h1>
 				<p class="mt-2 max-w-3xl text-muted-foreground">{source.description}</p>
 			</div>
 		</div>
@@ -78,11 +78,11 @@
 	</div>
 </div>
 
-<nav class="mb-6 flex flex-wrap gap-2 border-b pb-4 text-sm" aria-label={`${source.name} sections`}>
-	<a href="#overview" class="rounded-md border bg-muted/30 px-3 py-1.5 font-medium hover:bg-muted">Overview</a>
-	<a href="#atlas" class="rounded-md border bg-muted/30 px-3 py-1.5 font-medium hover:bg-muted">Map</a>
-	<a href="#datasets" class="rounded-md border bg-muted/30 px-3 py-1.5 font-medium hover:bg-muted">Datasets</a>
-	<a href="#populations" class="rounded-md border bg-muted/30 px-3 py-1.5 font-medium hover:bg-muted">Populations</a>
+<nav class="mb-6 flex gap-2 overflow-x-auto border-b pb-4 text-sm [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" aria-label={`${source.name} sections`}>
+	<a href="#overview" class="shrink-0 rounded-md border bg-muted/30 px-3 py-1.5 font-medium hover:bg-muted">Overview</a>
+	<a href="#atlas" class="shrink-0 rounded-md border bg-muted/30 px-3 py-1.5 font-medium hover:bg-muted">Map</a>
+	<a href="#datasets" class="shrink-0 rounded-md border bg-muted/30 px-3 py-1.5 font-medium hover:bg-muted">Datasets</a>
+	<a href="#populations" class="shrink-0 rounded-md border bg-muted/30 px-3 py-1.5 font-medium hover:bg-muted">Populations</a>
 	{#if sourceTenant?.langs?.length}
 		<span class="ml-auto inline-flex items-center gap-1 rounded-md border bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
 			{#each sourceTenant.langs as code}
@@ -196,8 +196,8 @@
 		{#each source.datasets as dataset}
 			<Card.Root>
 				<Card.Content class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-					<div>
-						<a href={`/datasets/${dataset.slug}`} class="font-semibold hover:text-primary hover:underline">{dataset.title}</a>
+					<div class="min-w-0">
+						<div class="font-semibold">{dataset.title}</div>
 						<p class="mt-1 text-sm text-muted-foreground">{dataset.description}</p>
 						<div class="mt-2 flex flex-wrap gap-2">
 							{#if dataset.assay}<Badge variant="outline">{dataset.assay}</Badge>{/if}
@@ -205,17 +205,19 @@
 							{#if dataset.genomeBuild}<Badge variant="outline">{dataset.genomeBuild}</Badge>{/if}
 						</div>
 					</div>
-					<div class="flex shrink-0 items-center gap-2">
-						<div class="text-right text-sm">
+					<div class="flex w-full shrink-0 flex-col gap-3 sm:w-auto sm:flex-row sm:items-center">
+						<div class="text-left text-sm sm:text-right">
 							<div class="font-semibold">{fmt(dataset.participants)} samples</div>
 							<div class="text-muted-foreground">{fmt(dataset.variants)} variants</div>
 						</div>
-						<Button href={datasetMapHref(dataset.slug)} variant="outline">
+						<div class="flex flex-wrap gap-2">
+						<Button href={datasetMapHref(dataset.slug)} variant="outline" class="flex-1 sm:flex-none">
 							Map
 						</Button>
-						<Button href={`/explore?dataset=${encodeURIComponent(dataset.slug)}`} variant="outline">
+						<Button href={`/explore?dataset=${encodeURIComponent(dataset.slug)}`} variant="outline" class="flex-1 sm:flex-none">
 							Explore
 						</Button>
+						</div>
 					</div>
 				</Card.Content>
 			</Card.Root>

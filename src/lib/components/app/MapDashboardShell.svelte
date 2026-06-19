@@ -133,6 +133,8 @@
 		countryCode?: string
 	}
 
+	type CountryPopupAnchor = 'top' | 'bottom' | 'left' | 'right'
+
 	const COUNTRY_CENTERS: Record<string, [number, number]> = {
 		BB: [-59.543, 13.194],
 		BD: [90.3563, 23.685],
@@ -286,6 +288,7 @@
 	const HOVER_COUNTRY_DISMISS_MS = 550
 	let selectedCountryPopup: Popup | undefined
 	let selectedCountryPopupCode: string | null = null
+	let selectedCountryPopupAnchor: CountryPopupAnchor | undefined
 	let suppressSelectedCountryPopupClose = false
 	let ignoreNextMapBackgroundClick = false
 	let zoneHighlightKey = ''
@@ -900,10 +903,7 @@
 	}
 
 	function databaseRowHref(dataset: DisplayDataset) {
-		if (isCurrentBiobankPortal(dataset.biobankSlug)) {
-			return `/datasets/${dataset.slug}`
-		}
-		return portalUrlFor(dataset.biobankSlug) ?? (dataset.biobankSlug ? `/sources/${dataset.biobankSlug}` : `/datasets/${dataset.slug}`)
+		return portalUrlFor(dataset.biobankSlug) ?? (dataset.biobankSlug ? `/sources/${dataset.biobankSlug}` : '/sources')
 	}
 
 	const displayDatasets = $derived.by<DisplayDataset[]>(() => {
@@ -1903,6 +1903,33 @@
 		})
 	}
 
+	function datasetCountrySampleCount(dataset: DisplayDataset, country: MapBubbleRow) {
+		const countryCode = mapRowCountryCode(country)
+		if (dataset.biobankSlug === '1kgp' && dataset.superPopulation) {
+			return countryMappingsForCode(countryCode)
+				.filter((mapping) => mapping.superpop === dataset.superPopulation)
+				.reduce((sum, mapping) => sum + mapping.sampleCount, 0)
+		}
+		return countryCodesForDataset(dataset).includes(countryCode)
+			? Math.min(country.samples, dataset.participants ?? country.samples)
+			: 0
+	}
+
+	function datasetPopupMeta(dataset: DisplayDataset, country: MapBubbleRow) {
+		const countrySamples = datasetCountrySampleCount(dataset, country)
+		const totalSamples = Number(dataset.participants ?? 0)
+		const sampleParts =
+			totalSamples > 0 && countrySamples > 0 && countrySamples !== totalSamples
+				? [
+						`${fmt(countrySamples)} in ${country.name}`,
+						`${fmt(totalSamples)} total`
+					]
+				: [`${fmt(countrySamples || totalSamples)} samples`]
+		return [...sampleParts, dataset.assay]
+			.filter(Boolean)
+			.join(' · ')
+	}
+
 	function dashboardCameraPadding() {
 		if (typeof window === 'undefined') {
 			return { top: 84, bottom: 148, left: 280, right: 280 }
@@ -2320,7 +2347,7 @@
 			: '/sources'
 		const showPortalAction = !(primarySource?.slug && isCurrentBiobankPortal(primarySource.slug))
 		const popupExternalIcon = `<svg class="popup-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>`
-		const summaryLine = `${fmt(country.samples)} participants · ${fmt(variantTotal)} variants`
+		const summaryLine = `${fmt(country.samples)} country samples · ${fmt(variantTotal)} dataset variants`
 		const sourceLine =
 			sources.length > 1
 				? `<p class="popup-source-line">${sources.map((source) => source.name).join(' · ')}</p>`
@@ -2329,10 +2356,11 @@
 		let datasetBlock = ''
 		if (datasets.length === 1) {
 			const dataset = datasets[0]
-			const meta = [dataset.assay, dataset.genomeBuild, dataset.release].filter(Boolean).join(' · ')
+			const meta = datasetPopupMeta(dataset, country)
+			const countrySamples = datasetCountrySampleCount(dataset, country)
 			datasetBlock = `
 				<p class="popup-dataset-line">
-					<strong>${dataset.title}</strong>
+					<strong><span>${dataset.title}</span><b>${fmt(countrySamples || dataset.participants || 0)}</b></strong>
 					${meta ? `<span>${meta}</span>` : ''}
 				</p>
 			`
@@ -2341,13 +2369,14 @@
 				<ul class="popup-dataset-list">
 					${datasets
 						.map((dataset) => {
-							const meta = [dataset.assay, dataset.release].filter(Boolean).join(' · ')
+							const meta = datasetPopupMeta(dataset, country)
+							const countrySamples = datasetCountrySampleCount(dataset, country)
 							return `
 								<li>
-									<a class="popup-dataset-row" href="/datasets/${dataset.slug}">
+									<div class="popup-dataset-row">
 										<span>${dataset.title}</span>
-										<b>${fmt(dataset.participants ?? 0)}</b>
-									</a>
+										<b>${fmt(countrySamples || dataset.participants || 0)}</b>
+									</div>
 									${meta ? `<small>${meta}</small>` : ''}
 								</li>
 							`
@@ -2373,8 +2402,40 @@
 		`
 	}
 
+	function countryPopupAnchor(country: MapBubbleRow): CountryPopupAnchor | undefined {
+		if (!map) return undefined
+		const width = map.getCanvas().clientWidth
+		if (width > 620) return undefined
+
+		const point = map.project(country.center)
+
+		if (point.x < 64) return 'left'
+		if (point.x > width - 64) return 'right'
+		return undefined
+	}
+
+	function clampCountryPopupToViewport(popup: Popup) {
+		requestAnimationFrame(() => {
+			const content = popup.getElement()?.querySelector<HTMLElement>('.mapboxgl-popup-content')
+			if (!content) return
+			content.style.transform = ''
+
+			const inset = 12
+			const rect = content.getBoundingClientRect()
+			let shift = 0
+			if (rect.left < inset) {
+				shift = inset - rect.left
+			} else if (rect.right > window.innerWidth - inset) {
+				shift = window.innerWidth - inset - rect.right
+			}
+
+			if (shift) content.style.transform = `translateX(${Math.round(shift)}px)`
+		})
+	}
+
 	function syncCountryBubblePopup() {
 		const popupCountry = activeCountryPopupCountry()
+		const popupAnchor = popupCountry ? countryPopupAnchor(popupCountry) : undefined
 		const pinned = Boolean(
 			selectedCountry && popupCountry && selectedCountry.code === popupCountry.code
 		)
@@ -2385,6 +2446,7 @@
 			suppressSelectedCountryPopupClose = false
 			selectedCountryPopup = undefined
 			selectedCountryPopupCode = null
+			selectedCountryPopupAnchor = undefined
 			countryPopupPinned = false
 			return
 		}
@@ -2392,11 +2454,13 @@
 		if (
 			selectedCountryPopup?.isOpen() &&
 			selectedCountryPopupCode === popupCountry.code &&
-			countryPopupPinned === pinned
+			countryPopupPinned === pinned &&
+			selectedCountryPopupAnchor === popupAnchor
 		) {
 			selectedCountryPopup.setLngLat(popupCountry.center)
 			selectedCountryPopup.setHTML(selectedCountryPopupHtml(popupCountry))
 			attachCountryPopupHoverHandlers(selectedCountryPopup)
+			clampCountryPopupToViewport(selectedCountryPopup)
 			return
 		}
 
@@ -2404,6 +2468,7 @@
 		selectedCountryPopup?.remove()
 		suppressSelectedCountryPopupClose = false
 		selectedCountryPopupCode = null
+		selectedCountryPopupAnchor = undefined
 
 		const popup = new mapboxgl.Popup({
 			closeButton: pinned,
@@ -2412,6 +2477,7 @@
 			offset: pinned ? 20 : 28,
 			maxWidth: '272px',
 			className: 'country-selection-popup',
+			...(popupAnchor ? { anchor: popupAnchor } : {}),
 		})
 		if (!popup) return
 		const countryPopup = popup as Popup
@@ -2419,8 +2485,10 @@
 		countryPopup.setHTML(selectedCountryPopupHtml(popupCountry))
 		countryPopup.addTo(map)
 		attachCountryPopupHoverHandlers(countryPopup)
+		clampCountryPopupToViewport(countryPopup)
 		selectedCountryPopup = countryPopup
 		selectedCountryPopupCode = popupCountry.code
+		selectedCountryPopupAnchor = popupAnchor
 		countryPopupPinned = pinned
 		countryPopup.on('close', () => {
 			if (suppressSelectedCountryPopupClose || !pinned) return
@@ -2429,6 +2497,7 @@
 			}
 			selectedCountryPopup = undefined
 			selectedCountryPopupCode = null
+			selectedCountryPopupAnchor = undefined
 			countryPopupPinned = false
 		})
 	}
@@ -2833,6 +2902,7 @@
 
 		const resizeMap = () => {
 			map?.resize()
+			syncCountryBubblePopup()
 			if (map && mapStyleLoaded && tenantScope && portalHomeMapView && mapBubbleRows.length) {
 				fitMapToCountryRows(mapBubbleRows, { animate: false, padding: false })
 			}
@@ -3156,9 +3226,6 @@
 								<a class="panel-action primary" href={explorerPath}>
 									{tx('Open in Explorer', 'Abrir no Explorer')}
 								</a>
-								<a class="panel-action secondary" href={`/datasets/${selectedDataset.slug}`}>
-									{tx('Dataset page', 'Página do conjunto')}
-								</a>
 								{#if selectedDataset.biobankSlug}
 									<a class="panel-action secondary" href={`/sources/${selectedDataset.biobankSlug}`}>
 										{tx('Biobank profile', 'Perfil do biobanco')}
@@ -3202,10 +3269,10 @@
 								<p class="detail-card-label">{tx('Datasets', 'Conjuntos')}</p>
 								<div class="detail-list">
 									{#each selectedSourceDatasets as dataset}
-										<a class="detail-list-row" href={`/datasets/${dataset.slug}`}>
+										<div class="detail-list-row">
 											<span>{dataset.title}</span>
 											<strong>{fmt(dataset.participants ?? 0)}</strong>
-										</a>
+										</div>
 									{/each}
 								</div>
 							</div>
@@ -3224,6 +3291,8 @@
 			{/if}
 			-->
 
+			{#if showMapSummaryPanels || showMapVariantPanel}
+				<div class="map-dashboard-dock" class:drawer-open={resultsDrawerOpen}>
 			{#if showMapSummaryPanels}
 				<section
 					class="map-dashboard-panel map-dashboard-panel--left map-stat-panel"
@@ -3326,6 +3395,8 @@
 					</div>
 				</section>
 			{/if}
+				</div>
+			{/if}
 
 				<p class="site-footer">© {tenant.name} GA4GH VRS · <a href="/api">Beacon v2</a></p>
 			{/if}
@@ -3376,7 +3447,7 @@
 		--om-space-l: 16px;
 		--om-space-xl: 20px;
 		--screen-inset: 24px;
-		--bottom-inset: 28px;
+		--bottom-inset: 42px;
 		--layout-left-width: 25vw;
 		--side-panel-width: calc(var(--layout-left-width) - var(--screen-inset) - 8px);
 		--top-search-left: 49.5vw;
@@ -3437,6 +3508,18 @@
 		background-color: transparent !important;
 	}
 
+	.dashboard-shell :global(.mapboxgl-ctrl-attrib.mapboxgl-compact .mapboxgl-ctrl-attrib-button) {
+		background-color: color-mix(in srgb, var(--om-white) 86%, transparent);
+		box-shadow: 0 1px 4px rgb(46 43 59 / 0.1);
+		opacity: 0.72;
+		filter: saturate(0.55) opacity(0.72);
+	}
+
+	.dashboard-shell :global(.mapboxgl-ctrl-attrib.mapboxgl-compact .mapboxgl-ctrl-attrib-button:hover) {
+		opacity: 0.95;
+		filter: saturate(0.75) opacity(0.9);
+	}
+
 	.dashboard-shell :global(.mapboxgl-ctrl-attrib-inner) {
 		background: transparent !important;
 		background-color: transparent !important;
@@ -3452,6 +3535,10 @@
 	}
 
 	.dashboard-shell :global(.country-selection-popup .mapboxgl-popup-content) {
+		box-sizing: border-box;
+		width: min(272px, calc(100vw - 48px));
+		max-width: min(272px, calc(100vw - 48px));
+		overflow: hidden;
 		border: 1px solid color-mix(in srgb, var(--om-gray-400) 38%, transparent);
 		border-radius: var(--om-radius-m);
 		background: color-mix(in srgb, var(--om-white) 96%, transparent);
@@ -3501,21 +3588,26 @@
 
 	.dashboard-shell :global(.map-selection-popup) {
 		display: grid;
-		width: min(272px, calc(100vw - 48px));
+		width: 100%;
+		min-width: 0;
+		max-width: 100%;
+		box-sizing: border-box;
 		gap: 6px;
-		padding-right: 10px;
+		overflow-wrap: anywhere;
 		font-family: 'Inter', system-ui, sans-serif;
 	}
 
 	.dashboard-shell :global(.map-selection-popup header) {
 		display: grid;
 		gap: 2px;
+		min-width: 0;
 	}
 
 	.dashboard-shell :global(.map-selection-popup header strong) {
 		display: flex;
 		align-items: center;
 		gap: 6px;
+		min-width: 0;
 		font-family: 'Rubik', 'Inter', system-ui, sans-serif;
 		font-size: 14px;
 		font-weight: 700;
@@ -3523,6 +3615,7 @@
 	}
 
 	.dashboard-shell :global(.map-selection-popup header strong span) {
+		flex-shrink: 0;
 		font-size: 15px;
 		line-height: 1;
 	}
@@ -3532,7 +3625,9 @@
 		color: var(--om-gray-600);
 		font-size: 11px;
 		font-weight: 500;
-		line-height: 1.3;
+		line-height: 1.35;
+		overflow-wrap: anywhere;
+		white-space: normal;
 	}
 
 	.dashboard-shell :global(.popup-source-line) {
@@ -3540,19 +3635,25 @@
 		color: var(--om-teal-700);
 		font-size: 10px;
 		font-weight: 600;
-		line-height: 1.3;
+		line-height: 1.35;
+		overflow-wrap: anywhere;
+		white-space: normal;
 	}
 
 	.dashboard-shell :global(.popup-dataset-line) {
 		display: grid;
-		gap: 1px;
+		gap: 3px;
 		margin: 0;
-		padding: 6px 8px;
+		padding: 7px 9px;
 		border-radius: var(--om-radius-s);
 		background: color-mix(in srgb, var(--om-gray-100) 55%, transparent);
 	}
 
 	.dashboard-shell :global(.popup-dataset-line strong) {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 8px;
 		overflow: hidden;
 		font-size: 11px;
 		font-weight: 700;
@@ -3562,20 +3663,34 @@
 		white-space: nowrap;
 	}
 
-	.dashboard-shell :global(.popup-dataset-line span) {
+	.dashboard-shell :global(.popup-dataset-line strong span) {
 		overflow: hidden;
-		color: var(--om-gray-550);
-		font-size: 10px;
-		font-weight: 500;
+		font-size: 11px;
 		line-height: 1.25;
+		color: var(--om-gray-850);
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 
+	.dashboard-shell :global(.popup-dataset-line strong b) {
+		font-size: 11px;
+		font-weight: 800;
+		line-height: 1;
+	}
+
+	.dashboard-shell :global(.popup-dataset-line span) {
+		color: var(--om-gray-550);
+		font-size: 10px;
+		font-weight: 500;
+		line-height: 1.35;
+		overflow-wrap: anywhere;
+		white-space: normal;
+	}
+
 	.dashboard-shell :global(.popup-dataset-list) {
 		display: grid;
-		gap: 4px;
-		max-height: 96px;
+		gap: 5px;
+		max-height: 128px;
 		margin: 0;
 		padding: 0;
 		list-style: none;
@@ -3588,11 +3703,13 @@
 	}
 
 	.dashboard-shell :global(.popup-dataset-list li small) {
-		padding: 0 8px 2px;
+		padding: 0 9px 3px;
 		color: var(--om-gray-550);
-		font-size: 9px;
+		font-size: 10px;
 		font-weight: 500;
-		line-height: 1.2;
+		line-height: 1.35;
+		overflow-wrap: anywhere;
+		white-space: normal;
 	}
 
 	.dashboard-shell :global(.popup-dataset-row) {
@@ -3601,14 +3718,9 @@
 		align-items: center;
 		gap: 8px;
 		border-radius: var(--om-radius-s);
-		padding: 5px 8px;
+		padding: 6px 9px;
 		color: var(--om-gray-750);
-		text-decoration: none;
 		background: color-mix(in srgb, var(--om-gray-100) 55%, transparent);
-	}
-
-	.dashboard-shell :global(.popup-dataset-row:hover) {
-		background: color-mix(in srgb, var(--om-teal-100) 48%, transparent);
 	}
 
 	.dashboard-shell :global(.popup-dataset-row span) {
@@ -3694,22 +3806,32 @@
 			background: var(--left-panel-surface);
 		}
 
+		.map-dashboard-dock {
+			display: contents;
+		}
+
 		.map-dashboard-panel--left {
 			left: var(--screen-inset);
 			width: var(--side-panel-width);
-			padding: var(--om-space-m);
+			padding: 0;
+			background: transparent;
+			box-shadow: none;
 		}
 
 		.map-stat-grid {
 			display: grid;
 			grid-template-columns: repeat(2, minmax(0, 1fr));
-			gap: var(--om-space-s);
+			gap: 8px;
 		}
 
 		.map-stat-item {
 			display: grid;
 			gap: 2px;
 			min-width: 0;
+			border-radius: var(--om-radius-m);
+			background: var(--left-panel-surface);
+			padding: 10px 12px;
+			box-shadow: var(--panel-shadow);
 			text-align: center;
 		}
 
@@ -4277,8 +4399,8 @@
 	.database-row {
 		display: grid;
 		grid-template-columns: auto minmax(0, 1fr);
-		gap: var(--om-space-m);
-		align-items: center;
+		gap: var(--om-space-s);
+		align-items: start;
 		width: 100%;
 		border: 0;
 		border-radius: var(--om-radius-m);
@@ -4358,24 +4480,21 @@
 
 	.map-dashboard-panel--right .dataset-logo {
 		display: flex;
-		width: 64px;
-		height: 32px;
+		width: 44px;
+		height: 44px;
 		align-items: center;
 		justify-content: center;
-		border-radius: var(--om-radius-s);
-		background: color-mix(in srgb, var(--om-white) 88%, transparent);
-		overflow: hidden;
 		flex-shrink: 0;
 	}
 
 	.map-dashboard-panel--right .dataset-logo img {
-		max-width: 58px;
-		max-height: 26px;
+		max-width: 44px;
+		max-height: 44px;
 		object-fit: contain;
 	}
 
 	.map-dashboard-panel--right .dataset-logo > span {
-		font-size: 22px;
+		font-size: 24px;
 		line-height: 1;
 	}
 
@@ -4400,6 +4519,11 @@
 	}
 
 		@media (max-width: 980px) {
+			.dashboard-shell {
+				--top-search-width: min(100%, calc(100vw - 2 * var(--screen-inset)));
+				--results-drawer-top: 132px;
+			}
+
 			.country-panel {
 				top: auto;
 				left: var(--screen-inset);
@@ -4412,10 +4536,159 @@
 
 		}
 
+		@media (max-width: 1280px) {
+			.dashboard-shell {
+				--bottom-inset: max(42px, calc(env(safe-area-inset-bottom) + 34px));
+				--results-drawer-bottom: var(--bottom-inset);
+			}
+		}
+
+		@media (max-width: 1120px) {
+			.dashboard-shell {
+				--screen-inset: 12px;
+				--bottom-inset: max(42px, calc(env(safe-area-inset-bottom) + 34px));
+				--layout-left-width: 100%;
+				--side-panel-width: calc(100vw - 2 * var(--screen-inset));
+				--top-search-width: calc(100vw - 2 * var(--screen-inset));
+				--results-drawer-top: 148px;
+				--results-drawer-bottom: var(--bottom-inset);
+			}
+
+			.map-dashboard-dock {
+				display: flex;
+				flex-direction: column;
+				gap: 8px;
+				position: absolute;
+				z-index: 2;
+				left: var(--screen-inset);
+				right: var(--screen-inset);
+				bottom: var(--bottom-inset);
+				max-height: min(56dvh, calc(100dvh - var(--results-drawer-top) - 16px));
+				overflow-x: hidden;
+				overflow-y: auto;
+				overscroll-behavior: contain;
+				pointer-events: none;
+				padding-bottom: 2px;
+				-webkit-overflow-scrolling: touch;
+			}
+
+			.map-dashboard-dock.drawer-open {
+				opacity: 0;
+				pointer-events: none;
+			}
+
+			.map-dashboard-dock > .map-dashboard-panel {
+				position: relative;
+				left: auto !important;
+				right: auto !important;
+				bottom: auto !important;
+				width: auto !important;
+				max-height: none;
+				pointer-events: auto;
+				flex-shrink: 0;
+			}
+
+			.map-dashboard-panel--left {
+				padding: 0;
+			}
+
+			.map-stat-grid {
+				gap: 8px;
+			}
+
+			.map-stat-item strong {
+				font-size: 17px;
+			}
+
+			.map-dashboard-panel--center {
+				padding: 10px var(--om-space-m);
+			}
+
+			.map-panel-key--triple {
+				grid-template-columns: repeat(3, minmax(0, 1fr));
+			}
+
+			.map-panel-key-label {
+				white-space: normal;
+				font-size: 10px;
+			}
+
+			.map-dashboard-dock > .map-dashboard-panel--right {
+				display: flex;
+				max-height: min(28dvh, 190px);
+				flex-direction: column;
+				overflow: hidden;
+			}
+
+			.map-dashboard-panel--right .database-scroll {
+				gap: 2px;
+				padding: 0 10px 10px;
+				min-height: 0;
+				flex: 1 1 auto;
+				overflow-y: auto;
+			}
+
+			.map-dashboard-panel--right .map-panel-head {
+				padding: 10px 12px 4px;
+			}
+
+			.map-dashboard-panel--right .map-panel-head h2 {
+				font-size: 15px;
+			}
+
+			.map-dashboard-panel--right .map-panel-head strong {
+				font-size: 18px;
+			}
+
+			.map-dashboard-panel--right .database-row {
+				grid-template-columns: 34px minmax(0, 1fr);
+				gap: 8px;
+				padding: 6px 4px;
+			}
+
+			.map-dashboard-panel--right .dataset-logo {
+				width: 34px;
+				height: 34px;
+			}
+
+			.map-dashboard-panel--right .dataset-logo img {
+				max-width: 30px;
+				max-height: 22px;
+			}
+
+			.map-dashboard-panel--right .database-row-title {
+				font-size: 12px;
+				line-height: 1.25;
+			}
+
+			.map-dashboard-panel--right .database-row-main small {
+				font-size: 10px;
+				line-height: 1.25;
+			}
+
+			.map-dashboard-panel--right .database-row-desc {
+				display: none;
+			}
+
+			.database-row-title,
+			.database-row-main small {
+				white-space: normal;
+			}
+
+			.site-footer {
+				display: none;
+			}
+
+			.dashboard-shell :global(.mapboxgl-ctrl-bottom-left),
+			.dashboard-shell :global(.mapboxgl-ctrl-bottom-right) {
+				transform: none;
+			}
+		}
+
 		@media (max-width: 700px) {
 			.dashboard-shell {
 				--screen-inset: 12px;
-				--bottom-inset: 20px;
+				--bottom-inset: max(48px, calc(env(safe-area-inset-bottom) + 40px));
 			}
 
 			.country-panel {

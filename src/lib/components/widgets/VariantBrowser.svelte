@@ -886,7 +886,6 @@
 	})
 	const activeChips = $derived.by(() => {
 		const chips: { label: string; value: string }[] = []
-		if (countryA.trim()) chips.push({ label: 'Country', value: countryLabel || countryA.trim() })
 		if (datasetA.trim()) chips.push({ label: 'Dataset', value: datasetA.trim() })
 		if (showFilter && selectedSlugs.length < options.length)
 			chips.push({ label: 'BioBanks', value: bankFilterSummary })
@@ -1306,7 +1305,7 @@
 		{/if}
 
 		{#if !embedded && showApiBar}
-			<div class="mb-3 flex items-center gap-2">
+			<div class="explore-api-bar mb-3 flex flex-wrap items-center gap-2">
 				<code class="min-w-0 flex-1 truncate rounded-md border bg-muted/40 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground">{curlCmd}</code>
 				<Button type="button" onclick={copyCurl} variant="outline" size="sm" class="shrink-0">
 					{curlCopied ? tr($lang, 'copiedLabel') : tr($lang, 'copyCurl')}
@@ -1359,7 +1358,55 @@
 		class="variant-results-shell relative min-h-32 rounded-md"
 		class:variant-results-loading={tableLoading}
 	>
-		<div class="overflow-x-auto">
+		<div class="variant-mobile-list">
+			{#each visibleRows as r (r.id)}
+				<article class="variant-mobile-card">
+					<header>
+						<a
+							href={variantHref(r)}
+							data-sveltekit-preload-data="off"
+							onclick={(event) => openVariantDetail(variantHref(r), event)}
+						>
+							chr{r.chromName}-{r.pos}
+							<span>{r.ref}-{r.alt}</span>
+						</a>
+						<strong>{fmtAf(maxAf(r))}</strong>
+					</header>
+					<div class="variant-mobile-meta">
+						{#if r.rsid}
+							<a href={`https://www.ncbi.nlm.nih.gov/snp/rs${r.rsid}`} target="_blank" rel="noreferrer">rs{r.rsid}</a>
+						{/if}
+						{#if showGene && geneLabel(r)}
+							<span>{geneLabel(r)}</span>
+						{/if}
+						{#if showVep && (r.vepLabel || r.vepImpact)}
+							<span>{r.vepLabel ?? r.vepImpact}</span>
+						{/if}
+					</div>
+					<div class="variant-mobile-frequencies">
+						{#each r.frequencies.slice(0, 4) as f}
+							<div class="variant-mobile-frequency-row">
+								<span title={f.population}>{f.population}</span>
+								<span class="af-track" aria-hidden="true">
+									<span
+										class="af-fill"
+										class:opacity-60={f.acMasked}
+										style={`width:${Math.min(100, displayAfValue(f) * 100)}%`}
+									></span>
+								</span>
+								<strong title={f.acMasked ? maskTitle(f) : undefined}>{displayAfLabel(f)}</strong>
+								<small>{displayAcLabel(f)}/{f.an}</small>
+							</div>
+						{/each}
+						{#if r.frequencies.length > 4}
+							<p>+{r.frequencies.length - 4} more populations</p>
+						{/if}
+					</div>
+				</article>
+			{/each}
+		</div>
+
+		<div class="variant-table-scroll overflow-x-auto">
 			<table
 				class={`w-full text-sm ${useFixedTable ? 'table-fixed' : 'variant-table-auto'}`}
 				aria-busy={tableLoading}
@@ -2017,27 +2064,44 @@
 	}
 
 	@media (max-width: 720px) {
-		.explore-filter-label {
-			width: 5.5rem;
-		}
-
-		.explore-filter-row,
-		.explore-advanced-filters {
+		.explore-filter-row {
+			flex-direction: column;
+			align-items: stretch;
+			gap: 0.55rem;
+			min-height: 0;
 			padding-inline: 0.6rem;
 		}
 
-		.explore-filter-row {
-			gap: 0.45rem 0.65rem;
-			min-height: 0;
+		.explore-filter-label {
+			width: auto;
+		}
+
+		.explore-filter-trigger {
+			width: 100%;
+			min-width: 0;
 		}
 
 		.explore-match-group {
+			width: 100%;
 			gap: 0.4rem 0.6rem;
 			font-size: 0.75rem;
 		}
 
+		.explore-advanced-filters {
+			padding-inline: 0.6rem;
+		}
+
 		.explore-filter-controls {
 			gap: 0.45rem;
+		}
+
+		.explore-api-bar code {
+			width: 100%;
+			flex: 1 1 100%;
+		}
+
+		.explore-chip strong {
+			max-width: 10rem;
 		}
 	}
 
@@ -2103,9 +2167,146 @@
 		overflow: hidden;
 	}
 
-	.variant-results-shell > .overflow-x-auto {
+	.variant-results-shell > .overflow-x-auto,
+	.variant-results-shell > .variant-table-scroll {
 		max-width: 100%;
 		overflow-x: auto;
+	}
+
+	.variant-mobile-list {
+		display: none;
+	}
+
+	.variant-mobile-card {
+		display: grid;
+		gap: 0.65rem;
+		border: 1px solid var(--border);
+		border-radius: 0.75rem;
+		background: var(--card);
+		padding: 0.85rem;
+		box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03);
+	}
+
+	.variant-mobile-card header {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: start;
+		gap: 0.75rem;
+	}
+
+	.variant-mobile-card header a {
+		min-width: 0;
+		color: var(--primary);
+		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+		font-size: 0.82rem;
+		font-weight: 700;
+		line-height: 1.25;
+		text-decoration: none;
+		overflow-wrap: anywhere;
+	}
+
+	.variant-mobile-card header a span {
+		color: var(--muted-foreground);
+		font-weight: 500;
+	}
+
+	.variant-mobile-card header strong {
+		border-radius: 999px;
+		background: color-mix(in oklch, var(--primary) 14%, transparent);
+		color: var(--primary);
+		padding: 0.2rem 0.45rem;
+		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+		font-size: 0.72rem;
+		line-height: 1;
+	}
+
+	.variant-mobile-meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+		min-width: 0;
+	}
+
+	.variant-mobile-meta a,
+	.variant-mobile-meta span {
+		max-width: 100%;
+		overflow: hidden;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		background: color-mix(in oklch, var(--muted) 45%, transparent);
+		padding: 0.15rem 0.45rem;
+		color: var(--muted-foreground);
+		font-size: 0.7rem;
+		font-weight: 600;
+		line-height: 1.2;
+		text-decoration: none;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.variant-mobile-frequencies {
+		display: grid;
+		gap: 0.4rem;
+	}
+
+	.variant-mobile-frequency-row {
+		display: grid;
+		grid-template-columns: minmax(5.5rem, 1fr) minmax(3rem, 0.75fr) auto auto;
+		align-items: center;
+		gap: 0.45rem;
+		min-width: 0;
+		color: var(--muted-foreground);
+		font-size: 0.72rem;
+	}
+
+	.variant-mobile-frequency-row > span:first-child {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.variant-mobile-frequency-row .af-track {
+		display: block;
+		height: 0.45rem;
+		overflow: hidden;
+		border-radius: 999px;
+		background: color-mix(in oklch, var(--primary) 16%, transparent);
+	}
+
+	.variant-mobile-frequency-row .af-fill {
+		display: block;
+		height: 100%;
+		border-radius: inherit;
+		background: var(--primary);
+	}
+
+	.variant-mobile-frequency-row strong,
+	.variant-mobile-frequency-row small {
+		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+		font-size: 0.68rem;
+		line-height: 1;
+		white-space: nowrap;
+	}
+
+	.variant-mobile-frequency-row strong {
+		color: var(--foreground);
+	}
+
+	.variant-mobile-frequencies p {
+		margin: 0;
+		color: var(--muted-foreground);
+		font-size: 0.72rem;
+	}
+
+	@media (max-width: 900px) {
+		.variant-mobile-list {
+			display: grid;
+			gap: 0.75rem;
+		}
+
+		.variant-table-scroll {
+			display: none;
+		}
 	}
 
 	@keyframes variant-table-spin {

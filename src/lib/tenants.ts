@@ -165,7 +165,7 @@ export const TENANTS: Tenant[] = [
 		product: '1000 Genomes Project Frequencies',
 		tagline: 'Super-population allele frequencies across BioVault tracked loci.',
 		logoEmoji: '🧬',
-		logoImg: '/1000gp.ico',
+		logoImg: '/1000-genomes-logo.jpg',
 		scope: '1kgp',
 		map: { center: [0, 0], zoom: 1 },
 		theme: {
@@ -281,7 +281,11 @@ function isLocalDevHost(hostname: string | null | undefined): boolean {
 	return host === 'localhost' || host === '127.0.0.1' || host.endsWith('.localhost');
 }
 
-/** Portal URL for a scoped biobank slug. Uses *.localhost in local dev, *.biovault.net in prod. */
+function scopedTenantForHost(hostname: string) {
+	return TENANTS.find((tenant) => tenant.scope && tenant.hosts.includes(hostname));
+}
+
+/** Portal URL for a scoped biobank slug, relative to the current host when possible. */
 export function tenantPortalUrl(
 	biobankSlug: string,
 	options: TenantPortalUrlOptions = {}
@@ -291,15 +295,32 @@ export function tenantPortalUrl(
 
 	const hostname = options.hostname?.split(':')[0].toLowerCase() ?? '';
 	const portSuffix = options.port ? `:${options.port}` : '';
+	const protocol = options.protocol ?? 'https:';
 
-	if (isLocalDevHost(hostname)) {
-		const devHost = tenant.hosts.find(
-			(h) => h.endsWith('.localhost') && h !== 'localhost'
-		);
-		if (devHost) return `http://${devHost}${portSuffix}`;
-		return `http://localhost${portSuffix}/?tenant=${encodeURIComponent(tenant.slug)}`;
+	if (!hostname) {
+		const prodHost = tenant.hosts.find((h) => h.endsWith('.biovault.net'));
+		return prodHost ? `https://${prodHost}` : null;
 	}
 
-	const prodHost = tenant.hosts.find((h) => h.endsWith('.biovault.net'));
-	return prodHost ? `https://${prodHost}` : null;
+	// Already on this portal's host — stay here.
+	if (tenant.hosts.includes(hostname)) {
+		return `${protocol}//${hostname}${portSuffix}/`;
+	}
+
+	const origin = `${protocol}//${hostname}${portSuffix}`;
+
+	if (isLocalDevHost(hostname)) {
+		const devHost = tenant.hosts.find((h) => h.endsWith('.localhost') && h !== 'localhost');
+		if (devHost) return `http://${devHost}${portSuffix}/`;
+		return `${origin}/?tenant=${encodeURIComponent(tenant.slug)}`;
+	}
+
+	// On another portal's dedicated domain — link to that portal's prod host.
+	if (scopedTenantForHost(hostname)) {
+		const prodHost = tenant.hosts.find((h) => h.endsWith('.biovault.net'));
+		return prodHost ? `https://${prodHost}` : null;
+	}
+
+	// Shared host (workers.dev preview, data.biovault.net, etc.) — same origin + tenant override.
+	return `${origin}/?tenant=${encodeURIComponent(tenant.slug)}`;
 }

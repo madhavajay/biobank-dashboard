@@ -1,7 +1,7 @@
 <script lang="ts">
 	import './layout.css';
 	import { page } from '$app/state';
-	import { lang, LANGS, tr } from '$lib/i18n';
+	import { lang, LANGS, tr, type Lang } from '$lib/i18n';
 	import { tenantContent } from '$lib/content';
 	import { Button } from '$lib/components/ui/button';
 	import MapHeaderSearch from '$lib/components/app/MapHeaderSearch.svelte';
@@ -17,6 +17,12 @@
 	const link = (path: string) => (forceTenant ? `${path}?tenant=${forceTenant}` : path);
 
 	const flags = $derived((tenant.langs ?? []).map((c: string) => LANGS.find((l) => l.code === c)!).filter(Boolean));
+	const currentFlag = $derived(flags.find((f) => f.code === $lang)?.flag ?? flags[0]?.flag ?? '🌐');
+
+	function chooseLang(code: Lang, event: MouseEvent) {
+		$lang = code;
+		(event.currentTarget as HTMLElement).closest('details')?.removeAttribute('open');
+	}
 
 	$effect(() => {
 		if (!data.analytics) return;
@@ -80,7 +86,7 @@
 		<MapHeaderSearch dashboard={isBioVaultMap ? page.data.dashboard : undefined} />
 
 		<nav class="biovault-nav" aria-label="Site navigation">
-			<a href={link('/explore')} class:active={isExploreRoute}>Explore</a>
+			<a href={link('/explore')} class="biovault-nav-explore" class:active={isExploreRoute}>Explore</a>
 			{#if !isScopedPortal}
 				<a href={link('/sources')} class:active={page.url.pathname.startsWith('/sources')}>Biobanks</a>
 			{/if}
@@ -89,20 +95,21 @@
 				<a href={link('/team')} class:active={page.url.pathname === '/team'}>{tr($lang, 'navTeam')}</a>
 			{/if}
 			<a href={link('/contact')} class:active={page.url.pathname === '/contact'}>{tr($lang, 'navContact')}</a>
-			<a href={link('/api')} class:active={page.url.pathname === '/api'}>{tr($lang, 'navApi')}</a>
+			<a href={link('/api')} class="biovault-nav-api" class:active={page.url.pathname === '/api'}>{tr($lang, 'navApi')}</a>
 			{#if flags.length > 1}
-				<span class="biovault-lang-switch" aria-label="Language">
-					{#each flags as f}
-						<button
-							type="button"
-							class:active={$lang === f.code}
-							title={f.label}
-							onclick={() => ($lang = f.code)}
-						>
-							{f.flag}
-						</button>
-					{/each}
-				</span>
+				<details class="biovault-lang-switch">
+					<summary aria-label="Language">
+						<span>{currentFlag}</span>
+					</summary>
+					<div class="biovault-lang-menu">
+						{#each flags as f}
+							<button type="button" class:active={$lang === f.code} onclick={(event) => chooseLang(f.code, event)}>
+								<span>{f.flag}</span>
+								<span>{f.label}</span>
+							</button>
+						{/each}
+					</div>
+				</details>
 			{/if}
 		</nav>
 	</header>
@@ -112,7 +119,7 @@
 			{@render children()}
 		</main>
 	{:else}
-		<main class="mx-auto w-full max-w-6xl flex-1 px-4 py-5">
+		<main class="mx-auto w-full max-w-6xl flex-1 px-4 py-5 sm:px-5">
 			{@render children()}
 		</main>
 	{/if}
@@ -159,7 +166,7 @@
 		column-gap: 20px;
 		min-height: 64px;
 		background: var(--background);
-		padding: 10px 20px;
+		padding: max(10px, env(safe-area-inset-top)) 20px 10px;
 	}
 
 	.biovault-header.map-header {
@@ -267,29 +274,74 @@
 	}
 
 	.biovault-lang-switch {
-		display: inline-flex;
-		align-items: center;
-		gap: 2px;
+		position: relative;
 		margin-left: 2px;
 	}
 
-	.biovault-lang-switch button {
+	.biovault-lang-switch summary {
 		display: grid;
-		width: 30px;
+		width: 40px;
 		height: 30px;
-		place-items: center;
+		grid-template-columns: 1fr auto;
+		align-items: center;
+		gap: 3px;
 		border: 1px solid var(--border);
 		border-radius: var(--om-radius-s);
 		background: var(--background);
-		font-size: 14px;
+		padding: 0 5px;
+		font-size: 13px;
 		line-height: 1;
 		cursor: pointer;
-		opacity: 0.65;
+		list-style: none;
 	}
 
-	.biovault-lang-switch button.active {
-		opacity: 1;
-		box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring) 45%, transparent);
+	.biovault-lang-switch summary::-webkit-details-marker {
+		display: none;
+	}
+
+	.biovault-lang-switch summary::after {
+		width: 0;
+		height: 0;
+		border-top: 4px solid var(--om-gray-600);
+		border-right: 3px solid transparent;
+		border-left: 3px solid transparent;
+		content: '';
+	}
+
+	.biovault-lang-menu {
+		position: absolute;
+		top: calc(100% + 5px);
+		right: 0;
+		z-index: 60;
+		display: grid;
+		min-width: 132px;
+		padding: 4px;
+		border: 1px solid var(--border);
+		border-radius: var(--om-radius-m);
+		background: var(--background);
+		box-shadow: 0 12px 32px rgb(35 32 44 / 0.14);
+	}
+
+	.biovault-lang-menu button {
+		display: flex;
+		height: 34px;
+		align-items: center;
+		gap: 8px;
+		border: 0;
+		border-radius: var(--om-radius-s);
+		background: transparent;
+		padding: 0 9px;
+		color: var(--om-gray-700);
+		font-size: 13px;
+		font-weight: 500;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.biovault-lang-menu button:hover,
+	.biovault-lang-menu button.active {
+		background: color-mix(in srgb, var(--om-teal-100) 68%, var(--om-white));
+		color: var(--om-teal-700);
 	}
 
 	.biovault-footer {
@@ -337,21 +389,46 @@
 		}
 	}
 
-	@media (max-width: 720px) {
+	@media (max-width: 900px) {
 		.biovault-header {
-			grid-template-columns: 1fr;
+			grid-template-columns: minmax(0, 1fr) auto;
 			row-gap: 10px;
-			padding: 10px 14px;
 		}
 
 		.biovault-header :global(.map-header-search) {
+			order: 3;
+			grid-column: 1 / -1;
+			justify-self: stretch;
+			width: 100%;
+		}
+
+		.biovault-nav {
 			order: 2;
+		}
+	}
+
+	@media (max-width: 720px) {
+		.biovault-header {
+			grid-template-columns: minmax(0, 1fr) auto;
+			row-gap: 8px;
+			padding: max(10px, env(safe-area-inset-top)) 14px 10px;
+		}
+
+		.biovault-header.map-header {
+			background: color-mix(in srgb, var(--background) 88%, transparent);
+			backdrop-filter: blur(10px);
+		}
+
+		.biovault-header :global(.map-header-search) {
+			order: 3;
+			grid-column: 1 / -1;
 			justify-self: stretch;
 			width: 100%;
 		}
 
 		.biovault-brand {
 			max-width: none;
+			min-width: 112px;
 		}
 
 		.biovault-brand-copy span {
@@ -359,12 +436,66 @@
 		}
 
 		.biovault-nav {
-			order: 3;
-			width: 100%;
-			max-width: calc(100vw - 28px);
+			order: 2;
+			width: auto;
+			max-width: none;
 			overflow-x: auto;
-			justify-content: flex-start;
-			gap: 6px;
+			justify-content: flex-end;
+			gap: 4px;
+			padding-bottom: 2px;
+			-webkit-overflow-scrolling: touch;
+			scrollbar-width: none;
+		}
+
+		.biovault-nav::-webkit-scrollbar {
+			display: none;
+		}
+	}
+
+	@media (max-width: 500px) {
+		.biovault-nav a.biovault-nav-explore,
+		.biovault-nav a.biovault-nav-api {
+			display: none;
+		}
+	}
+
+	@media (max-width: 480px) {
+		.biovault-brand-copy strong {
+			font-size: 14px;
+		}
+
+		.biovault-header.map-header .biovault-brand {
+			min-width: 118px;
+		}
+
+		.biovault-nav a {
+			height: 34px;
+			padding: 0 7px;
+			font-size: 12px;
+		}
+
+		.biovault-lang-switch summary {
+			width: 40px;
+			height: 32px;
+		}
+
+		.biovault-footer-inner {
+			padding-inline: 1rem;
+		}
+	}
+
+	@media (max-width: 360px) {
+		.biovault-header.map-header .biovault-brand {
+			min-width: 108px;
+		}
+
+		.biovault-nav {
+			gap: 3px;
+		}
+
+		.biovault-nav a {
+			padding: 0 5px;
+			font-size: 11px;
 		}
 	}
 </style>

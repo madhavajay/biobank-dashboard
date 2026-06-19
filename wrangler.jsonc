@@ -47,5 +47,19 @@
 			"binding": "HYPERDRIVE",
 			"id": "70d4955886f04344b9a061a2c940e8cf"
 		}
-	]
+	],
+	// Preview deploy: workers.dev only (no custom domains). Uses prod Hyperdrive.
+	"env": {
+		"preview": {
+			"name": "bipmed-biobank-preview",
+			"workers_dev": true,
+			"routes": [],
+			"hyperdrive": [
+				{
+					"binding": "HYPERDRIVE",
+					"id": "70d4955886f04344b9a061a2c940e8cf"
+				}
+			]
+		}
+	}
 }

@@ -1458,22 +1458,6 @@ export async function sourceProfile(db: QueryDb, slug: string): Promise<SourcePr
 	return profiles.find((source) => source.slug === slug) ?? null;
 }
 
-export async function datasetProfile(db: QueryDb, slug: string): Promise<SourceDatasetSummary | null> {
-	const row = await db
-		.prepare(
-			`SELECT d.id, d.slug, d.metadata, b.slug biobank_slug, b.name biobank_name,
-			        string_agg(c.id::text, ',' ORDER BY c.id) cohort_ids
-			 FROM datasets d
-			 JOIN biobanks b ON b.id=d.biobank_id
-			 LEFT JOIN cohorts c ON c.dataset_id=d.id
-			 WHERE d.slug=?
-			 GROUP BY d.id, d.slug, d.metadata, b.id, b.slug, b.name`
-		)
-		.bind(slug)
-		.first<any>();
-	return row ? datasetSummaryFromRow(row) : null;
-}
-
 // Tenant-scoped headline numbers + variant frequency-class breakdown (by each
 // variant's max AF within the biobank). Drives the "Database totals" panel.
 export interface TenantStats {
