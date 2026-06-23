@@ -1,11 +1,23 @@
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline';
 import { Client } from 'pg';
 import { publicFrequencyValues } from '../src/lib/privacy';
-import { BIOBANKS, COHORT_DATASET, COHORTS, DATASETS, POPULATIONS, POPULATION_COUNTRY_MAPPINGS } from './harmonize/lib/registry';
+import {
+	BIOBANKS,
+	COHORT_DATASET,
+	COHORTS,
+	DATASETS,
+	ONE_KGP_SUPERPOP_COHORT_ID,
+	POPULATIONS,
+	POPULATION_COUNTRY_MAPPINGS
+} from './harmonize/lib/registry';
 
 const ROOT = join(import.meta.dir, '..');
 const NORM = join(ROOT, 'data/normalized');
+const ONE_KGP_AF_DIR = join(ROOT, 'data/1kgp/superpop-af');
+const NORMALIZED_SOURCES = ['carigenetics', 'bipmed', 'pgp'];
+const ONE_KGP_SUPERPOPS = ['AFR', 'AMR', 'EAS', 'EUR', 'SAS'] as const;
 const DEFAULT_DATABASE_URL = 'postgresql://biovault_data_user:biovault_data_password@127.0.0.1:55432/biovault_data?sslmode=disable';
 
 function envDatabaseUrl() {
@@ -33,6 +45,67 @@ function readNdjson(path: string): any[] {
 	return readFileSync(path, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 }
 
+function chromCode(chrom: string): number | null {
+	const c = chrom.replace(/^chr/i, '').toUpperCase();
+	if (c === 'X') return 23;
+	if (c === 'Y') return 24;
+	if (c === 'M' || c === 'MT') return 25;
+	const n = Number(c);
+	return Number.isInteger(n) && n >= 1 && n <= 22 ? n : null;
+}
+
+function parseLocusKey(key: string) {
+	const [chromRaw, posRaw, ref, alt] = key.split('-');
+	const chrom = chromCode(chromRaw ?? '');
+	const pos = Number(posRaw);
+	if (!chrom || !Number.isInteger(pos) || !ref || !alt) return null;
+	return { chrom, pos, ref, alt };
+}
+
+async function readOneKgpSuperpopFrequencies(variantByLocus: Map<string, number>) {
+	const rows: any[] = [];
+	if (!existsSync(ONE_KGP_AF_DIR)) return rows;
+
+	for (const superpop of ONE_KGP_SUPERPOPS) {
+		const file = join(ONE_KGP_AF_DIR, `1kg_grch38_${superpop}.allele_freq.tsv`);
+		if (!existsSync(file)) continue;
+		const cohortId = ONE_KGP_SUPERPOP_COHORT_ID[superpop];
+		const rl = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
+		let header = true;
+		let imported = 0;
+		let skipped = 0;
+
+		for await (const line of rl) {
+			if (header) {
+				header = false;
+				continue;
+			}
+			if (!line) continue;
+			const [locusKey, acRaw, anRaw, homRaw, hetRaw, afRaw] = line.split('\t');
+			const locus = parseLocusKey(locusKey ?? '');
+			const variantId = locus ? variantByLocus.get(`${locus.chrom}:${locus.pos}:${locus.ref}:${locus.alt}`) : undefined;
+			if (!variantId) {
+				skipped++;
+				continue;
+			}
+			rows.push({
+				variant_id: variantId,
+				cohort_id: cohortId,
+				biobank_id: 4,
+				ac: Number(acRaw),
+				an: Number(anRaw),
+				af: Number(afRaw),
+				n_homo: Number(homRaw),
+				n_hetero: Number(hetRaw),
+				n_homo_ref: null
+			});
+			imported++;
+		}
+		console.log(`1KGP ${superpop}: ${imported.toLocaleString()} frequency rows, ${skipped.toLocaleString()} skipped`);
+	}
+	return rows;
+}
+
 function batchInsert(head: string, rows: string[]) {
 	const sql: string[] = [];
 	const batchSize = 5000;
@@ -40,13 +113,12 @@ function batchInsert(head: string, rows: string[]) {
 	return sql;
 }
 
-const variants = [
-	...readNdjson(join(NORM, 'carigenetics/variants.ndjson')),
-	...readNdjson(join(NORM, 'bipmed/variants.ndjson'))
-];
+const variants = NORMALIZED_SOURCES.flatMap((source) => readNdjson(join(NORM, source, 'variants.ndjson')));
+const variantByLocus = new Map<string, number>();
+for (const v of variants) variantByLocus.set(`${v.chrom}:${v.pos}:${v.ref}:${v.alt}`, v.id);
 const rawFreqs = [
-	...readNdjson(join(NORM, 'carigenetics/frequencies.ndjson')),
-	...readNdjson(join(NORM, 'bipmed/frequencies.ndjson'))
+	...NORMALIZED_SOURCES.flatMap((source) => readNdjson(join(NORM, source, 'frequencies.ndjson'))),
+	...(await readOneKgpSuperpopFrequencies(variantByLocus))
 ];
 const freqByKey = new Map<string, any>();
 let duplicateFreqs = 0;

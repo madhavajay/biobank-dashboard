@@ -1,4 +1,4 @@
-import type { Handle } from '@sveltejs/kit';
+import { redirect, type Handle } from '@sveltejs/kit';
 import { env as privateEnv } from '$env/dynamic/private';
 import { createPostgresDb } from '$lib/server/db/postgres';
 import { resolveTenant } from '$lib/tenants';
@@ -15,6 +15,18 @@ const CORS: Record<string, string> = {
 export const handle: Handle = async ({ event, resolve }) => {
 	const override = event.url.searchParams.get('tenant');
 	event.locals.tenant = resolveTenant(event.request.headers.get('host'), override);
+
+	const scope = !override ? event.locals.tenant.scope : null;
+	if (
+		scope &&
+		event.url.pathname === '/explore' &&
+		!event.url.searchParams.has('source')
+	) {
+		const params = new URLSearchParams(event.url.searchParams);
+		params.set('source', scope);
+		throw redirect(307, `/explore?${params.toString()}`);
+	}
+
 	const hyperdriveConnectionString = event.platform?.env?.HYPERDRIVE?.connectionString;
 	const directConnectionString = event.platform?.env?.DATABASE_URL ?? privateEnv.DATABASE_URL;
 	const connectionString =

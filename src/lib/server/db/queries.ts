@@ -93,6 +93,7 @@ export interface SearchParams {
 	vepConsequences?: string[];
 	vrs?: string;
 	country?: string;
+	dataset?: string;
 	cohorts?: number[]; // restrict to these cohort/population ids (display + existence)
 	cohortMatch?: 'any' | 'all';
 	limit?: number;
@@ -368,8 +369,30 @@ async function cohortIdsForCountryCode(db: QueryDb, countryCode: string): Promis
 	return mapped.results.map((row) => row.id);
 }
 
+async function cohortIdsForDatasetSlug(db: QueryDb, datasetSlug: string): Promise<number[]> {
+	const rows = await db
+		.prepare(
+			`SELECT c.id
+			 FROM cohorts c
+			 JOIN datasets d ON d.id = c.dataset_id
+			 WHERE d.slug = ?
+			 ORDER BY c.id`
+		)
+		.bind(datasetSlug)
+		.all<{ id: number }>();
+	return rows.results.map((row) => row.id);
+}
+
 async function resolveSearchCohortIds(db: QueryDb, params: SearchParams): Promise<number[]> {
 	let cohortIds = params.cohorts ?? [];
+	const dataset = params.dataset?.trim();
+	if (dataset) {
+		const datasetCohorts = await cohortIdsForDatasetSlug(db, dataset);
+		if (!datasetCohorts.length) return [];
+		cohortIds = cohortIds.length
+			? cohortIds.filter((id) => datasetCohorts.includes(id))
+			: datasetCohorts;
+	}
 	const country = params.country?.trim().toUpperCase();
 	if (!country) return cohortIds;
 
@@ -1151,9 +1174,38 @@ export interface BiobankOverview {
 	totalVariants: number;
 }
 
+export interface SourceDatasetSummary {
+	id: number;
+	slug: string;
+	title: string;
+	description: string;
+	assay: string;
+	release: string;
+	genomeBuild: string;
+	participants: number;
+	variants: number;
+	biobankSlug: string;
+	biobankName: string;
+	cohortIds: number[];
+}
+
+export interface SourceProfile extends BiobankOverview {
+	datasets: SourceDatasetSummary[];
+}
+
 export interface ExploreFilterOptions {
 	options: { slug: string; name: string }[];
-	populations: { cohortId: number; name: string; biobankSlug: string; biobankName: string }[];
+	populations: {
+		cohortId: number;
+		name: string;
+		country: string;
+		countryCode: string;
+		sampleCount: number;
+		variantCount: number;
+		biobankSlug: string;
+		biobankName: string;
+		countryCodes: string[];
+	}[];
 }
 
 export async function exploreFilterOptions(db: QueryDb, scopeSlug: string | null): Promise<ExploreFilterOptions> {
@@ -1167,11 +1219,15 @@ export async function exploreFilterOptions(db: QueryDb, scopeSlug: string | null
 		.all<any>();
 	const popRows = await db
 		.prepare(
-			`SELECT c.id cohort_id, p.name, b.slug biobank_slug, b.name biobank_name
+			`SELECT c.id cohort_id, c.sample_count, p.name, p.country, p.country_code,
+			        b.slug biobank_slug, b.name biobank_name,
+			        string_agg(DISTINCT m.country_code, ',') mapped_country_codes
 			 FROM cohorts c
 			 JOIN populations p ON p.id=c.population_id
 			 JOIN biobanks b ON b.id=c.biobank_id
+			 LEFT JOIN population_country_mappings m ON m.population_id=p.id
 			 ${scopeId ? 'WHERE b.id=?' : ''}
+			 GROUP BY c.id, c.sample_count, p.name, p.country, p.country_code, b.id, b.slug, b.name
 			 ORDER BY b.id, p.name`
 		)
 		.bind(...bindArgs)
@@ -1179,8 +1235,18 @@ export async function exploreFilterOptions(db: QueryDb, scopeSlug: string | null
 	const populations = popRows.results.map((p) => ({
 		cohortId: p.cohort_id,
 		name: p.name,
+		country: p.country,
+		countryCode: p.country_code,
+		sampleCount: Number(p.sample_count ?? 0),
+		variantCount: 0,
 		biobankSlug: p.biobank_slug,
-		biobankName: p.biobank_name
+		biobankName: p.biobank_name,
+		countryCodes: [
+			p.country_code,
+			...String(p.mapped_country_codes ?? '')
+				.split(',')
+				.filter(Boolean)
+		].filter(Boolean)
 	}));
 	return {
 		options: bankRows.results.map((b) => ({ slug: b.slug, name: b.name })),
@@ -1268,6 +1334,128 @@ export async function biobanksOverview(db: QueryDb, scopeSlug: string | null): P
 		});
 	}
 	return out;
+}
+
+function datasetSummaryFromRow(d: {
+	id: number;
+	slug: string;
+	biobank_slug: string;
+	biobank_name: string;
+	metadata: string;
+	cohort_ids?: string | null;
+}): SourceDatasetSummary {
+	const metadata = safeParse(d.metadata);
+	return {
+		id: d.id,
+		slug: d.slug,
+		title: metadata.title ?? d.slug,
+		description: metadata.description ?? '',
+		assay: metadata.assay ?? '',
+		release: metadata.release ?? '',
+		genomeBuild: metadata.genomeBuild ?? '',
+		participants: Number(metadata.participants ?? 0),
+		variants: Number(metadata.variants ?? 0),
+		biobankSlug: d.biobank_slug,
+		biobankName: d.biobank_name,
+		cohortIds: (d.cohort_ids ?? '')
+			.split(',')
+			.filter(Boolean)
+			.map(Number)
+			.filter((n) => !Number.isNaN(n))
+	};
+}
+
+export async function sourceProfiles(db: QueryDb): Promise<SourceProfile[]> {
+	const sources = await biobanksOverview(db, null);
+	const datasetRows = await db
+		.prepare(
+			`SELECT d.id, d.slug, d.metadata, b.slug biobank_slug, b.name biobank_name,
+			        string_agg(c.id::text, ',' ORDER BY c.id) cohort_ids
+			 FROM datasets d
+			 JOIN biobanks b ON b.id=d.biobank_id
+			 LEFT JOIN cohorts c ON c.dataset_id=d.id
+			 GROUP BY d.id, d.slug, d.metadata, b.id, b.slug, b.name
+			 ORDER BY b.id, d.id`
+		)
+		.all<any>();
+	const datasetsBySource = new Map<string, SourceDatasetSummary[]>();
+	for (const row of datasetRows.results) {
+		const dataset = datasetSummaryFromRow(row);
+		const list = datasetsBySource.get(dataset.biobankSlug) ?? [];
+		list.push(dataset);
+		datasetsBySource.set(dataset.biobankSlug, list);
+	}
+	return sources.map((source) => ({
+		...source,
+		datasets: datasetsBySource.get(source.slug) ?? []
+	}));
+}
+
+export async function sourceSummaries(db: QueryDb): Promise<SourceProfile[]> {
+	const banks = await db.prepare('SELECT * FROM biobanks ORDER BY id').all<any>();
+	const popRows = await db
+		.prepare(
+			`SELECT p.id, p.name, p.country, p.country_code, p.lat, p.lon,
+			        p.biobank_id, c.id cohort_id, c.sample_count
+			 FROM populations p
+			 JOIN cohorts c ON c.population_id=p.id
+			 ORDER BY p.biobank_id, p.name`
+		)
+		.all<any>();
+	const populationsBySource = new Map<number, BiobankOverview['populations']>();
+	for (const row of popRows.results) {
+		const list = populationsBySource.get(row.biobank_id) ?? [];
+		list.push({
+			id: row.id,
+			name: row.name,
+			country: row.country,
+			countryCode: row.country_code,
+			lat: row.lat,
+			lon: row.lon,
+			sampleCount: row.sample_count,
+			cohortId: row.cohort_id,
+			variantCount: 0,
+			countryMappings: []
+		});
+		populationsBySource.set(row.biobank_id, list);
+	}
+	const datasetRows = await db
+		.prepare(
+			`SELECT d.id, d.slug, d.metadata, b.slug biobank_slug, b.name biobank_name,
+			        string_agg(c.id::text, ',' ORDER BY c.id) cohort_ids
+			 FROM datasets d
+			 JOIN biobanks b ON b.id=d.biobank_id
+			 LEFT JOIN cohorts c ON c.dataset_id=d.id
+			 GROUP BY d.id, d.slug, d.metadata, b.id, b.slug, b.name
+			 ORDER BY b.id, d.id`
+		)
+		.all<any>();
+	const datasetsBySource = new Map<string, SourceDatasetSummary[]>();
+	for (const row of datasetRows.results) {
+		const dataset = datasetSummaryFromRow(row);
+		const list = datasetsBySource.get(dataset.biobankSlug) ?? [];
+		list.push(dataset);
+		datasetsBySource.set(dataset.biobankSlug, list);
+	}
+	return banks.results.map((bank) => {
+		const populations = populationsBySource.get(bank.id) ?? [];
+		return {
+			id: bank.id,
+			slug: bank.slug,
+			name: bank.name,
+			description: bank.description,
+			website: bank.website,
+			populations,
+			totalSamples: populations.reduce((sum, population) => sum + population.sampleCount, 0),
+			totalVariants: 0,
+			datasets: datasetsBySource.get(bank.slug) ?? []
+		};
+	});
+}
+
+export async function sourceProfile(db: QueryDb, slug: string): Promise<SourceProfile | null> {
+	const profiles = await sourceProfiles(db);
+	return profiles.find((source) => source.slug === slug) ?? null;
 }
 
 // Tenant-scoped headline numbers + variant frequency-class breakdown (by each

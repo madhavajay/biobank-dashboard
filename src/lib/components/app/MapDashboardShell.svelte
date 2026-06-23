@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy, onMount, setContext } from 'svelte'
+	import { onDestroy, onMount, setContext, untrack } from 'svelte'
 	import { page } from '$app/state'
 	import type { Action } from 'svelte/action'
 	import type {
@@ -13,18 +13,16 @@
 	import type { FeatureCollection, Point } from 'geojson'
 	import 'mapbox-gl/dist/mapbox-gl.css'
 	import { key, mapboxgl } from '$lib/mapboxgl'
-	import { TENANTS } from '$lib/tenants'
+	import { TENANTS, mapboxBounds, mapboxCenter, mapboxZoom, portalMapFit, tenantPortalUrl, VARIANT_CLASS_COLORS } from '$lib/tenants'
 	import { biobankSlugForDatasetSlug, cohortIdsForDatasetSlug } from '$lib/datasets'
 	import { BRAZIL_STATES } from '$lib/data/brazil-states'
+	import brazilStatesUrl from '$lib/data/brazil-states.geojson?url'
 	import { lang } from '$lib/i18n'
 	import { isIncompleteVariantSearchQuery, normalizeVariantSearchInput } from '$lib/search/variant-search'
-	import AtlasHome from '$lib/templates/AtlasHome.svelte'
-	import VariantBrowser from '$lib/components/widgets/VariantBrowser.svelte'
 	import VariantDetailPage from '$lib/components/app/VariantDetailPage.svelte'
-	import SiteModal from '$lib/components/app/SiteModal.svelte'
-	import type { PageServerData as VariantPageData } from '../../routes/explore/variant/[id]/$types'
+	import type { PageServerData as VariantPageData } from '../../../routes/explore/variant/[id]/$types'
 	import { afterNavigate, goto, replaceState } from '$app/navigation'
-	import * as Drawer from '$lib/components/ui/drawer/index.js'
+	import ExternalLinkIcon from '@lucide/svelte/icons/external-link'
 
 	type Population = {
 		cohortId?: number
@@ -105,6 +103,11 @@
 		variantClasses: { common: 0, lowFreq: 0, rare: 0 },
 	}
 
+	const MAP_BUBBLE_LAYERS = ['collection-country-bubbles', 'collection-country-labels'] as const
+	const MAP_ZONE_LAYERS = ['region-zone-fill'] as const
+	const MAP_ZONE_QUERY_LAYERS = ['region-zone-fill', 'region-zone-highlight'] as const
+	const ZONE_HOVER_CLEAR_MS = 48
+	const ZONE_HIT_PAD_PX = 4
 	const CARIBBEAN_CODES = new Set(['BS', 'BB', 'BM', 'VG', 'LC', 'TT'])
 
 	type CountryRow = {
@@ -114,22 +117,23 @@
 		variants: number
 		center: [number, number]
 		sources: string[]
+		countryCode?: string
 	}
 
-	type CoverageRow = {
-		code: string
-		name: string
-		samples: number | null
-		subtitle: string
-		center: [number, number]
-	}
+	type MapBubbleRow = CountryRow
+
 	type CollectionCountryProperties = {
 		code: string
 		name: string
 		samples: number
 		label: string
 		sources: string
+		sourceCount: number
+		primarySourceSlug: string
+		countryCode?: string
 	}
+
+	type CountryPopupAnchor = 'top' | 'bottom' | 'left' | 'right'
 
 	const COUNTRY_CENTERS: Record<string, [number, number]> = {
 		BB: [-59.543, 13.194],
@@ -184,6 +188,10 @@
 		VG: 8.4,
 		VN: 4.1,
 	}
+	const WORLD_MAP_BOUNDS: [[number, number], [number, number]] = [
+		[-180, -85],
+		[180, 85],
+	]
 	const DEFAULT_MAP_CENTER: [number, number] = [0, 22]
 	const DEFAULT_MAP_ZOOM = 2
 	const RESULTS_DRAWER_TOP = 84
@@ -226,11 +234,16 @@
 		'intergenic',
 	]
 
-	let { data, children } = $props()
-	const isHome = $derived(page.url.pathname === '/' || page.url.pathname === '/explore')
-	const siteModalRoute = $derived(
-		['/about', '/contact', '/api'].includes(page.url.pathname) ? page.url.pathname : null
-	)
+	const data = $derived(page.data)
+	const tenant = $derived(data.tenant)
+	const tenantScope = $derived(tenant.scope)
+	const portalCountryCodes = $derived(tenant.mapProfile?.countryCodes ?? null)
+	const defaultMapCenter = $derived(tenantScope ? mapboxCenter(tenant) : DEFAULT_MAP_CENTER)
+	const defaultMapZoom = $derived(tenantScope ? mapboxZoom(tenant) : DEFAULT_MAP_ZOOM)
+	const portalMapBounds = $derived(mapboxBounds(tenant))
+	const portalMinZoom = $derived(tenant.mapProfile?.minZoom ?? 2)
+	const isMapPage = $derived(page.url.pathname === '/')
+	const isExplorePage = $derived(page.url.pathname === '/explore')
 	const isVariantRoute = $derived(page.url.pathname.startsWith('/explore/variant/'))
 	const variantDetailData = $derived.by((): VariantPageData | null => {
 		if (!isVariantRoute) return null
@@ -268,9 +281,22 @@
 		}
 	})
 	let map: MapboxMap | undefined
-	let popup: Popup | undefined
+	let hoverCountryCode = $state<string | null>(null)
+	let countryPopupPinned = false
+	let hoverDismissTimer: ReturnType<typeof setTimeout> | undefined
+	let countryPopupPointerInside = false
+	const HOVER_COUNTRY_DISMISS_MS = 550
+	let selectedCountryPopup: Popup | undefined
+	let selectedCountryPopupCode: string | null = null
+	let selectedCountryPopupAnchor: CountryPopupAnchor | undefined
+	let suppressSelectedCountryPopupClose = false
+	let ignoreNextMapBackgroundClick = false
+	let zoneHighlightKey = ''
+	let zoneHoverClearTimer: ReturnType<typeof setTimeout> | undefined
 	let selectedCode = $state<string | null>(null)
 	let selectedDatasetSlug = $state<string | null>(null)
+	let selectedDatasetInferredFromSource = $state(false)
+	let selectedSourceSlug = $state<string | null>(null)
 	let searchQuery = $state('')
 	let appliedSearchQuery = $state('')
 	let countryPickerOpen = $state(false)
@@ -311,7 +337,15 @@
 	let shareCopied = $state(false)
 	let routerReady = $state(false)
 	let pendingResultsUrlOpen: boolean | null = null
+	let lastDefaultCameraResetKey = ''
 	let mapStyleLoaded = $state(false)
+
+	const portalHomeMapView = $derived(
+		isMapPage &&
+			tenantScope &&
+			!selectedCode &&
+			!hasExploreQueryContextFromParams(page.url.searchParams)
+	)
 
 	onMount(() => {
 		routerReady = true
@@ -331,6 +365,21 @@
 		return () => window.removeEventListener('keydown', onKeyDown)
 	})
 
+	const closeCountryPickerOnOutsideClick: Action<HTMLElement> = (node) => {
+		const onPointerDown = (event: PointerEvent) => {
+			if (!countryPickerOpen) return
+			const target = event.target
+			if (target instanceof Node && node.contains(target)) return
+			countryPickerOpen = false
+		}
+		document.addEventListener('pointerdown', onPointerDown, true)
+		return {
+			destroy() {
+				document.removeEventListener('pointerdown', onPointerDown, true)
+			},
+		}
+	}
+
 	setContext(key, {
 		getMap: () => map,
 	})
@@ -338,15 +387,6 @@
 	const fmt = (n: number | null | undefined) => (n ?? 0).toLocaleString()
 	const pct = (n: number, d: number) => (d ? `${Math.round((n / d) * 100)}%` : '0%')
 	const tx = (en: string, pt: string) => ($lang === 'pt' ? pt : en)
-	const siteModalLabel = $derived(
-		siteModalRoute === '/about'
-			? tx('About', 'Sobre')
-			: siteModalRoute === '/contact'
-				? tx('Contact', 'Contato')
-				: siteModalRoute === '/api'
-					? 'API'
-					: ''
-	)
 	function countryFlagEmoji(code: string) {
 		const normalized = code.trim().toUpperCase()
 		if (normalized.length !== 2 || !/^[A-Z]{2}$/.test(normalized)) return '🌐'
@@ -455,11 +495,29 @@
 	}
 
 	function drawerOpenFromUrl(sp: URLSearchParams) {
-		if (exploreDrawerDismissed) return false
-		return hasExploreQueryContextFromParams(sp)
+		void sp
+		return false
 	}
 
 	let selfUrlSync = false
+
+	function applyTenantScopeDefaults() {
+		const scope = tenantScope
+		if (!scope || hasExploreQueryContextFromParams(page.url.searchParams)) return
+		if (!filterBiobankOptions.some((bank) => bank.slug === scope)) return
+
+		selectedSourceSlug = scope
+		filterBiobanks = Object.fromEntries(
+			filterBiobankOptions.map((bank) => [bank.slug, bank.slug === scope])
+		)
+		filterMatchMode = 'any'
+
+		const scopedDatasets = displayDatasets.filter((dataset) => dataset.biobankSlug === scope)
+		if (scopedDatasets.length === 1) {
+			selectedDatasetSlug = scopedDatasets[0].slug ?? null
+			selectedDatasetInferredFromSource = Boolean(selectedDatasetSlug)
+		}
+	}
 
 	function hydrateExploreFiltersFromUrl(
 		sp: URLSearchParams,
@@ -469,8 +527,14 @@
 			syncMapSelection = true,
 		}: { syncSearch?: boolean; clearSearch?: boolean; syncMapSelection?: boolean } = {}
 	) {
-		const urlBanks = (sp.get('biobanks') ?? '').split(',').filter(Boolean)
-		const urlCohorts = new Set((sp.get('cohorts') ?? '').split(',').filter(Boolean).map(Number))
+		const urlBanks = (sp.get('source') ?? sp.get('biobanks') ?? '').split(',').filter(Boolean)
+		const urlCohorts = new Set(
+			(sp.get('cohorts') ?? '')
+				.split(',')
+				.filter(Boolean)
+				.map(Number)
+				.filter((cohortId) => cohortId > 0)
+		)
 		const urlImpacts = new Set((sp.get('vepImpact') ?? '').split(',').filter(Boolean))
 		const urlConsequences = new Set((sp.get('vepConsequence') ?? '').split(',').filter(Boolean))
 
@@ -483,16 +547,28 @@
 			appliedSearchQuery = ''
 		}
 		if (syncMapSelection) {
-			const countryParam = sp.get('country')
-			selectedCode =
-				countryParam && countryRows.some((country) => country.code === countryParam)
-					? countryParam
-					: null
+			selectedCode = null
 			const datasetParam = sp.get('dataset')
-			selectedDatasetSlug =
-				datasetParam && displayDatasets.some((dataset) => dataset.slug === datasetParam)
-					? datasetParam
+			const sourceParam = (sp.get('source') ?? sp.get('biobanks') ?? '').split(',').filter(Boolean)
+			selectedSourceSlug =
+				sourceParam.length === 1 &&
+				filterBiobankOptions.some((source) => source.slug === sourceParam[0])
+					? sourceParam[0]
 					: null
+			const sourceDatasets =
+				sourceParam.length === 1
+					? displayDatasets.filter((dataset) => dataset.biobankSlug === sourceParam[0])
+					: []
+			if (datasetParam && displayDatasets.some((dataset) => dataset.slug === datasetParam)) {
+				selectedDatasetSlug = datasetParam
+				selectedDatasetInferredFromSource = false
+			} else if (sourceDatasets.length === 1) {
+				selectedDatasetSlug = sourceDatasets[0].slug ?? null
+				selectedDatasetInferredFromSource = Boolean(selectedDatasetSlug)
+			} else {
+				selectedDatasetSlug = null
+				selectedDatasetInferredFromSource = false
+			}
 		}
 		filterGene = sp.get('gene') ?? ''
 		filterAfMin = sp.get('afMin') ?? ''
@@ -551,21 +627,23 @@
 			lastHydratedPathname = pathname
 			return
 		}
+		const urlHasContext = hasExploreQueryContextFromParams(page.url.searchParams)
+
 		if (urlKey === lastHydratedExploreUrl && !returnedFromVariant) {
 			lastHydratedPathname = pathname
 			return
 		}
 
-		const stateParams = buildExploreParams()
-		const urlHasContext = hasExploreQueryContextFromParams(page.url.searchParams)
-		const stateHasContext = hasExploreQueryContextFromParams(stateParams)
 		const lastHydratedParams = new URLSearchParams(lastHydratedExploreUrl.split('?')[1] ?? '')
 		const lastHydratedHasContext = hasExploreQueryContextFromParams(lastHydratedParams)
 
-		if (urlHasContext && !stateHasContext && lastHydratedExploreUrl && !lastHydratedHasContext) {
-			syncResultsUrl(resultsDrawerOpen, true)
-			lastHydratedPathname = pathname
-			return
+		if (urlHasContext && lastHydratedExploreUrl && !lastHydratedHasContext) {
+			const stateParams = buildExploreParams()
+			if (!hasExploreQueryContextFromParams(stateParams)) {
+				untrack(() => syncResultsUrl(resultsDrawerOpen, true))
+				lastHydratedPathname = pathname
+				return
+			}
 		}
 
 		const prevPath = lastHydratedExploreUrl ? lastHydratedExploreUrl.split('?')[0] : ''
@@ -579,6 +657,9 @@
 			clearSearch: forceFullHydrate || pathChanged,
 			syncMapSelection: true,
 		})
+		if (forceFullHydrate && tenantScope && !hasExploreQueryContextFromParams(page.url.searchParams)) {
+			applyTenantScopeDefaults()
+		}
 		lastHydratedExploreUrl = urlKey
 		lastHydratedPathname = pathname
 		filterStateHydrated = true
@@ -655,10 +736,175 @@
 				if (center) upsert(m.countryCode, m.country, m.sampleCount, p.variantCount, center, p.name)
 			}
 		}
-		return [...byCode.values()].sort((a, b) => a.name.localeCompare(b.name))
+		return [...byCode.values()]
+			.filter((row) => !portalCountryCodes?.length || portalCountryCodes.includes(row.code))
+			.sort((a, b) => a.name.localeCompare(b.name))
 	})
 
+	const useZoneMap = $derived(tenant.mapProfile?.regionMode === 'zones')
+	const zoneCodeProperty = $derived(tenant.mapProfile?.zoneCodeProperty ?? 'code')
+
+	const mapBubbleRows = $derived.by<MapBubbleRow[]>(() => {
+		if (!useZoneMap) return countryRows
+		const brazil = countryRows.find((row) => row.code === 'BR')
+		if (!brazil) return countryRows
+		return BRAZIL_STATES.map((state) => ({
+			code: state.code,
+			name: state.name,
+			countryCode: 'BR',
+			samples: brazil.samples,
+			variants: brazil.variants,
+			center: state.center,
+			sources: [...brazil.sources],
+		}))
+	})
+
+	function mapInteractiveLayers() {
+		return useZoneMap ? [...MAP_ZONE_LAYERS] : [...MAP_BUBBLE_LAYERS]
+	}
+
+	const EMPTY_ZONE_FILTER: ExpressionSpecification = ['==', ['get', 'sigla'], '__none__']
+
+	function zoneCodeFromProperties(properties: Record<string, unknown> | null | undefined) {
+		if (!properties) return null
+		if (typeof properties.sigla === 'string') return properties.sigla
+		const fallback = properties[zoneCodeProperty]
+		return typeof fallback === 'string' ? fallback : null
+	}
+
+	function zoneCodeAtPoint(point: mapboxgl.PointLike) {
+		if (!map) return null
+		const x = typeof point === 'object' && point !== null && 'x' in point ? point.x : point[0]
+		const y = typeof point === 'object' && point !== null && 'y' in point ? point.y : point[1]
+		const hits = map.queryRenderedFeatures(
+			[
+				[x - ZONE_HIT_PAD_PX, y - ZONE_HIT_PAD_PX],
+				[x + ZONE_HIT_PAD_PX, y + ZONE_HIT_PAD_PX],
+			],
+			{ layers: [...MAP_ZONE_QUERY_LAYERS] }
+		)
+		for (const feature of hits) {
+			const code = zoneCodeFromProperties(feature.properties as Record<string, unknown> | undefined)
+			if (code) return code
+		}
+		return null
+	}
+
+	function cancelZoneHoverClear() {
+		if (zoneHoverClearTimer) {
+			clearTimeout(zoneHoverClearTimer)
+			zoneHoverClearTimer = undefined
+		}
+	}
+
+	function scheduleZoneHoverClear() {
+		cancelZoneHoverClear()
+		zoneHoverClearTimer = setTimeout(() => {
+			zoneHoverClearTimer = undefined
+			if (selectedCountry) return
+			hoverCountryCode = null
+			zoneHighlightKey = ''
+			updateZoneHighlight()
+			scheduleHoverCountryDismiss()
+		}, ZONE_HOVER_CLEAR_MS)
+	}
+
+	function handleZonePointerMove(event: MapMouseEvent) {
+		if (!map || !useZoneMap) return
+		const code = zoneCodeAtPoint(event.point)
+		if (code) {
+			cancelZoneHoverClear()
+			map.getCanvas().style.cursor = 'pointer'
+			if (selectedCountry?.code === code) return
+			if (hoverCountryCode === code) return
+			cancelHoverCountryDismiss()
+			countryPopupPointerInside = false
+			hoverCountryCode = code
+			zoneHighlightKey = ''
+			updateZoneHighlight()
+			return
+		}
+		map.getCanvas().style.cursor = ''
+		if (selectedCountry || !hoverCountryCode) return
+		scheduleZoneHoverClear()
+	}
+
+	function resolveZoneHighlight(): {
+		code: string | null
+		mode: 'hover' | 'selected' | null
+	} {
+		if (hoverCountryCode && hoverCountryCode !== selectedCode) {
+			return { code: hoverCountryCode, mode: 'hover' }
+		}
+		if (selectedCode) {
+			return { code: selectedCode, mode: 'selected' }
+		}
+		return { code: null, mode: null }
+	}
+
+	function updateZoneHighlight() {
+		if (!map?.isStyleLoaded() || !useZoneMap || !map.getLayer('region-zone-highlight')) return
+
+		const { code, mode } = resolveZoneHighlight()
+		const nextKey = `${code ?? ''}:${mode ?? ''}`
+		if (zoneHighlightKey === nextKey) return
+		zoneHighlightKey = nextKey
+
+		const filter = code
+			? (['==', ['get', 'sigla'], code] as ExpressionSpecification)
+			: EMPTY_ZONE_FILTER
+
+		map.setFilter('region-zone-highlight', filter)
+		map.setFilter('region-zone-highlight-outline', filter)
+
+		if (code) {
+			map.setPaintProperty(
+				'region-zone-highlight',
+				'fill-color',
+				mode === 'selected' ? '#1a9e88' : '#2eccaa'
+			)
+			map.setPaintProperty(
+				'region-zone-highlight',
+				'fill-opacity',
+				mode === 'selected' ? 0.78 : 0.72
+			)
+			map.setPaintProperty('region-zone-fill', 'fill-opacity', [
+				'case',
+				['==', ['get', 'sigla'], code],
+				0.28,
+				0.12,
+			])
+		} else {
+			map.setPaintProperty(
+				'region-zone-fill',
+				'fill-opacity',
+				0.32 as unknown as ExpressionSpecification
+			)
+		}
+	}
+
+	function mapRowCountryCode(row: MapBubbleRow) {
+		return row.countryCode ?? row.code
+	}
+
 	const tenantFor = (slug?: string) => TENANTS.find((tenant) => tenant.slug === slug)
+
+	function portalUrlFor(biobankSlug?: string | null) {
+		if (!biobankSlug) return null
+		return tenantPortalUrl(biobankSlug, {
+			hostname: page.url.hostname,
+			port: page.url.port,
+			protocol: page.url.protocol,
+		})
+	}
+
+	function isCurrentBiobankPortal(biobankSlug?: string | null) {
+		return Boolean(biobankSlug && tenantScope === biobankSlug)
+	}
+
+	function databaseRowHref(dataset: DisplayDataset) {
+		return portalUrlFor(dataset.biobankSlug) ?? (dataset.biobankSlug ? `/sources/${dataset.biobankSlug}` : '/sources')
+	}
 
 	const displayDatasets = $derived.by<DisplayDataset[]>(() => {
 		const live = dashboard.datasets as Array<Record<string, unknown>> | undefined
@@ -690,14 +936,6 @@
 
 	function isPgpDataset(dataset?: DisplayDataset | null) {
 		return dataset?.slug === 'pgp-usa' || dataset?.biobankSlug === 'pgp-harvard'
-	}
-
-	function datasetCoverageLabel(dataset: DisplayDataset) {
-		if (dataset.slug === 'cari-caribbean' || dataset.biobankSlug === 'carigenetics')
-			return tx('Caribbean coverage', 'Cobertura do Caribe')
-		if (isBipmedDataset(dataset)) return tx('Brazil states', 'Estados do Brasil')
-		if (isPgpDataset(dataset)) return tx('United States coverage', 'Cobertura dos Estados Unidos')
-		return tx('Countries in dataset', 'Países no conjunto de dados')
 	}
 
 	function countryCodesForDataset(dataset: DisplayDataset) {
@@ -739,7 +977,7 @@
 	}
 
 	const selectedCountry = $derived(
-		selectedCode ? (countryRows.find((country) => country.code === selectedCode) ?? null) : null
+		selectedCode ? (mapBubbleRows.find((country) => country.code === selectedCode) ?? null) : null
 	)
 	const selectedCountryCohortIds = $derived(
 		selectedCode ? cohortIdsForCountryCode(selectedCode) : []
@@ -749,60 +987,51 @@
 			? (displayDatasets.find((dataset) => dataset.slug === selectedDatasetSlug) ?? null)
 			: null
 	)
+	const selectedSourceDatasets = $derived(
+		selectedSourceSlug
+			? displayDatasets.filter((dataset) => dataset.biobankSlug === selectedSourceSlug)
+			: []
+	)
+	const selectedSource = $derived(
+		selectedSourceSlug
+			? ((dashboard.biobanks as Array<{ slug?: string; name: string; description?: string }>)
+					.find((source) => source.slug === selectedSourceSlug) ?? null)
+			: null
+	)
+	const selectedSourceParticipants = $derived(
+		selectedSourceDatasets.reduce((sum, dataset) => sum + (dataset.participants ?? 0), 0)
+	)
+	const selectedSourceVariants = $derived(
+		selectedSourceDatasets.reduce((sum, dataset) => sum + (dataset.variants ?? 0), 0)
+	)
+	const selectedCountryDatasets = $derived(
+		selectedCountry ? datasetsForCountry(selectedCountry) : []
+	)
+	const selectedCountrySources = $derived(
+		selectedCountry ? countrySourceBanks(selectedCountry) : []
+	)
+	const selectedCountryVariantTotal = $derived.by(() => {
+		if (!selectedCountryDatasets.length) return selectedCountry?.variants ?? 0
+		return Math.max(...selectedCountryDatasets.map((dataset) => dataset.variants ?? 0))
+	})
+	const selectedCountrySourceProfileHref = $derived(
+		selectedCountrySources.length === 1 && selectedCountrySources[0].slug
+			? `/sources/${selectedCountrySources[0].slug}`
+			: '/sources'
+	)
 	const showExploreLeftPanels = $derived(
-		!isVariantRoute &&
-			page.url.pathname === '/' &&
-			resultsDrawerOpen &&
-			!selectedCountry &&
-			!selectedDataset
+		false
 	)
-	const showMapVariantPanel = $derived(
-		isHome &&
-			!isVariantRoute &&
-			!resultsDrawerOpen &&
-			!selectedCountry &&
-			!selectedDataset
-	)
+	const showMapVariantPanel = $derived(isMapPage && !isVariantRoute && !resultsDrawerOpen)
+	const showMapSummaryPanels = $derived(isMapPage && !isVariantRoute && !resultsDrawerOpen)
 	const showVariantLeftPanels = $derived(!!variantDetailData)
 	const scopedCountryRows = $derived.by(() => {
 		if (!selectedDataset) return countryRows
 		const codes = new Set(countryCodesForDataset(selectedDataset))
 		return countryRows.filter((country) => codes.has(country.code))
 	})
-	const scopedCoverageRows = $derived.by((): CoverageRow[] => {
-		if (!selectedDataset) return []
-		if (isBipmedDataset(selectedDataset)) {
-			return BRAZIL_STATES.map((state) => ({
-				code: state.code,
-				name: state.name,
-				samples: null,
-				subtitle: 'BIPMed',
-				center: state.center,
-			}))
-		}
-		return scopedCountryRows.map((country) => ({
-			code: country.code,
-			name: country.name,
-			samples: country.samples,
-			subtitle: country.sources.slice(0, 2).join(' + '),
-			center: country.center,
-		}))
-	})
-	const countryCoverageRows = $derived.by((): CoverageRow[] => {
-		if (!selectedCountry || selectedDataset) return []
-		if (selectedCountry.code === 'BR') {
-			return BRAZIL_STATES.map((state) => ({
-				code: state.code,
-				name: state.name,
-				samples: null,
-				subtitle: 'BIPMed',
-				center: state.center,
-			}))
-		}
-		return []
-	})
 	const highlightCountryCodes = $derived.by(() => {
-		if (selectedCountry) return [selectedCountry.code]
+		if (selectedCountry) return [mapRowCountryCode(selectedCountry)]
 		if (selectedDataset) {
 			return countryCodesForDataset(selectedDataset).filter((code) =>
 				countryRows.some((country) => country.code === code)
@@ -811,9 +1040,10 @@
 		return countryRows.map((country) => country.code)
 	})
 	const bubbleFocusCodes = $derived.by(() => {
+		if (useZoneMap) return []
 		if (selectedCountry) return [selectedCountry.code]
 		if (selectedDataset) return countryCodesForDataset(selectedDataset)
-		return countryRows.map((country) => country.code)
+		return mapBubbleRows.map((country) => country.code)
 	})
 	const countryHighlightExpression = $derived([
 		'in',
@@ -824,27 +1054,36 @@
 		country: CountryRow | null
 		dataset: DisplayDataset | null
 	}
-	const variantMixTotal = $derived(
-		selectedCountry?.variants ?? selectedDataset?.variants ?? dashboard.totals.variants
+	const mapPanelCountryCount = $derived(
+		selectedCountry ? 1 : mapBubbleRows.length
 	)
+	const mapPanelParticipantCount = $derived(
+		selectedCountry?.samples ?? dashboard.totals.participants
+	)
+	const variantMixTotal = $derived.by(() => {
+		const { common, lowFreq, rare } = dashboard.variantClasses
+		const classTotal = common + lowFreq + rare
+		if (classTotal) return classTotal
+		return selectedCountry?.variants ?? dashboard.totals.variants
+	})
 	const variantClassRows = $derived([
 		{
 			key: 'common',
 			label: tx('Common', 'Comuns'),
 			count: dashboard.variantClasses.common,
-			color: '#4a6fd8',
+			color: VARIANT_CLASS_COLORS.common,
 		},
 		{
 			key: 'lowFreq',
 			label: tx('Low-freq', 'Baixa freq.'),
 			count: dashboard.variantClasses.lowFreq,
-			color: '#7b5cc4',
+			color: VARIANT_CLASS_COLORS.lowFreq,
 		},
 		{
 			key: 'rare',
 			label: tx('Rare', 'Raras'),
 			count: dashboard.variantClasses.rare,
-			color: '#e2689a',
+			color: VARIANT_CLASS_COLORS.rare,
 		},
 	])
 	const explorePanelScopePopulations = $derived.by(() => {
@@ -887,19 +1126,19 @@
 			key: 'common',
 			label: tx('Common', 'Comuns'),
 			count: explorePanelVariantStats.common,
-			color: '#4a6fd8',
+			color: VARIANT_CLASS_COLORS.common,
 		},
 		{
 			key: 'lowFreq',
 			label: tx('Low-freq', 'Baixa freq.'),
 			count: explorePanelVariantStats.lowFreq,
-			color: '#7b5cc4',
+			color: VARIANT_CLASS_COLORS.lowFreq,
 		},
 		{
 			key: 'rare',
 			label: tx('Rare', 'Raras'),
 			count: explorePanelVariantStats.rare,
-			color: '#e2689a',
+			color: VARIANT_CLASS_COLORS.rare,
 		},
 	])
 	const countryMaskFilter = [
@@ -922,13 +1161,19 @@
 			.sort((a, b) => b.sampleCount - a.sampleCount)
 	)
 	const bubbleColorExpression: ExpressionSpecification = [
-		'step',
-		['get', 'samples'],
+		'match',
+		['get', 'primarySourceSlug'],
+		'bipmed',
 		'#53bea9',
-		150,
-		'#f2d98c',
-		350,
+		'pgp-harvard',
 		'#f79763',
+		'carigenetics',
+		'#f2d98c',
+		'1kgp',
+		'#bea9c1',
+		'multi',
+		'#d5c7d6',
+		'#53bea9',
 	]
 	const bubbleRadiusExpression: ExpressionSpecification = [
 		'+',
@@ -958,22 +1203,36 @@
 	const collectionGeoJson = $derived(collectionGeoJsonFor())
 
 	function collectionGeoJsonFor(): FeatureCollection<Point, CollectionCountryProperties> {
+		if (useZoneMap) {
+			return { type: 'FeatureCollection', features: [] }
+		}
 		return {
 			type: 'FeatureCollection',
-			features: countryRows.map((country) => ({
-				type: 'Feature',
-				properties: {
-					code: country.code,
-					name: country.name,
-					samples: country.samples,
-					label: fmt(country.samples),
-					sources: country.sources.join(' + '),
-				},
-				geometry: {
-					type: 'Point',
-					coordinates: country.center,
-				},
-			})),
+			features: mapBubbleRows.map((country) => {
+				const sourceBanks = countrySourceBanks(country)
+				const sourceCount = sourceBanks.length || country.sources.length
+				const primarySourceSlug =
+					sourceCount === 1 ? (sourceBanks[0]?.slug ?? country.sources[0] ?? '') : 'multi'
+				return {
+					type: 'Feature',
+					properties: {
+						code: country.code,
+						name: country.name,
+						countryCode: country.countryCode,
+						samples: country.samples,
+						label: fmt(country.samples),
+						sources: sourceBanks.length
+							? sourceBanks.map((source) => source.name).join(' + ')
+							: country.sources.join(' + '),
+						sourceCount,
+						primarySourceSlug,
+					},
+					geometry: {
+						type: 'Point',
+						coordinates: country.center,
+					},
+				}
+			}),
 		}
 	}
 
@@ -1059,8 +1318,10 @@
 		const trimmed = searchQuery.trim()
 		const countryMatch = trimmed ? findMapSearchMatch(trimmed) : undefined
 		if (countryMatch && isMapLocationQuery(trimmed, countryMatch)) {
+			selectedCode = countryMatch.code
+			searchQuery = ''
 			appliedSearchQuery = ''
-			flyToCountry(countryMatch)
+			goToExploreFromLocalState()
 			return
 		}
 		const populationMatch = trimmed ? findPopulationSearchMatch(trimmed) : undefined
@@ -1068,22 +1329,19 @@
 			appliedSearchQuery = ''
 			const country = countryRows.find((row) => row.code === populationMatch.countryCode)
 			if (country) {
-				flyToCountry(country)
+				selectedCode = country.code
+				searchQuery = ''
+				goToExploreFromLocalState()
 				return
 			}
 		}
-		if (
-			!trimmed &&
-			resultsDrawerOpen &&
-			!isVariantRoute
-		) {
+		if (!trimmed && resultsDrawerOpen && !isVariantRoute) {
 			appliedSearchQuery = ''
 			openResultsDrawer(true)
 			return
 		}
-		releaseMapScopeForVariantExplore()
 		appliedSearchQuery = normalizeVariantSearchInput(trimmed)
-		openResultsDrawer(true)
+		goToExploreFromLocalState()
 	}
 
 	const SEARCH_QUERY_DEBOUNCE_MS = 300
@@ -1094,17 +1352,10 @@
 
 	$effect(() => {
 		const query = searchQuery
-		if (!filterStateHydrated || isVariantRoute) return
+		if (!filterStateHydrated || !isExplorePage || isVariantRoute) return
 
 		const trimmed = query.trim()
 		const variantSearch = shouldRunVariantLiveSearch(query)
-		const drawerDismissed = exploreDrawerDismissed
-
-		if (trimmed && variantSearch && !drawerDismissed) {
-			resultsDrawerOpen = true
-			countryPickerOpen = false
-			datasetPickerOpen = false
-		}
 
 		const timer = window.setTimeout(() => {
 			const normalized = applyLiveSearchQuery(query)
@@ -1113,9 +1364,6 @@
 			if (!trimmed) {
 				appliedSearchQuery = ''
 				resultsTableQueryString = ''
-				if (resultsDrawerOpen && !drawerDismissed) {
-					openResultsDrawer(true)
-				}
 				return
 			}
 
@@ -1132,7 +1380,7 @@
 	function pickCountry(country: CountryRow) {
 		countryPickerOpen = false
 		datasetPickerOpen = false
-		flyToCountry(country)
+		selectedCode = country.code
 	}
 
 	function pickAllCountries() {
@@ -1159,11 +1407,8 @@
 	function clearDatasetFromPicker() {
 		datasetPickerOpen = false
 		selectedDatasetSlug = null
-		if (selectedCountry) {
-			flyToCountry(selectedCountry, { keepDataset: true, keepSearch: true })
-			return
-		}
-		openResultsDrawer(true)
+		selectedDatasetInferredFromSource = false
+		selectedSourceSlug = null
 	}
 
 	function toggleFilterVepImpact(value: string) {
@@ -1227,7 +1472,7 @@
 	}
 
 	function syncExploreUrlAfterReset() {
-		syncResultsUrl(resultsDrawerOpen, true)
+		untrack(() => syncResultsUrl(resultsDrawerOpen, true))
 	}
 
 	function resetMapFilters() {
@@ -1235,11 +1480,40 @@
 		syncExploreUrlAfterReset()
 	}
 
-	function buildExploreParams() {
+	function clearUrlBackedMapState() {
+		selectedCode = null
+		selectedDatasetSlug = null
+		selectedDatasetInferredFromSource = false
+		selectedSourceSlug = null
+		appliedSearchQuery = ''
+		resultsTableQueryString = ''
+		lastExploreQueryString = ''
+		filterGene = ''
+		filterAfMin = ''
+		filterAfMax = ''
+		filterAcMin = ''
+		filterAcMax = ''
+		filterPageSize = 50
+		filterVepImpacts = Object.fromEntries(VEP_IMPACT_OPTIONS.map((value) => [value, true]))
+		filterVepConsequences = Object.fromEntries(
+			VEP_CONSEQUENCE_OPTIONS.map((value) => [value, true])
+		)
+		filterBiobanks = Object.fromEntries(filterBiobankOptions.map((bank) => [bank.slug, true]))
+		filterMatchMode = 'any'
+		filterPopulations = Object.fromEntries(
+			filterPopulationOptions.map((population) => [population.cohortId, true])
+		)
+		filterPopulationMatchMode = 'any'
+		exploreDrawerDismissed = false
+		resultsDrawerOpen = false
+	}
+
+	function buildExploreParams(options: { includeMapCountry?: boolean } = {}) {
 		const params = new URLSearchParams()
 		if (appliedSearchQuery) params.set('q', appliedSearchQuery)
-		if (selectedCode) params.set('country', selectedCode)
-		if (selectedDatasetSlug) params.set('dataset', selectedDatasetSlug)
+		if (options.includeMapCountry && selectedCode) params.set('country', selectedCode)
+		if (selectedDatasetSlug && !selectedDatasetInferredFromSource)
+			params.set('dataset', selectedDatasetSlug)
 		if (filterGene.trim()) params.set('gene', filterGene.trim())
 		if (filterAfMin) params.set('afMin', filterAfMin)
 		if (filterAfMax) params.set('afMax', filterAfMax)
@@ -1253,19 +1527,21 @@
 			params.set('vepConsequence', selectedFilterVepConsequenceValues.join(','))
 		if (filterPageSize !== 50) params.set('pageSize', String(filterPageSize))
 		if (filterBiobankOptions.length > 1 && selectedFilterBiobankSlugs.length === 0) {
-			params.set('biobanks', '__none__')
+			params.set('source', '__none__')
 		} else if (
 			filterBiobankOptions.length > 1 &&
 			selectedFilterBiobankSlugs.length &&
 			(filterMatchMode === 'all' || selectedFilterBiobankSlugs.length < filterBiobankOptions.length)
 		) {
-			params.set('biobanks', selectedFilterBiobankSlugs.join(','))
+			params.set('source', selectedFilterBiobankSlugs.join(','))
 			params.set('match', filterMatchMode)
 		} else if (selectedDataset?.biobankSlug) {
-			params.set('biobanks', selectedDataset.biobankSlug)
+			params.set('source', selectedDataset.biobankSlug)
 		}
-		const datasetScopeCohortIds = cohortIdsForDataset(selectedDataset)
-		const countryScopeCohortIds = selectedCountryCohortIds
+		const datasetScopeCohortIds = selectedDatasetInferredFromSource
+			? []
+			: cohortIdsForDataset(selectedDataset)
+		const countryScopeCohortIds = options.includeMapCountry ? selectedCountryCohortIds : []
 		let mapScopeCohortIds: number[] = []
 		if (datasetScopeCohortIds.length && countryScopeCohortIds.length) {
 			mapScopeCohortIds = datasetScopeCohortIds.filter((cohortId) =>
@@ -1279,24 +1555,23 @@
 
 		const effectiveCohortIds = mapScopeCohortIds.length
 			? selectedFilterCohortIds.filter((cohortId) => mapScopeCohortIds.includes(cohortId))
-			: selectedCountryCohortIds.length
+			: options.includeMapCountry && selectedCountryCohortIds.length
 				? selectedFilterCohortIds.filter((cohortId) => selectedCountryCohortIds.includes(cohortId))
 				: selectedFilterCohortIds
 
 		if (mapScopeCohortIds.length) {
-			if (!effectiveCohortIds.length) params.set('cohorts', '-1')
-			else params.set('cohorts', effectiveCohortIds.join(','))
+			params.set('cohorts', mapScopeCohortIds.join(','))
 		} else if (filterPopulationOptions.length > 1 && effectiveCohortIds.length === 0) {
 			params.set('cohorts', '-1')
 		} else if (
 			filterPopulationOptions.length > 1 &&
 			effectiveCohortIds.length &&
-			(selectedCountryCohortIds.length ||
+			((options.includeMapCountry && selectedCountryCohortIds.length) ||
 				filterPopulationMatchMode === 'all' ||
 				effectiveCohortIds.length < activeFilterPopulations.length)
 		) {
 			params.set('cohorts', effectiveCohortIds.join(','))
-			if (!selectedCountryCohortIds.length && filterPopulationMatchMode === 'all')
+			if (!countryScopeCohortIds.length && filterPopulationMatchMode === 'all')
 				params.set('cohortMatch', 'all')
 		}
 		if (data.forceTenant) params.set('tenant', data.forceTenant)
@@ -1321,14 +1596,46 @@
 		return hasExploreQueryContextFromParams(buildExploreParams())
 	}
 
-	const exploreQueryString = $derived(buildExploreParams().toString())
+	const exploreQueryString = $derived(buildExploreParams({ includeMapCountry: true }).toString())
 	const activeResultsQueryString = $derived(exploreQueryString)
-	const mapResultsPath = $derived.by(() => {
+	function mapRouteContextParams() {
 		const params = buildExploreParams()
+		if (hasExploreQueryContextFromParams(params)) return params
+
+		const urlParams = new URLSearchParams()
+		for (const key of [
+			'source',
+			'biobanks',
+			'dataset',
+			'country',
+			'cohorts',
+			'cohortMatch',
+			'match',
+			'q',
+			'gene',
+			'afMin',
+			'afMax',
+			'acMin',
+			'acMax',
+			'vepImpact',
+			'vepConsequence',
+		]) {
+			const value = page.url.searchParams.get(key)
+			if (value) urlParams.set(key === 'biobanks' ? 'source' : key, value)
+		}
+		if (data.forceTenant) urlParams.set('tenant', data.forceTenant)
+		return urlParams
+	}
+	const mapResultsPath = $derived.by(() => {
+		const params = mapRouteContextParams()
 		return `/${params.toString() ? `?${params.toString()}` : ''}`
 	})
+	const explorerPath = $derived.by(() => {
+		const params = mapRouteContextParams()
+		return `/explore${params.toString() ? `?${params.toString()}` : ''}`
+	})
 	const mapResultsUrl = $derived(
-		`${typeof location !== 'undefined' ? location.origin : ''}${mapResultsPath}`
+		`${typeof location !== 'undefined' ? location.origin : ''}${explorerPath}`
 	)
 	const resultsDrawerKey = $derived.by(() => {
 		const params = buildExploreParams()
@@ -1340,7 +1647,7 @@
 		if (selectedCountry) parts.push(selectedCountry.name)
 		if (selectedDataset) parts.push(selectedDataset.title)
 		if (filterGene.trim()) parts.push(filterGene.trim())
-		const liveQuery = searchQuery.trim() || appliedSearchQuery
+		const liveQuery = isExplorePage ? searchQuery.trim() || appliedSearchQuery : appliedSearchQuery
 		if (liveQuery) parts.push(liveQuery)
 		if (filterAfMin || filterAfMax) parts.push(`AF ${filterAfMin || '0'}-${filterAfMax || 'max'}`)
 		if (filterAcMin || filterAcMax) parts.push(`AC ${filterAcMin || '0'}-${filterAcMax || 'max'}`)
@@ -1433,30 +1740,28 @@
 		void goto(`${path}${target.search}`)
 	}
 
-	function openResultsDrawer(force = false) {
-		if (!force && !hasActiveExploreContext()) {
-			closeResultsDrawer()
-			return
-		}
+	function openExplorer() {
 		exploreDrawerDismissed = false
-		resultsDrawerOpen = true
+		resultsDrawerOpen = false
 		countryPickerOpen = false
 		datasetPickerOpen = false
-		syncResultsUrl(true)
+		goToExploreFromLocalState()
+	}
+
+	function goToExploreFromLocalState() {
+		const params = buildExploreParams()
+		void goto(`/explore${params.toString() ? `?${params.toString()}` : ''}`)
+	}
+
+	function openResultsDrawer(force = false) {
+		if (!force && !hasActiveExploreContext()) return
+		openExplorer()
 	}
 
 	function closeResultsDrawer() {
 		exploreDrawerDismissed = true
 		resultsDrawerOpen = false
 		syncResultsUrl(false, true)
-	}
-
-	function closeSiteModal() {
-		if (typeof history !== 'undefined' && history.length > 1) {
-			history.back()
-			return
-		}
-		void goto('/')
 	}
 
 	function copyDrawerCurl() {
@@ -1504,6 +1809,7 @@
 
 	$effect(() => {
 		if (!filterStateHydrated) return
+		if (!isExplorePage) return
 		if (exploreQueryString !== lastExploreQueryString) {
 			resultsTableQueryString = ''
 			lastExploreQueryString = exploreQueryString
@@ -1518,25 +1824,21 @@
 		const urlHasContext = hasExploreQueryContextFromParams(page.url.searchParams)
 		const stateHasContext = hasExploreQueryContextFromParams(stateParams)
 
-		if (urlHasContext && !stateHasContext && lastHydratedExploreUrl) {
-			const lastHydratedParams = new URLSearchParams(lastHydratedExploreUrl.split('?')[1] ?? '')
-			if (!hasExploreQueryContextFromParams(lastHydratedParams)) {
-				syncResultsUrl(resultsDrawerOpen, true)
-				return
+			if (urlHasContext && !stateHasContext && lastHydratedExploreUrl) {
+				const lastHydratedParams = new URLSearchParams(lastHydratedExploreUrl.split('?')[1] ?? '')
+				if (!hasExploreQueryContextFromParams(lastHydratedParams)) {
+					untrack(() => syncResultsUrl(resultsDrawerOpen, true))
+					return
+				}
 			}
-		}
 
 		if (urlHasContext && !exploreSearchParamsEqual(stateParams, page.url.searchParams)) {
-			const hydratedUrlKey = exploreUrlKey(path, page.url.searchParams)
-			if (hydratedUrlKey === lastHydratedExploreUrl) {
-				syncResultsUrl(resultsDrawerOpen, true)
-			}
 			return
 		}
 
 		const params = urlExploreParams()
 		if (exploreUrlKey(path, params) === lastHydratedExploreUrl) return
-		syncResultsUrl(resultsDrawerOpen)
+		untrack(() => syncResultsUrl(resultsDrawerOpen))
 	})
 
 	$effect(() => {
@@ -1579,40 +1881,14 @@
 		)
 	}
 
-	function caribbeanPeerCountries(country: CountryRow) {
-		if (!CARIBBEAN_CODES.has(country.code)) return []
-		return countryRows
-			.filter((row) => CARIBBEAN_CODES.has(row.code))
-			.sort((a, b) => b.samples - a.samples || a.name.localeCompare(b.name))
-	}
-
-	function countryContextLine(country: CountryRow) {
-		const caribbeanPeers = caribbeanPeerCountries(country)
-		if (caribbeanPeers.length) {
-			const total = caribbeanPeers.reduce((sum, row) => sum + row.samples, 0)
-			return `${fmt(country.samples)} of ${fmt(total)} Caribbean samples`
-		}
-
-		for (const bank of countrySourceBanks(country)) {
-			const total = (dashboard.biobanks as Array<{ slug?: string; totalSamples?: number }>).find(
-				(item) => item.slug === bank.slug
-			)?.totalSamples
-			if (total && total > country.samples) {
-				return `${fmt(country.samples)} of ${fmt(total)} ${bank.name} samples`
-			}
-		}
-
-		return null
-	}
-
-	function datasetsForCountry(country: CountryRow) {
+	function datasetsForCountry(country: MapBubbleRow) {
 		const bankSlugs = new Set(
 			countrySourceBanks(country)
 				.map((bank) => bank.slug)
 				.filter(Boolean)
 		)
 		const superpops = new Set(
-			countryMappingsForCode(country.code).map((mapping) => mapping.superpop)
+			countryMappingsForCode(mapRowCountryCode(country)).map((mapping) => mapping.superpop)
 		)
 
 		return displayDatasets.filter((dataset) => {
@@ -1627,34 +1903,82 @@
 		})
 	}
 
-	function detailPanelCameraPadding() {
-		if (typeof window === 'undefined' || window.innerWidth <= 700) return undefined
-		if (!resultsDrawerOpen || isVariantRoute) return undefined
-		const bottomInset = 28
-		const searchWidth = Math.min(
-			TOP_SEARCH_MAX_WIDTH,
-			Math.max(TOP_SEARCH_MIN_WIDTH, window.innerWidth * TOP_SEARCH_WIDTH_RATIO)
-		)
-		const drawerLeftEdge = Math.max(
-			SCREEN_INSET,
-			window.innerWidth * TOP_SEARCH_LEFT_RATIO - searchWidth / 2
-		)
-		const countryPanelHeight = Math.min(
-			COUNTRY_PANEL_MAX_HEIGHT,
-			Math.max(0, window.innerHeight - 140)
-		)
-		return {
-			top: RESULTS_DRAWER_TOP,
-			right: Math.round(window.innerWidth - drawerLeftEdge),
-			bottom: Math.max(
-				0,
-				Math.min(
-					window.innerHeight - RESULTS_DRAWER_TOP - 80,
-					bottomInset + countryPanelHeight + 16
-				)
-			),
-			left: 0,
+	function datasetCountrySampleCount(dataset: DisplayDataset, country: MapBubbleRow) {
+		const countryCode = mapRowCountryCode(country)
+		if (dataset.biobankSlug === '1kgp' && dataset.superPopulation) {
+			return countryMappingsForCode(countryCode)
+				.filter((mapping) => mapping.superpop === dataset.superPopulation)
+				.reduce((sum, mapping) => sum + mapping.sampleCount, 0)
 		}
+		return countryCodesForDataset(dataset).includes(countryCode)
+			? Math.min(country.samples, dataset.participants ?? country.samples)
+			: 0
+	}
+
+	function datasetPopupMeta(dataset: DisplayDataset, country: MapBubbleRow) {
+		const countrySamples = datasetCountrySampleCount(dataset, country)
+		const totalSamples = Number(dataset.participants ?? 0)
+		const sampleParts =
+			totalSamples > 0 && countrySamples > 0 && countrySamples !== totalSamples
+				? [
+						`${fmt(countrySamples)} in ${country.name}`,
+						`${fmt(totalSamples)} total`
+					]
+				: [`${fmt(countrySamples || totalSamples)} samples`]
+		return [...sampleParts, dataset.assay]
+			.filter(Boolean)
+			.join(' · ')
+	}
+
+	function dashboardCameraPadding() {
+		if (typeof window === 'undefined') {
+			return { top: 84, bottom: 148, left: 280, right: 280 }
+		}
+		if (window.innerWidth <= 700) {
+			return { top: 72, bottom: 160, left: 16, right: 16 }
+		}
+		const side = Math.max(20, Math.round(window.innerWidth * 0.25 - 8))
+		return {
+			top: 88,
+			bottom: 28 + 112 + 20,
+			left: side,
+			right: side,
+		}
+	}
+
+	function shouldUseDashboardCameraPadding() {
+		return Boolean(selectedCountry || selectedDataset || selectedSource) && !portalHomeMapView
+	}
+
+	/** Pixel offset so the selected region sits in the clear map band between side panels. */
+	function mapSelectionCameraOffset(): [number, number] {
+		if (typeof window === 'undefined' || window.innerWidth <= 700) return [0, 0]
+		return [
+			-Math.round(window.innerWidth * 0.06),
+			-Math.round(window.innerHeight * 0.045),
+		]
+	}
+
+	/** Symmetric padding so fitBounds keeps map content roughly centered on portal home. */
+	function portalHomeFitPadding(generous = false): mapboxgl.PaddingOptions {
+		const edge = generous ? 96 : 64
+		return { top: edge, bottom: edge + 24, left: edge, right: edge }
+	}
+
+	function mapFitPadding(useDashboardPadding: boolean, generous = false): mapboxgl.PaddingOptions {
+		if (tenantScope && portalHomeMapView) return portalHomeFitPadding(generous)
+		if (useDashboardPadding) {
+			const base = dashboardCameraPadding()
+			const extra = generous ? 48 : 24
+			return {
+				top: base.top + extra,
+				right: base.right + extra,
+				bottom: base.bottom + extra,
+				left: base.left + extra,
+			}
+		}
+		const edge = generous ? 180 : 120
+		return { top: edge, bottom: edge, left: edge, right: edge }
 	}
 
 	function expandBounds(bounds: mapboxgl.LngLatBounds, marginRatio = 0.22) {
@@ -1667,29 +1991,39 @@
 		return bounds
 	}
 
-	function datasetFitPadding(base: ReturnType<typeof detailPanelCameraPadding>) {
-		if (!base) return { top: 120, bottom: 120, left: 120, right: 120 }
-		return {
-			top: base.top + 48,
-			right: base.right + 48,
-			bottom: base.bottom + 48,
-			left: base.left + 48,
-		}
+	function relaxPortalMapBounds() {
+		if (!map || !tenantScope) return
+		map.setMaxBounds(WORLD_MAP_BOUNDS)
 	}
 
-	function flyToDatasetView(dataset: DisplayDataset, options: { padding?: boolean; animate?: boolean } = {}) {
+	function portalBubbleFitOptions(scope: string) {
+		return portalMapFit(scope)
+	}
+
+	function fitMapToCountryRows(
+		rows: CountryRow[],
+		options: {
+			padding?: boolean
+			animate?: boolean
+			maxZoom?: number
+			marginRatio?: number
+			singleCountryZoom?: number
+			generousPadding?: boolean
+		} = {}
+	) {
 		if (!map) return
-		const padding = options.padding ? detailPanelCameraPadding() : undefined
+		const portalFit = tenantScope ? portalBubbleFitOptions(tenantScope) : null
+		const fitPadding = mapFitPadding(Boolean(options.padding), options.generousPadding)
+		const fitOffset = options.padding ? mapSelectionCameraOffset() : ([0, 0] as [number, number])
 		const duration = options.animate === false ? 0 : 900
-		const rows = countryRows.filter((country) =>
-			countryCodesForDataset(dataset).includes(country.code)
-		)
+		const marginRatio = options.marginRatio ?? portalFit?.marginRatio ?? 0.22
+		const maxZoom = options.maxZoom ?? portalFit?.maxZoom ?? 2.4
 
 		if (!rows.length) {
 			map.flyTo({
-				center: DEFAULT_MAP_CENTER,
-				zoom: DEFAULT_MAP_ZOOM,
-				padding,
+				center: defaultMapCenter,
+				zoom: defaultMapZoom,
+				padding: fitPadding,
 				retainPadding: false,
 				duration,
 				essential: true,
@@ -1697,62 +2031,149 @@
 			return
 		}
 
-		if (rows.length === 1) {
-			map.flyTo({
-				center: rows[0].center,
-				zoom: Math.max(2, (COUNTRY_ZOOMS[rows[0].code] ?? 4.3) - 1.1),
-				padding,
-				retainPadding: false,
-				duration,
-				essential: true,
-			})
-			return
-		}
+		if (tenantScope) relaxPortalMapBounds()
 
 		const bounds = new mapboxgl.LngLatBounds()
-		for (const row of rows) {
-			bounds.extend(row.center)
-		}
-		expandBounds(bounds)
-
-		const maxZoom =
-			dataset.slug === 'cari-caribbean' ? 4 : dataset.superPopulation ? 2.2 : 3.2
+		for (const row of rows) bounds.extend(row.center)
+		expandBounds(bounds, marginRatio)
 
 		map.fitBounds(bounds, {
-			padding: datasetFitPadding(padding),
+			padding: fitPadding,
+			offset: fitOffset,
 			duration,
 			maxZoom,
 			essential: true,
 		})
 	}
 
+	function flyToDatasetView(dataset: DisplayDataset, options: { padding?: boolean; animate?: boolean } = {}) {
+		if (!map) return
+		const rows =
+			tenantScope && dataset.biobankSlug === tenantScope
+				? mapBubbleRows
+				: countryRows.filter((country) => countryCodesForDataset(dataset).includes(country.code))
+		fitMapToCountryRows(rows, options)
+	}
+
+	function flyToDatasetsView(
+		datasets: DisplayDataset[],
+		options: { padding?: boolean; animate?: boolean } = {}
+	) {
+		if (!map) return
+		if (tenantScope && datasets.length && datasets.every((dataset) => dataset.biobankSlug === tenantScope)) {
+			fitMapToCountryRows(mapBubbleRows, options)
+			return
+		}
+
+		const rowsByCode = new Map<string, CountryRow>()
+		for (const dataset of datasets) {
+			for (const code of countryCodesForDataset(dataset)) {
+				const row = countryRows.find((country) => country.code === code)
+				if (row) rowsByCode.set(row.code, row)
+			}
+		}
+		fitMapToCountryRows([...rowsByCode.values()], { ...options, maxZoom: 2.4, marginRatio: 0.4 })
+	}
+
 	function applyMapCameraForSelection(options: { animate?: boolean } = {}) {
 		if (!map || !mapStyleLoaded || isVariantRoute) return
 		const duration = options.animate === false ? 0 : 900
-		const padding = detailPanelCameraPadding()
+		const useDashboardPadding = shouldUseDashboardCameraPadding()
+		const animateCamera = options.animate !== false
 
 		if (selectedCountry) {
+			const fitPadding = mapFitPadding(useDashboardPadding)
 			map.flyTo({
 				center: selectedCountry.center,
-				zoom: COUNTRY_ZOOMS[selectedCountry.code] ?? 4.3,
-				padding,
+				zoom:
+					useZoneMap && selectedCountry.countryCode
+						? 5.8
+						: (COUNTRY_ZOOMS[selectedCountry.code] ?? 4.3),
+				padding: fitPadding,
+				offset: mapSelectionCameraOffset(),
 				retainPadding: false,
-				duration,
+				duration: animateCamera ? duration : 0,
 				essential: true,
 			})
 			return
 		}
 
 		if (selectedDataset) {
-			flyToDatasetView(selectedDataset, { padding: true, animate: options.animate !== false })
+			flyToDatasetView(selectedDataset, {
+				padding: useDashboardPadding,
+				animate: animateCamera,
+			})
+			return
+		}
+
+		if (selectedSourceDatasets.length) {
+			flyToDatasetsView(selectedSourceDatasets, {
+				padding: useDashboardPadding,
+				animate: animateCamera,
+			})
+			return
+		}
+
+		if (tenantScope && mapBubbleRows.length) {
+			fitMapToCountryRows(mapBubbleRows, {
+				padding: useDashboardPadding,
+				animate: animateCamera,
+			})
 			return
 		}
 
 		map.flyTo({
-			center: DEFAULT_MAP_CENTER,
-			zoom: DEFAULT_MAP_ZOOM,
+			center: defaultMapCenter,
+			zoom: defaultMapZoom,
 			duration,
 			essential: true,
+		})
+	}
+
+	function resetDefaultMapCamera(options: { animate?: boolean } = {}) {
+		if (!map) return
+		map.stop()
+		const animate = options.animate !== false
+		const duration = animate ? 900 : 0
+		if (tenantScope) {
+			relaxPortalMapBounds()
+			if (mapBubbleRows.length) {
+				fitMapToCountryRows(mapBubbleRows, {
+					animate,
+					padding: false,
+					generousPadding: true,
+				})
+			} else if (animate) {
+				map.flyTo({
+					center: defaultMapCenter,
+					zoom: defaultMapZoom,
+					duration,
+					essential: true,
+				})
+			} else {
+				map.jumpTo({
+					center: defaultMapCenter,
+					zoom: defaultMapZoom,
+					bearing: 0,
+					pitch: 0,
+				})
+			}
+			return
+		}
+		if (animate) {
+			map.flyTo({
+				center: defaultMapCenter,
+				zoom: defaultMapZoom,
+				duration,
+				essential: true,
+			})
+			return
+		}
+		map.jumpTo({
+			center: defaultMapCenter,
+			zoom: defaultMapZoom,
+			bearing: 0,
+			pitch: 0,
 		})
 	}
 
@@ -1780,33 +2201,23 @@
 		return false
 	}
 
-	function flyToCoverageRow(row: CoverageRow, options?: { keepDataset?: boolean }) {
-		selectedCode = options?.keepDataset ? selectedCode : null
-		const zoom =
-			isBipmedDataset(selectedDataset) || selectedCountry?.code === 'BR' || row.subtitle === 'BIPMed'
-				? 5.4
-				: 5.8
-		map?.flyTo({
-			center: row.center,
-			zoom,
-			duration: 900,
-			essential: true,
-		})
-	}
-
 	function selectDataset(dataset: DisplayDataset, options: { keepCountry?: boolean } = {}) {
 		selectedDatasetSlug = dataset.slug ?? null
+		selectedDatasetInferredFromSource = false
+		selectedSourceSlug = null
 		if (!options.keepCountry) {
 			selectedCode = null
 		} else if (selectedCode && !countryCodesForDataset(dataset).includes(selectedCode)) {
 			selectedCode = null
 		}
-		openResultsDrawer(true)
+		syncResultsUrl(false, true)
 	}
 
 	function clearDatasetSelection() {
 		if (!selectedDatasetSlug) return
 		selectedDatasetSlug = null
+		selectedDatasetInferredFromSource = false
+		selectedSourceSlug = null
 		selectedCode = null
 		countryPickerOpen = false
 		datasetPickerOpen = false
@@ -1817,6 +2228,8 @@
 		if (!selectedCode && !selectedDatasetSlug) return
 		selectedCode = null
 		selectedDatasetSlug = null
+		selectedDatasetInferredFromSource = false
+		selectedSourceSlug = null
 		countryPickerOpen = false
 		datasetPickerOpen = false
 		syncResultsUrl(resultsDrawerOpen, true)
@@ -1828,69 +2241,311 @@
 
 	function isMapBubbleInFocus(code: string) {
 		if (selectedCountry) return selectedCountry.code === code
-		if (selectedDataset) return countryCodesForDataset(selectedDataset).includes(code)
+		if (selectedDataset) {
+			const datasetCodes = countryCodesForDataset(selectedDataset)
+			if (useZoneMap && datasetCodes.includes('BR')) return true
+			return datasetCodes.includes(code)
+		}
 		return true
 	}
 
-	function handleMapCountryBubbleClick(country: CountryRow) {
-		if (mapSelectionActive() && !isMapBubbleInFocus(country.code)) {
-			clearMapSurfaceSelection()
-			return
-		}
-		flyToCountry(country)
+	function activeCountryPopupCountry(): MapBubbleRow | null {
+		if (selectedCountry) return selectedCountry
+		if (!hoverCountryCode) return null
+		return mapBubbleRows.find((row) => row.code === hoverCountryCode) ?? null
 	}
 
-	function handleMapSurfacePoint(point: MapMouseEvent['point']) {
-		if (!map) return
-		const bubbleHits = map.queryRenderedFeatures(point, { layers: ['collection-country-bubbles'] })
-		if (bubbleHits.length) {
-			const code = bubbleHits[0]?.properties?.code as string | undefined
-			const country = code ? countryRows.find((item) => item.code === code) : undefined
-			if (country) {
-				handleMapCountryBubbleClick(country)
-				return
-			}
+	function cancelHoverCountryDismiss() {
+		if (hoverDismissTimer) {
+			clearTimeout(hoverDismissTimer)
+			hoverDismissTimer = undefined
 		}
-		resetMapView()
+	}
+
+	function scheduleHoverCountryDismiss() {
+		cancelHoverCountryDismiss()
+		if (selectedCountry || countryPopupPointerInside) return
+		hoverDismissTimer = setTimeout(() => {
+			hoverDismissTimer = undefined
+			if (!selectedCountry && !countryPopupPointerInside) {
+				hoverCountryCode = null
+			}
+		}, HOVER_COUNTRY_DISMISS_MS)
+	}
+
+	function attachCountryPopupHoverHandlers(popup: Popup) {
+		const element = popup.getElement()
+		if (!element || element.dataset.hoverBridge === '1') return
+		element.dataset.hoverBridge = '1'
+		element.addEventListener('pointerenter', () => {
+			countryPopupPointerInside = true
+			cancelHoverCountryDismiss()
+		})
+		element.addEventListener('pointerleave', () => {
+			countryPopupPointerInside = false
+			if (!selectedCountry) scheduleHoverCountryDismiss()
+		})
+	}
+
+	function handleMapRegionClick(country: MapBubbleRow) {
+		if (selectedCountry?.code === country.code) {
+			hoverCountryCode = null
+			cancelHoverCountryDismiss()
+			ignoreNextMapBackgroundClick = true
+			requestAnimationFrame(() => {
+				ignoreNextMapBackgroundClick = false
+			})
+			return
+		}
+
+		if (!selectedCountry && mapSelectionActive() && !isMapBubbleInFocus(country.code)) {
+			if (tenantScope) {
+				clearCountrySelection()
+			} else {
+				clearMapSurfaceSelection()
+			}
+			return
+		}
+
+		hoverCountryCode = null
+		cancelHoverCountryDismiss()
+		flyToCountry(country, { keepDataset: Boolean(tenantScope && selectedDatasetSlug) })
+		ignoreNextMapBackgroundClick = true
+		requestAnimationFrame(() => {
+			ignoreNextMapBackgroundClick = false
+		})
 	}
 
 	function handleMapBackgroundClick(event: MapMouseEvent) {
-		handleMapSurfacePoint(event.point)
+		if (ignoreNextMapBackgroundClick) return
+		if (!map) return
+		const regionHits = map.queryRenderedFeatures(event.point, { layers: mapInteractiveLayers() })
+		if (regionHits.length) return
+		if (selectedCountry) {
+			clearCountrySelection()
+		} else if (!tenantScope && mapSelectionActive()) {
+			clearMapSurfaceSelection()
+		}
+	}
+
+	function selectedCountryPopupHtml(country: MapBubbleRow) {
+		const sources = countrySourceBanks(country)
+		const datasets = datasetsForCountry(country)
+		const countryCode = mapRowCountryCode(country)
+		const variantTotal = datasets.length
+			? Math.max(...datasets.map((dataset) => dataset.variants ?? 0))
+			: country.variants
+		const explorerParams = new URLSearchParams()
+		explorerParams.set('country', countryCode)
+		const cohortIds = cohortIdsForCountryCode(countryCode)
+		if (cohortIds.length) explorerParams.set('cohorts', cohortIds.join(','))
+		if (data.forceTenant) explorerParams.set('tenant', data.forceTenant)
+		const countryExplorerHref = `/explore?${explorerParams.toString()}`
+		const primarySource = sources.length === 1 ? sources[0] : null
+		const portalHref = primarySource?.slug
+			? (portalUrlFor(primarySource.slug) ?? `/sources/${primarySource.slug}`)
+			: '/sources'
+		const showPortalAction = !(primarySource?.slug && isCurrentBiobankPortal(primarySource.slug))
+		const popupExternalIcon = `<svg class="popup-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>`
+		const summaryLine = `${fmt(country.samples)} country samples · ${fmt(variantTotal)} dataset variants`
+		const sourceLine =
+			sources.length > 1
+				? `<p class="popup-source-line">${sources.map((source) => source.name).join(' · ')}</p>`
+				: ''
+
+		let datasetBlock = ''
+		if (datasets.length === 1) {
+			const dataset = datasets[0]
+			const meta = datasetPopupMeta(dataset, country)
+			const countrySamples = datasetCountrySampleCount(dataset, country)
+			datasetBlock = `
+				<p class="popup-dataset-line">
+					<strong><span>${dataset.title}</span><b>${fmt(countrySamples || dataset.participants || 0)}</b></strong>
+					${meta ? `<span>${meta}</span>` : ''}
+				</p>
+			`
+		} else if (datasets.length > 1) {
+			datasetBlock = `
+				<ul class="popup-dataset-list">
+					${datasets
+						.map((dataset) => {
+							const meta = datasetPopupMeta(dataset, country)
+							const countrySamples = datasetCountrySampleCount(dataset, country)
+							return `
+								<li>
+									<div class="popup-dataset-row">
+										<span>${dataset.title}</span>
+										<b>${fmt(countrySamples || dataset.participants || 0)}</b>
+									</div>
+									${meta ? `<small>${meta}</small>` : ''}
+								</li>
+							`
+						})
+						.join('')}
+				</ul>
+			`
+		}
+
+		return `
+			<div class="map-selection-popup">
+				<header>
+					<strong><span>${countryFlagEmoji(countryCode)}</span>${country.name}</strong>
+					<p class="popup-summary">${summaryLine}</p>
+				</header>
+				${sourceLine}
+				${datasetBlock}
+				<div class="popup-actions${showPortalAction ? ' popup-actions--dual' : ''}">
+					<a class="popup-action popup-action--primary" href="${countryExplorerHref}"><span>${tx('View in Explorer', 'Ver no Explorer')}</span></a>
+					${showPortalAction ? `<a class="popup-action" href="${portalHref}"><span>${tx('Portal', 'Portal')}</span>${popupExternalIcon}</a>` : ''}
+				</div>
+			</div>
+		`
+	}
+
+	function countryPopupAnchor(country: MapBubbleRow): CountryPopupAnchor | undefined {
+		if (!map) return undefined
+		const width = map.getCanvas().clientWidth
+		if (width > 620) return undefined
+
+		const point = map.project(country.center)
+
+		if (point.x < 64) return 'left'
+		if (point.x > width - 64) return 'right'
+		return undefined
+	}
+
+	function clampCountryPopupToViewport(popup: Popup) {
+		requestAnimationFrame(() => {
+			const content = popup.getElement()?.querySelector<HTMLElement>('.mapboxgl-popup-content')
+			if (!content) return
+			content.style.transform = ''
+
+			const inset = 12
+			const rect = content.getBoundingClientRect()
+			let shift = 0
+			if (rect.left < inset) {
+				shift = inset - rect.left
+			} else if (rect.right > window.innerWidth - inset) {
+				shift = window.innerWidth - inset - rect.right
+			}
+
+			if (shift) content.style.transform = `translateX(${Math.round(shift)}px)`
+		})
+	}
+
+	function syncCountryBubblePopup() {
+		const popupCountry = activeCountryPopupCountry()
+		const popupAnchor = popupCountry ? countryPopupAnchor(popupCountry) : undefined
+		const pinned = Boolean(
+			selectedCountry && popupCountry && selectedCountry.code === popupCountry.code
+		)
+
+		if (!map || !popupCountry || !isMapPage || isVariantRoute || resultsDrawerOpen) {
+			suppressSelectedCountryPopupClose = true
+			selectedCountryPopup?.remove()
+			suppressSelectedCountryPopupClose = false
+			selectedCountryPopup = undefined
+			selectedCountryPopupCode = null
+			selectedCountryPopupAnchor = undefined
+			countryPopupPinned = false
+			return
+		}
+
+		if (
+			selectedCountryPopup?.isOpen() &&
+			selectedCountryPopupCode === popupCountry.code &&
+			countryPopupPinned === pinned &&
+			selectedCountryPopupAnchor === popupAnchor
+		) {
+			selectedCountryPopup.setLngLat(popupCountry.center)
+			selectedCountryPopup.setHTML(selectedCountryPopupHtml(popupCountry))
+			attachCountryPopupHoverHandlers(selectedCountryPopup)
+			clampCountryPopupToViewport(selectedCountryPopup)
+			return
+		}
+
+		suppressSelectedCountryPopupClose = true
+		selectedCountryPopup?.remove()
+		suppressSelectedCountryPopupClose = false
+		selectedCountryPopupCode = null
+		selectedCountryPopupAnchor = undefined
+
+		const popup = new mapboxgl.Popup({
+			closeButton: pinned,
+			closeOnClick: false,
+			closeOnMove: false,
+			offset: pinned ? 20 : 28,
+			maxWidth: '272px',
+			className: 'country-selection-popup',
+			...(popupAnchor ? { anchor: popupAnchor } : {}),
+		})
+		if (!popup) return
+		const countryPopup = popup as Popup
+		countryPopup.setLngLat(popupCountry.center)
+		countryPopup.setHTML(selectedCountryPopupHtml(popupCountry))
+		countryPopup.addTo(map)
+		attachCountryPopupHoverHandlers(countryPopup)
+		clampCountryPopupToViewport(countryPopup)
+		selectedCountryPopup = countryPopup
+		selectedCountryPopupCode = popupCountry.code
+		selectedCountryPopupAnchor = popupAnchor
+		countryPopupPinned = pinned
+		countryPopup.on('close', () => {
+			if (suppressSelectedCountryPopupClose || !pinned) return
+			if (selectedCode === popupCountry.code) {
+				clearCountrySelection()
+			}
+			selectedCountryPopup = undefined
+			selectedCountryPopupCode = null
+			selectedCountryPopupAnchor = undefined
+			countryPopupPinned = false
+		})
 	}
 
 	function resetMapView() {
-		liveExploreStats = null
-		liveExploreStatsKey = ''
-		drawerFiltersOpen = false
-		selectedDatasetSlug = null
-		selectedCode = null
-		countryPickerOpen = false
-		datasetPickerOpen = false
-		exploreDrawerDismissed = false
-		resultsDrawerOpen = false
-		resetExploreQueriesAndFilters()
+		return null
+		// liveExploreStats = null
+		// liveExploreStatsKey = ''
+		// drawerFiltersOpen = false
+		// selectedDatasetSlug = null
+		// selectedDatasetInferredFromSource = false
+		// selectedSourceSlug = null
+		// selectedCode = null
+		// countryPickerOpen = false
+		// datasetPickerOpen = false
+		// exploreDrawerDismissed = false
+		// resultsDrawerOpen = false
+		// resetExploreQueriesAndFilters()
 
-		const params = new URLSearchParams()
-		if (data.forceTenant) params.set('tenant', data.forceTenant)
-		const homeUrl = exploreUrlKey('/', params)
-		lastHydratedExploreUrl = homeUrl
-		selfUrlSync = true
+		// const params = new URLSearchParams()
+		// if (data.forceTenant) params.set('tenant', data.forceTenant)
+		// const homeUrl = exploreUrlKey('/', params)
+		// lastHydratedExploreUrl = homeUrl
+		// selfUrlSync = true
 
-		if (isVariantRoute) {
-			void goto(homeUrl, { replaceState: true, noScroll: true, keepFocus: true })
-		} else {
-			try {
-				replaceState(homeUrl, {})
-			} catch {
-				void goto(homeUrl, { replaceState: true, noScroll: true, keepFocus: true })
-			}
-		}
+		// if (isVariantRoute) {
+		// 	void goto(homeUrl, { replaceState: true, noScroll: true, keepFocus: true })
+		// } else {
+		// 	try {
+		// 		replaceState(homeUrl, {})
+		// 	} catch {
+		// 		void goto(homeUrl, { replaceState: true, noScroll: true, keepFocus: true })
+		// 	}
+		// }
 
-		syncMapState({ country: null, dataset: null })
+		// syncMapState({ country: null, dataset: null })
 	}
 
 	function handleResetView() {
-		resetMapView()
+		hoverCountryCode = null
+		cancelHoverCountryDismiss()
+		countryPopupPointerInside = false
+		clearCountrySelection()
+		suppressSelectedCountryPopupClose = true
+		selectedCountryPopup?.remove()
+		suppressSelectedCountryPopupClose = false
+		selectedCountryPopup = undefined
+		selectedCountryPopupCode = null
 	}
 
 	function applyMapHighlight(
@@ -1920,28 +2575,30 @@
 			['!', selectionHighlightExpression],
 		])
 
-		const focusExpression: ExpressionSpecification = [
-			'case',
-			['in', ['get', 'code'], ['literal', focusCodes]],
-			0.98,
-			hasSelection ? 0.12 : 0.98,
-		]
-		const haloExpression: ExpressionSpecification = [
-			'case',
-			['in', ['get', 'code'], ['literal', focusCodes]],
-			0.2,
-			hasSelection ? 0.03 : 0.2,
-		]
-		map.setPaintProperty('collection-country-bubbles', 'circle-radius', bubbleRadiusExpression)
-		map.setPaintProperty(
-			'collection-country-bubble-halo',
-			'circle-radius',
-			bubbleHaloRadiusExpression
-		)
-		map.setLayoutProperty('collection-country-labels', 'text-size', bubbleLabelSizeExpression)
-		map.setPaintProperty('collection-country-bubbles', 'circle-opacity', focusExpression)
-		map.setPaintProperty('collection-country-bubble-halo', 'circle-opacity', haloExpression)
-		map.setPaintProperty('collection-country-labels', 'text-opacity', 1)
+		if (!useZoneMap) {
+			const focusExpression: ExpressionSpecification = [
+				'case',
+				['in', ['get', 'code'], ['literal', focusCodes]],
+				0.98,
+				hasSelection ? 0.12 : 0.98,
+			]
+			const haloExpression: ExpressionSpecification = [
+				'case',
+				['in', ['get', 'code'], ['literal', focusCodes]],
+				0.2,
+				hasSelection ? 0.03 : 0.2,
+			]
+			map.setPaintProperty('collection-country-bubbles', 'circle-radius', bubbleRadiusExpression)
+			map.setPaintProperty(
+				'collection-country-bubble-halo',
+				'circle-radius',
+				bubbleHaloRadiusExpression
+			)
+			map.setLayoutProperty('collection-country-labels', 'text-size', bubbleLabelSizeExpression)
+			map.setPaintProperty('collection-country-bubbles', 'circle-opacity', focusExpression)
+			map.setPaintProperty('collection-country-bubble-halo', 'circle-opacity', haloExpression)
+			map.setPaintProperty('collection-country-labels', 'text-opacity', 1)
+		}
 	}
 
 	function syncMapState(
@@ -1952,35 +2609,142 @@
 		const source = map.getSource('collection-countries') as GeoJSONSource
 		source.setData(collectionGeoJson)
 
-		const selectedHighlightCodes = selection.country
+		const selectedFocusCodes = selection.country
 			? [selection.country.code]
+			: selection.dataset
+				? countryCodesForDataset(selection.dataset).includes('BR') && useZoneMap
+					? mapBubbleRows.map((row) => row.code)
+					: countryCodesForDataset(selection.dataset)
+				: useZoneMap
+					? []
+					: mapBubbleRows.map((row) => row.code)
+		const selectedCountryHighlightCodes = selection.country
+			? [mapRowCountryCode(selection.country)]
 			: selection.dataset
 				? countryCodesForDataset(selection.dataset).filter((code) =>
 						countryRows.some((country) => country.code === code)
 					)
 				: countryRows.map((country) => country.code)
-		const selectedFocusCodes = selection.country
-			? [selection.country.code]
-			: selection.dataset
-				? countryCodesForDataset(selection.dataset)
-				: countryRows.map((country) => country.code)
 		const hasSelection = Boolean(selection.country || selection.dataset)
-		applyMapHighlight(selectedHighlightCodes, selectedFocusCodes, hasSelection)
+		applyMapHighlight(selectedCountryHighlightCodes, selectedFocusCodes, hasSelection)
+		updateZoneHighlight()
 	}
 
 	function clearCountrySelection() {
 		if (!selectedCode) return
 		selectedCode = null
-		syncResultsUrl(resultsDrawerOpen, true)
+		zoneHighlightKey = ''
+		updateZoneHighlight()
 	}
 
 	function releaseMapScopeForVariantExplore() {
 		if (!selectedCode && !selectedDatasetSlug) return
 		selectedCode = null
 		selectedDatasetSlug = null
+		selectedDatasetInferredFromSource = false
+		selectedSourceSlug = null
 	}
 
 	function createStyle(): StyleSpecification {
+		const useBrazilStates = useZoneMap
+		const zoneLayers: NonNullable<StyleSpecification['layers']> = useBrazilStates
+			? [
+					{
+						id: 'region-zone-fill',
+						type: 'fill',
+						source: 'region-zones',
+						paint: {
+							'fill-color': openMinedMapPalette[3],
+							'fill-opacity': 0.3,
+						},
+					},
+					{
+						id: 'region-zone-outline',
+						type: 'line',
+						source: 'region-zones',
+						paint: {
+							'line-color': '#ffffff',
+							'line-opacity': 0.55,
+							'line-width': ['interpolate', ['linear'], ['zoom'], 2, 0.4, 5, 0.9, 8, 1.4],
+						},
+					},
+					{
+						id: 'region-zone-highlight',
+						type: 'fill',
+						source: 'region-zones',
+						filter: EMPTY_ZONE_FILTER,
+						paint: {
+							'fill-color': '#2eccaa',
+							'fill-opacity': 0.72,
+						},
+					},
+					{
+						id: 'region-zone-highlight-outline',
+						type: 'line',
+						source: 'region-zones',
+						filter: EMPTY_ZONE_FILTER,
+						paint: {
+							'line-color': '#ffffff',
+							'line-width': 2.2,
+							'line-opacity': 0.95,
+						},
+					},
+				]
+			: []
+		const bubbleLayers: NonNullable<StyleSpecification['layers']> = useBrazilStates
+			? []
+			: [
+					{
+						id: 'collection-country-bubble-halo',
+						type: 'circle',
+						source: 'collection-countries',
+						layout: {
+							'circle-sort-key': bubbleSortKey,
+						},
+						paint: {
+							'circle-color': bubbleColorExpression,
+							'circle-opacity': 0.2,
+							'circle-radius': bubbleHaloRadiusExpression,
+						},
+					},
+					{
+						id: 'collection-country-bubbles',
+						type: 'circle',
+						source: 'collection-countries',
+						layout: {
+							'circle-sort-key': bubbleSortKey,
+						},
+						paint: {
+							'circle-color': bubbleColorExpression,
+							'circle-opacity': 0.98,
+							'circle-stroke-width': 0,
+							'circle-radius': bubbleRadiusExpression,
+						},
+					},
+					{
+						id: 'collection-country-labels',
+						type: 'symbol',
+						source: 'collection-countries',
+						layout: {
+							'symbol-sort-key': bubbleSortKey,
+							'text-field': ['get', 'label'],
+							'text-size': bubbleLabelSizeExpression,
+							'text-font': ['DIN Offc Pro Medium', 'Arial Unicode MS Bold'],
+							'text-anchor': 'center',
+							'text-offset': [0, 0],
+							'text-allow-overlap': true,
+							'text-ignore-placement': true,
+							'text-optional': false,
+						},
+						paint: {
+							'text-color': '#353243',
+							'text-halo-color': 'rgba(255, 255, 255, 0.88)',
+							'text-halo-width': 1,
+							'text-opacity': 1,
+						},
+					},
+				]
+
 		return {
 			version: 8,
 			name: 'BioVault dashboard prototype',
@@ -2007,6 +2771,15 @@
 					type: 'geojson',
 					data: collectionGeoJson,
 				},
+				...(useBrazilStates
+					? {
+							'region-zones': {
+								type: 'geojson',
+								data: brazilStatesUrl,
+								promoteId: 'sigla',
+							},
+						}
+					: {}),
 			},
 			sprite: 'mapbox://sprites/mapbox/standard',
 			glyphs: 'mapbox://fonts/mapbox/{fontstack}/{range}.pbf',
@@ -2074,55 +2847,8 @@
 						'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.25, 5, 0.8],
 					},
 				},
-				{
-					id: 'collection-country-bubble-halo',
-					type: 'circle',
-					source: 'collection-countries',
-					layout: {
-						'circle-sort-key': bubbleSortKey,
-					},
-					paint: {
-						'circle-color': bubbleColorExpression,
-						'circle-opacity': 0.2,
-						'circle-radius': bubbleHaloRadiusExpression,
-					},
-				},
-				{
-					id: 'collection-country-bubbles',
-					type: 'circle',
-					source: 'collection-countries',
-					layout: {
-						'circle-sort-key': bubbleSortKey,
-					},
-					paint: {
-						'circle-color': bubbleColorExpression,
-						'circle-opacity': 0.98,
-						'circle-stroke-width': 0,
-						'circle-radius': bubbleRadiusExpression,
-					},
-				},
-				{
-					id: 'collection-country-labels',
-					type: 'symbol',
-					source: 'collection-countries',
-					layout: {
-						'symbol-sort-key': bubbleSortKey,
-						'text-field': ['get', 'label'],
-						'text-size': bubbleLabelSizeExpression,
-						'text-font': ['DIN Offc Pro Medium', 'Arial Unicode MS Bold'],
-						'text-anchor': 'center',
-						'text-offset': [0, 0],
-						'text-allow-overlap': true,
-						'text-ignore-placement': true,
-						'text-optional': false,
-					},
-					paint: {
-						'text-color': '#353243',
-						'text-halo-color': 'rgba(255, 255, 255, 0.88)',
-						'text-halo-width': 1,
-						'text-opacity': 1,
-					},
-				},
+				...zoneLayers,
+				...bubbleLayers,
 			],
 		}
 	}
@@ -2132,6 +2858,7 @@
 		options: { keepDataset?: boolean; keepSearch?: boolean } = {}
 	) {
 		selectedCode = country.code
+		selectedSourceSlug = null
 		if (!options.keepSearch) {
 			searchQuery = ''
 			appliedSearchQuery = ''
@@ -2141,33 +2868,45 @@
 			const datasetCodes = selectedDataset ? countryCodesForDataset(selectedDataset) : []
 			if (!datasetCodes.includes(country.code)) {
 				selectedDatasetSlug = null
+				selectedDatasetInferredFromSource = false
+				selectedSourceSlug = null
 			}
 		}
-		openResultsDrawer()
 	}
 
 	const initMap: Action<HTMLDivElement> = (container) => {
+		const initialTenant = page.data.tenant
+		const initialUseZoneMap = initialTenant.mapProfile?.regionMode === 'zones'
+		const initialZoneCodeProperty = initialTenant.mapProfile?.zoneCodeProperty ?? 'code'
+		const initialInteractiveLayers = initialUseZoneMap
+			? [...MAP_ZONE_LAYERS]
+			: [...MAP_BUBBLE_LAYERS]
+		const initialCenter = initialTenant.scope ? mapboxCenter(initialTenant) : DEFAULT_MAP_CENTER
+		const initialZoom = initialTenant.scope ? mapboxZoom(initialTenant) : DEFAULT_MAP_ZOOM
+		const initialBounds = mapboxBounds(initialTenant)
+		const initialMinZoom = initialTenant.mapProfile?.minZoom ?? 2
+
 		map = new mapboxgl.Map({
 			container,
 			style: createStyle(),
-			center: DEFAULT_MAP_CENTER,
-			zoom: DEFAULT_MAP_ZOOM,
-			minZoom: 2,
+			center: initialCenter,
+			zoom: initialZoom,
+			minZoom: initialMinZoom,
 			fadeDuration: 0,
-			// maxBounds: [
-			// 	[-180, -58],
-			// 	[180, 78],
-			// ],
-			// maxBounds: [
-			// 	[-180, -58],
-			// 	[180, 78],
-			// ],
 			renderWorldCopies: true,
+			...(initialBounds ? { maxBounds: initialBounds } : {}),
 		})
+		if (initialTenant.scope) map.setMaxBounds(WORLD_MAP_BOUNDS)
 		map.scrollZoom.setZoomRate(SCROLL_ZOOM_RATE)
 		map.scrollZoom.setWheelZoomRate(WHEEL_ZOOM_RATE)
 
-		const resizeMap = () => map?.resize()
+		const resizeMap = () => {
+			map?.resize()
+			syncCountryBubblePopup()
+			if (map && mapStyleLoaded && tenantScope && portalHomeMapView && mapBubbleRows.length) {
+				fitMapToCountryRows(mapBubbleRows, { animate: false, padding: false })
+			}
+		}
 		const resizeObserver = new ResizeObserver(resizeMap)
 		resizeObserver.observe(container)
 		requestAnimationFrame(resizeMap)
@@ -2182,46 +2921,75 @@
 			map?.setRain(null)
 			mapStyleLoaded = true
 			syncMapState()
-			applyMapCameraForSelection({ animate: false })
+			if (initialUseZoneMap) {
+				map?.on('sourcedata', (event) => {
+					if (event.sourceId !== 'region-zones' || !event.isSourceLoaded) return
+					zoneHighlightKey = ''
+					updateZoneHighlight()
+				})
+			}
+			if (page.url.pathname === '/' && !hasExploreQueryContextFromParams(page.url.searchParams)) {
+				resetDefaultMapCamera({ animate: true })
+			} else {
+				applyMapCameraForSelection({ animate: true })
+			}
 		})
 
-		map.on('click', 'collection-country-bubbles', (event) => {
+		map.on('click', initialInteractiveLayers, (event) => {
 			event.originalEvent.stopPropagation()
-			const code = event.features?.[0]?.properties?.code
-			const country = countryRows.find((item) => item.code === code)
-			if (country) handleMapCountryBubbleClick(country)
+			const properties = event.features?.[0]?.properties as Record<string, unknown> | undefined
+			const code = initialUseZoneMap
+				? (typeof properties?.[initialZoneCodeProperty] === 'string'
+						? (properties[initialZoneCodeProperty] as string)
+						: null)
+				: (typeof properties?.code === 'string' ? properties.code : null)
+			const country = code ? mapBubbleRows.find((item) => item.code === code) : undefined
+			if (country) handleMapRegionClick(country)
 		})
 
 		map.on('click', (event) => {
 			handleMapBackgroundClick(event)
 		})
 
-		map.on('mouseenter', 'collection-country-bubbles', (event) => {
-			if (!map) return
-			map.getCanvas().style.cursor = 'pointer'
-			const feature = event.features?.[0]
-			const coordinates = (feature?.geometry as Point | undefined)?.coordinates
-			if (!feature?.properties || !coordinates) return
-			popup?.remove()
-			popup = new mapboxgl.Popup({ closeButton: false, closeOnClick: false, offset: 16 })
-				.setLngLat(coordinates as [number, number])
-				.setHTML(
-					`<strong>${feature.properties.name}</strong><br>${fmt(feature.properties.samples)} samples<br>${feature.properties.sources}`
-				)
-				.addTo(map)
-		})
+		let zonePointerMove: ((event: MapMouseEvent) => void) | undefined
+		if (initialUseZoneMap) {
+			zonePointerMove = (event) => handleZonePointerMove(event)
+			map.on('mousemove', zonePointerMove)
+		}
 
-		map.on('mouseleave', 'collection-country-bubbles', () => {
-			if (map) map.getCanvas().style.cursor = ''
-			popup?.remove()
-			popup = undefined
-		})
+		if (!initialUseZoneMap) {
+			for (const layer of initialInteractiveLayers) {
+				map.on('mouseenter', layer, (event) => {
+					if (!map) return
+					map.getCanvas().style.cursor = 'pointer'
+					const properties = event.features?.[0]?.properties as Record<string, unknown> | undefined
+					const code =
+						typeof properties?.code === 'string' ? (properties.code as string) : undefined
+					if (!code || selectedCountry?.code === code) return
+					cancelHoverCountryDismiss()
+					countryPopupPointerInside = false
+					hoverCountryCode = code
+				})
+
+				map.on('mouseleave', layer, () => {
+					if (map) map.getCanvas().style.cursor = ''
+					if (!selectedCountry) scheduleHoverCountryDismiss()
+				})
+			}
+		}
 
 		return {
 			destroy() {
 				window.removeEventListener('resize', resizeMap)
 				resizeObserver.disconnect()
-				popup?.remove()
+				if (zonePointerMove) map?.off('mousemove', zonePointerMove)
+				cancelZoneHoverClear()
+				hoverCountryCode = null
+				cancelHoverCountryDismiss()
+				countryPopupPointerInside = false
+				suppressSelectedCountryPopupClose = true
+				selectedCountryPopup?.remove()
+				suppressSelectedCountryPopupClose = false
 				map?.remove()
 				map = undefined
 			},
@@ -2229,7 +2997,13 @@
 	}
 
 	onDestroy(() => {
-		popup?.remove()
+		cancelZoneHoverClear()
+		hoverCountryCode = null
+		cancelHoverCountryDismiss()
+		countryPopupPointerInside = false
+		suppressSelectedCountryPopupClose = true
+		selectedCountryPopup?.remove()
+		suppressSelectedCountryPopupClose = false
 		map?.remove()
 		map = undefined
 		mapStyleLoaded = false
@@ -2241,20 +3015,44 @@
 		bubbleFocusCodes
 		bubbleStyleVersion
 		selectedDatasetSlug
+		selectedSourceSlug
 		selectedCode
+		hoverCountryCode
 		syncMapState()
+	})
+
+	$effect(() => {
+		selectedCode
+		hoverCountryCode
+		mapBubbleRows.length
+		resultsDrawerOpen
+		isVariantRoute
+		isMapPage
+		syncCountryBubblePopup()
+	})
+
+	$effect(() => {
+		if (!mapStyleLoaded || isVariantRoute) return
+		const isCleanMapRoute =
+			page.url.pathname === '/' && !hasExploreQueryContextFromParams(page.url.searchParams)
+		if (!isCleanMapRoute) return
+		const resetKey = `${page.url.pathname}?${page.url.searchParams.toString()}`
+		if (lastDefaultCameraResetKey === resetKey) return
+		lastDefaultCameraResetKey = resetKey
+		resetDefaultMapCamera({ animate: true })
 	})
 
 	$effect(() => {
 		if (!filterStateHydrated || !mapStyleLoaded || isVariantRoute) return
 		selectedCode
 		selectedDatasetSlug
-		resultsDrawerOpen
+		selectedSourceSlug
+		mapBubbleRows.length
 		applyMapCameraForSelection()
 	})
 
 	$effect(() => {
-		if (!filterStateHydrated || !mapStyleLoaded || isVariantRoute) return
+		if (!filterStateHydrated || !mapStyleLoaded || !isExplorePage || isVariantRoute) return
 		if (selectedCode || selectedDatasetSlug) return
 		const query = appliedSearchQuery.trim() || searchQuery.trim()
 		if (!query || shouldRunVariantLiveSearch(query)) return
@@ -2263,15 +3061,16 @@
 
 	$effect(() => {
 		if (!selectedCode) return
-		if (countryRows.some((country) => country.code === selectedCode)) return
+		if (mapBubbleRows.some((country) => country.code === selectedCode)) return
 		selectedCode = null
-		syncResultsUrl(resultsDrawerOpen, true)
 	})
 
 	$effect(() => {
 		if (!selectedDatasetSlug) return
 		if (displayDatasets.some((dataset) => dataset.slug === selectedDatasetSlug)) return
 		selectedDatasetSlug = null
+		selectedDatasetInferredFromSource = false
+		selectedSourceSlug = null
 		syncResultsUrl(resultsDrawerOpen, true)
 	})
 </script>
@@ -2279,452 +3078,16 @@
 <svelte:head>
 	<title>{data.tenant.name} · {data.tenant.product}</title>
 	<meta name="description" content={data.tenant.tagline} />
-	<link rel="preconnect" href="https://fonts.googleapis.com" />
-	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
-	<link
-		href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Rubik:wght@400;600;700&display=swap"
-		rel="stylesheet"
-	/>
 </svelte:head>
 
-{#if data.tenant.slug === 'biovault'}
-	<div class="dashboard-shell">
-		<div class="map" use:initMap></div>
+<div class="dashboard-shell" class:map-mode={isMapPage}>
+			{#if isMapPage}
+				<div class="map" use:initMap></div>
 
-		<form
-			method="GET"
-			action="/"
-			class="global-search"
-			class:dropdown-open={countryPickerOpen || datasetPickerOpen}
-			onsubmit={handleSearchSubmit}
-		>
-			{#if selectedCode}<input type="hidden" name="country" value={selectedCode} />{/if}
-			{#if selectedDatasetSlug}<input type="hidden" name="dataset" value={selectedDatasetSlug} />{/if}
-			{#if data.forceTenant}<input type="hidden" name="tenant" value={data.forceTenant} />{/if}
-			<div class="search-cluster">
-				<div class="country-picker">
-					<button
-						type="button"
-						class="country-picker-trigger"
-						class:scoped={!!selectedCountry}
-						aria-expanded={countryPickerOpen}
-						onclick={() => {
-							datasetPickerOpen = false
-							countryPickerOpen = !countryPickerOpen
-						}}
-					>
-						{#if selectedCountry}
-							<span class="picker-flag" aria-hidden="true">{countryFlagEmoji(selectedCountry.code)}</span>
-							<span>{tx('In', 'Em')}: {selectedCountry.name}</span>
-						{:else}
-							<span class="picker-flag" aria-hidden="true">🌐</span>
-							<span>{tx('All countries', 'Todos os países')}</span>
-							<strong>{countryRows.length}</strong>
-						{/if}
-					</button>
-					{#if countryPickerOpen}
-						<div class="country-picker-menu">
-							<button
-								type="button"
-								class="country-clear"
-								class:active={!selectedCode}
-								onclick={pickAllCountries}
-							>
-								<span class="picker-flag" aria-hidden="true">🌐</span>
-								<span class="country-main">
-									<span>{tx('All countries', 'Todos os países')}</span>
-									<small>{tx('Global view', 'Visão global')}</small>
-								</span>
-								<span class="country-count">
-									<strong>{countryRows.length}</strong>
-									<small>{tx('countries', 'países')}</small>
-								</span>
-							</button>
-							{#each countryRows as country}
-								<button
-									type="button"
-									class:active={country.code === selectedCode}
-									onclick={() => pickCountry(country)}
-								>
-									<span class="picker-flag" aria-hidden="true">{countryFlagEmoji(country.code)}</span>
-									<span class="country-main">
-										<span>{country.name}</span>
-										<small>{country.sources.slice(0, 2).join(' + ')}</small>
-									</span>
-									<span class="country-count">
-										<strong>{fmt(country.samples)}</strong>
-										<small>{country.code}</small>
-									</span>
-								</button>
-							{/each}
-						</div>
-					{/if}
-				</div>
-				{#if displayDatasets.length > 1}
-					<div class="dataset-picker">
-						<button
-							type="button"
-							class="dataset-picker-trigger"
-							class:scoped={!!selectedDataset}
-							aria-expanded={datasetPickerOpen}
-							aria-label={selectedDataset?.title ?? tx('All databases', 'Todos os bancos de dados')}
-							onclick={() => {
-								countryPickerOpen = false
-								datasetPickerOpen = !datasetPickerOpen
-							}}
-						>
-							{#if selectedDataset}
-								{@const tenant = tenantFor(selectedDataset.biobankSlug)}
-								<span class="dataset-picker-label">{tx('In', 'Em')}:</span>
-								<span class="picker-logo dataset-logo" aria-hidden="true">
-									{#if tenant?.logoImg}
-										<img src={tenant.logoImg} alt="" />
-									{:else}
-										<span>{tenant?.logoEmoji ?? 'DB'}</span>
-									{/if}
-								</span>
-							{:else}
-								<span>{tx('All databases', 'Todos os bancos de dados')}</span>
-								<strong>{displayDatasets.length}</strong>
-							{/if}
-						</button>
-						{#if datasetPickerOpen}
-							<div class="dataset-picker-menu">
-								<button
-									type="button"
-									class="dataset-clear"
-									class:active={!selectedDatasetSlug}
-									onclick={pickAllDatabases}
-								>
-									<span class="picker-logo dataset-logo" aria-hidden="true">
-										<span>DB</span>
-									</span>
-									<span class="dataset-main">
-										<span>{tx('All databases', 'Todos os bancos de dados')}</span>
-										<small>{tx('All sources', 'Todas as fontes')}</small>
-									</span>
-									<span class="dataset-count">
-										<strong>{displayDatasets.length}</strong>
-										<small>{tx('databases', 'bancos')}</small>
-									</span>
-								</button>
-								{#each displayDatasets as dataset}
-									{@const tenant = tenantFor(dataset.biobankSlug)}
-									<button
-										type="button"
-										class:active={dataset.slug === selectedDatasetSlug}
-										onclick={() => pickDataset(dataset)}
-									>
-										<span class="picker-logo dataset-logo" aria-hidden="true">
-											{#if tenant?.logoImg}
-												<img src={tenant.logoImg} alt="" />
-											{:else}
-												<span>{tenant?.logoEmoji ?? 'DB'}</span>
-											{/if}
-										</span>
-										<span class="dataset-main">
-											<span>{dataset.title}</span>
-											<small>{dataset.assay ?? dataset.biobankSlug ?? ''}</small>
-										</span>
-										<span class="dataset-count">
-											<strong>{fmt(dataset.participants ?? 0)}</strong>
-											<small>{tx('samples', 'amostras')}</small>
-										</span>
-									</button>
-								{/each}
-							</div>
-						{/if}
-					</div>
-				{/if}
-				<input
-					bind:value={searchQuery}
-					list="dashboard-search-suggestions"
-					name="q"
-					placeholder={selectedCountry
-						? tx('Search gene, rsID, or position', 'Pesquisar gene, rsID ou posição')
-						: tx(
-								'Search country, cohort, gene, rsID, or position',
-								'Pesquisar país, coorte, gene, rsID ou posição'
-							)}
-				/>
-				<datalist id="dashboard-search-suggestions">
-					{#each countryRows as country}
-						<option value={country.name}
-							>{country.code} · {fmt(country.samples)} {tx('samples', 'amostras')}</option
-						>
-					{/each}
-					{#each directPopulations as population}
-						<option value={population.name}>{population.biobankName}</option>
-					{/each}
-					<option value="Caribbean">{tx('Region', 'Região')}</option>
-					<option value="BRCA1">{tx('Gene', 'Gene')}</option>
-					<option value="rs1050828">rsID</option>
-					<option value="chr17:43078520">{tx('Position', 'Posição')}</option>
-				</datalist>
-				<button class="search-submit">{tx('Explore', 'Explorar')}</button>
-			</div>
-			{#if selectedCountry || selectedDataset || searchQuery || mapFilterCount || resultsDrawerOpen}
-				<button type="button" class="map-reset" onclick={handleResetView}
-					>{tx('Reset', 'Redefinir')}</button
-				>
-			{/if}
-		</form>
-
-		<div class="floating-title">
-			<div class="floating-title-row">
-				<img src="/biovault-logo.png" alt="" class="floating-title-logo" aria-hidden="true" />
-				<div class="floating-title-copy">
-					<h1>{tx('Global allele-frequency network', 'Rede global de frequência alélica')}</h1>
-					{#if selectedDataset}
-						<p>
-							{#if isBipmedDataset(selectedDataset)}
-								{selectedDataset.title} · {fmt(BRAZIL_STATES.length)}
-								{tx('states', 'estados')} · {fmt(selectedDataset.participants)}
-								{tx('participants', 'participantes')}
-							{:else if isPgpDataset(selectedDataset)}
-								{selectedDataset.title} · {tx('United States', 'Estados Unidos')} · {fmt(
-									selectedDataset.participants
-								)}
-								{tx('participants', 'participantes')}
-							{:else}
-								{selectedDataset.title} · {fmt(scopedCountryRows.length)}
-								{tx('countries', 'países')} · {fmt(selectedDataset.participants)}
-								{tx('participants', 'participantes')}
-							{/if}
-						</p>
-					{:else}
-						<p>
-							{fmt(dashboard.totals.participants)} {tx('participants across', 'participantes em')}
-							{countryRows.length} {tx('countries', 'países')}
-						</p>
-					{/if}
-				</div>
-			</div>
-		</div>
-
-		<nav class="top-nav" aria-label={tx('Dashboard navigation', 'Navegação do painel')}>
-			<a href="/about" class:active={siteModalRoute === '/about'}>{tx('About', 'Sobre')}</a>
-			<a href="/contact" class:active={siteModalRoute === '/contact'}>{tx('Contact', 'Contato')}</a>
-			<a href="/api" class:active={siteModalRoute === '/api'}>API</a>
-			<!-- Language picker hidden for now.
-		<label class="language-switcher" aria-label={tx('Language', 'Idioma')}>
-			<select bind:value={$lang}>
-				{#each LANGS as option}
-					<option value={option.code}>{option.flag} {option.code.toUpperCase()}</option>
-				{/each}
-			</select>
-		</label>
-		-->
-		</nav>
-
-		<Drawer.Root
-			bind:open={resultsDrawerOpen}
-			onOpenChange={(open) => {
-				if (open) return
-				if (isVariantRoute) {
-					void goto(mapResultsPath, { noScroll: true, keepFocus: true })
-					return
-				}
-				closeResultsDrawer()
-			}}
-			shouldScaleBackground={false}
-			modal={false}
-			direction="right"
-		>
-			<Drawer.Content
-				class="map-results-drawer"
-				aria-label={tx('Variant results', 'Resultados de variantes')}
-				interactOutsideBehavior="ignore"
-				trapFocus={false}
-			>
-				<div class="map-results-body">
-					{#if isVariantRoute && variantDetailData}
-						<VariantDetailPage
-							data={variantDetailData}
-							part="tables"
-							exploreReturnHref={mapResultsPath}
-							onExploreNavigate={openExploreFromVariant}
-						/>
-					{:else if variantRouteError}
-						<div class="variant-route-error">
-							<p>{variantRouteError}</p>
-							<button type="button" onclick={() => void goto(mapResultsPath, { noScroll: true, keepFocus: true })}>
-								{tx('Back to results', 'Voltar aos resultados')}
-							</button>
-						</div>
-					{:else if resultsDrawerOpen}
-						{#key resultsDrawerKey}
-							<VariantBrowser
-								forceTenant={data.forceTenant}
-								scoped={!!data.tenant.scope}
-								options={filterBiobankOptions}
-								populations={filterPopulationOptions}
-								initialParams={activeResultsQueryString}
-								syncFromParentParams={true}
-								syncToUrl={false}
-								showApiBar={false}
-								showTitle={false}
-								embedded={true}
-								onParamsChange={(params) => (resultsTableQueryString = params)}
-								onVariantNavigate={openVariantFromDrawer}
-								onShareQuery={copyShareUrl}
-								shareQueryCopied={shareCopied}
-								shareQueryLabel={tx('Share this query!', 'Compartilhar esta consulta!')}
-								shareQueryCopiedLabel={tx('Copied!', 'Copiado!')}
-								filtersOpen={drawerFiltersOpen}
-								filterCount={mapFilterCount}
-								filterLabel={tx('Filters', 'Filtros')}
-								onFilterToggle={() => (drawerFiltersOpen = !drawerFiltersOpen)}
-								filterPanel={drawerFilterPanel}
-								showGenotypeCounts={data.showGenotypeCounts}
-								display={data.display}
-								title={tx('Variants', 'Variantes')}
-								subtitle={resultsContextTitle}
-							/>
-						{/key}
-					{/if}
-				</div>
-			</Drawer.Content>
-		</Drawer.Root>
-
-		{#if showVariantLeftPanels && variantDetailData}
-			<VariantDetailPage
-				data={variantDetailData}
-				part="panel"
-				exploreReturnHref={mapResultsPath}
-				onExploreNavigate={openExploreFromVariant}
-			/>
-		{/if}
-
-		{#if showExploreLeftPanels}
-			<aside
-				class="explore-side-panel explore-datasets-side-panel"
-				aria-label={tx('Databases', 'Bancos de dados')}
-			>
-				<div class="panel-heading detail-heading country-panel-header">
-					<div class="detail-heading-main country-panel-titleblock">
-						<h2>{tx('Databases', 'Bancos de dados')}</h2>
-						<p class="detail-context">
-							{displayDatasets.length}
-							{tx('databases', 'bancos')}
-						</p>
-					</div>
-				</div>
-
-				<div class="explore-datasets-scroll explore-side-panel-scroll">
-					{#each displayDatasets as dataset}
-						{@const tenant = tenantFor(dataset.biobankSlug)}
-						<button
-							type="button"
-							class="database-row"
-							class:active={selectedDatasetSlug === dataset.slug}
-							onclick={() => selectDataset(dataset)}
-						>
-							<span class="dataset-logo" aria-hidden="true">
-								{#if tenant?.logoImg}
-									<img src={tenant.logoImg} alt="" />
-								{:else}
-									<span>{tenant?.logoEmoji ?? 'DB'}</span>
-								{/if}
-							</span>
-							<span class="database-row-main">
-								<span class="database-row-title">{dataset.title}</span>
-								<small
-									>{dataset.release} · {fmt(dataset.participants)}
-									{tx('participants', 'participantes')} · {dataset.assay}</small
-								>
-								{#if dataset.description}
-									<span class="database-row-desc">{dataset.description}</span>
-								{/if}
-							</span>
-						</button>
-					{/each}
-					<a href="/contact" class="dataset-cta"
-						>{tx('Want to contribute data?', 'Quer contribuir com dados?')}
-						<strong>{tx('Get in touch', 'Entre em contato')}</strong></a
-					>
-				</div>
-			</aside>
-		{/if}
-
-		{#if showMapVariantPanel}
-			<section
-				class="variant-mix explore-variant-panel explore-variant-panel-centered"
-				aria-label={tx('Variants', 'Variantes')}
-			>
-				<div class="variant-head">
-					<h2>{tx('Variants', 'Variantes')}</h2>
-					<strong>{fmt(variantMixTotal)}</strong>
-				</div>
-
-				<div class="variant-bar" aria-hidden="true">
-					{#each variantClassRows as row (row.key)}
-						<span style={`width:${pct(row.count, variantMixTotal)}; background:${row.color}`}></span>
-					{/each}
-				</div>
-				<div class="variant-key">
-					{#each variantClassRows as row (row.key)}
-						<div class="variant-key-slot">
-							<div class="variant-key-item">
-								<span class="variant-key-label">
-									<span class="variant-swatch" style:background-color={row.color}></span>
-									{row.label}
-								</span>
-								<strong>{fmt(row.count)}</strong>
-							</div>
-						</div>
-					{/each}
-				</div>
-			</section>
-		{/if}
-
-			<!-- Temporarily hidden per design pass.
-			<section class="bottom-panel explore-datasets-panel" aria-label={tx('Databases', 'Bancos de dados')}>
-				<div class="panel-heading dataset-heading">
-					<h2>{tx('Databases', 'Bancos de dados')}</h2>
-					<span class="dataset-count">
-						<strong>{displayDatasets.length}</strong>
-						<small>{tx('databases', 'bancos')}</small>
-					</span>
-				</div>
-
-				<div class="database-scroll">
-					{#each displayDatasets as dataset}
-						{@const tenant = tenantFor(dataset.biobankSlug)}
-						<button
-							type="button"
-							class="database-row"
-							class:active={selectedDatasetSlug === dataset.slug}
-							onclick={() => selectDataset(dataset)}
-						>
-							<span class="dataset-logo" aria-hidden="true">
-								{#if tenant?.logoImg}
-									<img src={tenant.logoImg} alt="" />
-								{:else}
-									<span>{tenant?.logoEmoji ?? 'DB'}</span>
-								{/if}
-							</span>
-							<span class="database-row-main">
-								<span class="database-row-title">{dataset.title}</span>
-								<small
-									>{dataset.release} · {fmt(dataset.participants)}
-									{tx('participants', 'participantes')} · {dataset.assay}</small
-								>
-							</span>
-						</button>
-					{/each}
-					<a href="/contact" class="dataset-cta"
-						>{tx('Want to contribute data?', 'Quer contribuir com dados?')}
-						<strong>{tx('Get in touch', 'Entre em contato')}</strong></a
-					>
-				</div>
-			</section>
-			-->
-
-		{#if isHome}
-			{#if selectedCountry || selectedDataset}
-				<aside
-					class="country-panel"
+					<!-- Bottom-left detail panel hidden.
+					{#if selectedDataset || selectedSource}
+						<aside
+						class="country-panel"
 					class:drawer-open={resultsDrawerOpen}
 					aria-label={tx('Countries by sample count', 'Países por número de amostras')}
 				>
@@ -2750,9 +3113,14 @@
 									>
 									{selectedCountry.name}
 								</h2>
-								{#if countryContextLine(selectedCountry)}
-									<p class="detail-context">{countryContextLine(selectedCountry)}</p>
-								{/if}
+								<p class="detail-context">
+									{fmt(selectedCountrySources.length)}
+									{selectedCountrySources.length === 1 ? tx('source', 'fonte') : tx('sources', 'fontes')}
+									· {fmt(selectedCountryDatasets.length)}
+									{selectedCountryDatasets.length === 1
+										? tx('dataset', 'conjunto')
+										: tx('datasets', 'conjuntos')}
+								</p>
 							</div>
 							{#if selectedDataset}
 								<button type="button" class="panel-action secondary" onclick={clearCountrySelection}
@@ -2762,91 +3130,53 @@
 						</div>
 
 						<div class="country-detail">
-							{#if caribbeanPeerCountries(selectedCountry).length}
-								<div class="detail-section detail-card">
-									<p class="detail-card-label">{tx('Caribbean breakdown', 'Detalhamento do Caribe')}</p>
-									<div class="detail-list">
-										{#each caribbeanPeerCountries(selectedCountry) as peer}
-											<button
-												type="button"
-												class="detail-list-row"
-												class:active={peer.code === selectedCountry.code}
-												onclick={() => flyToCountry(peer)}
-											>
-												<span>{peer.name}</span>
-												<strong>{fmt(peer.samples)}</strong>
-											</button>
-										{/each}
-									</div>
+							<article class="meta-dataset compact detail-card">
+								<div class="country-source-row" aria-label={tx('Sources', 'Fontes')}>
+									{#each selectedCountrySources as source}
+										{@const tenant = tenantFor(source.slug)}
+										<span class="source-chip">
+											{#if tenant?.logoImg}
+												<img src={tenant.logoImg} alt="" />
+											{:else}
+												<span>{tenant?.logoEmoji ?? source.name.slice(0, 2)}</span>
+											{/if}
+											{source.name}
+										</span>
+									{/each}
 								</div>
-							{/if}
-
-							{#if countryMappingsForCode(selectedCountry.code).length}
-								<div class="detail-section detail-card">
-									<p class="detail-card-label">{tx('1KGP subpopulations', 'Subpopulações 1KGP')}</p>
-									<div class="detail-list">
-										{#each countryMappingsForCode(selectedCountry.code) as mapping}
-											<div class="detail-list-row static">
-												<span>{mapping.subpopulationName}</span>
-												<strong>{fmt(mapping.sampleCount)}</strong>
-											</div>
-										{/each}
+								<dl class="meta-grid meta-grid-flush">
+									<div>
+										<dt>{tx('Participants', 'Participantes')}</dt>
+										<dd>{fmt(selectedCountry.samples)}</dd>
 									</div>
-								</div>
-							{/if}
-
-							{#if countryCoverageRows.length}
-								<div class="detail-section detail-card">
-									<p class="detail-card-label">{tx('Brazil states', 'Estados do Brasil')}</p>
-									<div class="detail-list">
-										{#each countryCoverageRows as row}
-											<button
-												type="button"
-												class="detail-list-row"
-												onclick={() => flyToCoverageRow(row, { keepDataset: true })}
-											>
-												<span>{row.name}</span>
-												<strong>{row.samples == null ? '—' : fmt(row.samples)}</strong>
-											</button>
-										{/each}
+									<div>
+										<dt>{tx('Variants', 'Variantes')}</dt>
+										<dd>{fmt(selectedCountryVariantTotal)}</dd>
 									</div>
-								</div>
-							{/if}
-
-							{#each datasetsForCountry(selectedCountry) as dataset}
-								<article class="meta-dataset compact detail-card">
-									<div class="meta-dataset-top">
-										{@render panelLogo(dataset.biobankSlug)}
-										<div class="meta-dataset-copy">
-											<div class="meta-dataset-title-row">
-												<h3>{dataset.title}</h3>
-												{#if dataset.release}<span class="meta-release">{dataset.release}</span>{/if}
-											</div>
-											{#if dataset.description}<p class="meta-desc">{dataset.description}</p>{/if}
-										</div>
+									<div>
+										<dt>{tx('Sources', 'Fontes')}</dt>
+										<dd>{fmt(selectedCountrySources.length)}</dd>
 									</div>
-									<dl class="meta-grid">
-										<div>
-											<dt>{tx('Participants', 'Participantes')}</dt>
-											<dd>{fmt(dataset.participants)}</dd>
-										</div>
-										<div>
-											<dt>{tx('Variants', 'Variantes')}</dt>
-											<dd>{fmt(dataset.variants)}</dd>
-										</div>
-										<div>
-											<dt>{tx('Assay', 'Ensaio')}</dt>
-											<dd>{dataset.assay}</dd>
-										</div>
-										<div>
-											<dt>{tx('Build', 'Montagem')}</dt>
-											<dd>{dataset.genomeBuild}</dd>
-										</div>
-									</dl>
-								</article>
-							{/each}
+									<div>
+										<dt>{tx('Datasets', 'Conjuntos')}</dt>
+										<dd>{fmt(selectedCountryDatasets.length)}</dd>
+									</div>
+								</dl>
+							</article>
+
+							<div class="panel-actions-row">
+								<a class="panel-action primary" href={explorerPath}>
+									{tx('Open in Explorer', 'Abrir no Explorer')}
+								</a>
+								<a class="panel-action secondary" href={selectedCountrySourceProfileHref}>
+									{selectedCountrySources.length === 1
+										? tx('Biobank profile', 'Perfil do biobanco')
+										: tx('Biobanks', 'Biobancos')}
+								</a>
+							</div>
 						</div>
 					{:else if selectedDataset}
+						{@const sourceTenant = tenantFor(selectedDataset.biobankSlug)}
 						<div class="panel-heading detail-heading country-panel-header">
 							<div class="detail-heading-main country-panel-titleblock">
 								<div class="meta-dataset-title-row dataset-panel-title">
@@ -2862,7 +3192,16 @@
 
 						<div class="country-detail">
 							<article class="meta-dataset compact detail-card">
-								<p class="detail-card-label">{tx('Dataset stats', 'Estatísticas do conjunto')}</p>
+								<div class="country-source-row" aria-label={tx('Sources', 'Fontes')}>
+									<span class="source-chip">
+										{#if sourceTenant?.logoImg}
+											<img src={sourceTenant.logoImg} alt="" />
+										{:else}
+											<span>{sourceTenant?.logoEmoji ?? selectedDataset.biobankSlug?.slice(0, 2) ?? 'DB'}</span>
+										{/if}
+										{sourceTenant?.name ?? selectedDataset.biobankSlug}
+									</span>
+								</div>
 								<dl class="meta-grid meta-grid-flush">
 									<div>
 										<dt>{tx('Participants', 'Participantes')}</dt>
@@ -2883,190 +3222,199 @@
 								</dl>
 							</article>
 
+							<div class="panel-actions-row">
+								<a class="panel-action primary" href={explorerPath}>
+									{tx('Open in Explorer', 'Abrir no Explorer')}
+								</a>
+								{#if selectedDataset.biobankSlug}
+									<a class="panel-action secondary" href={`/sources/${selectedDataset.biobankSlug}`}>
+										{tx('Biobank profile', 'Perfil do biobanco')}
+									</a>
+								{/if}
+							</div>
+						</div>
+					{:else if selectedSource}
+						<div class="panel-heading detail-heading country-panel-header">
+							<div class="detail-heading-main country-panel-titleblock">
+								<div class="meta-dataset-title-row dataset-panel-title">
+									{@render panelLogo(selectedSource.slug)}
+									<h2>{selectedSource.name}</h2>
+								</div>
+								{#if selectedSource.description}
+									<p class="detail-context">{selectedSource.description}</p>
+								{/if}
+							</div>
+						</div>
+
+						<div class="country-detail">
+							<article class="meta-dataset compact detail-card">
+								<p class="detail-card-label">{tx('Source stats', 'Estatísticas da fonte')}</p>
+								<dl class="meta-grid meta-grid-flush">
+									<div>
+										<dt>{tx('Datasets', 'Conjuntos')}</dt>
+										<dd>{fmt(selectedSourceDatasets.length)}</dd>
+									</div>
+									<div>
+										<dt>{tx('Participants', 'Participantes')}</dt>
+										<dd>{fmt(selectedSourceParticipants)}</dd>
+									</div>
+									<div>
+										<dt>{tx('Variants', 'Variantes')}</dt>
+										<dd>{fmt(selectedSourceVariants)}</dd>
+									</div>
+								</dl>
+							</article>
+
 							<div class="detail-section detail-card">
-								<p class="detail-card-label">{datasetCoverageLabel(selectedDataset)}</p>
+								<p class="detail-card-label">{tx('Datasets', 'Conjuntos')}</p>
 								<div class="detail-list">
-									{#each scopedCoverageRows as row}
-										<button
-											type="button"
-											class="detail-list-row"
-											onclick={() => flyToCoverageRow(row, { keepDataset: true })}
-										>
-											<span>{row.name}</span>
-											<strong>{row.samples == null ? '—' : fmt(row.samples)}</strong>
-										</button>
+									{#each selectedSourceDatasets as dataset}
+										<div class="detail-list-row">
+											<span>{dataset.title}</span>
+											<strong>{fmt(dataset.participants ?? 0)}</strong>
+										</div>
 									{/each}
 								</div>
+							</div>
+
+							<div class="panel-actions-row">
+								<a class="panel-action primary" href={explorerPath}>
+									{tx('Open in Explorer', 'Abrir no Explorer')}
+								</a>
+								<a class="panel-action secondary" href={`/sources/${selectedSource.slug}`}>
+									{tx('Biobank profile', 'Perfil do biobanco')}
+								</a>
 							</div>
 						</div>
 					{/if}
 				</aside>
 			{/if}
+			-->
 
-			<!-- Temporarily hidden per design pass.
-	<section class="variant-mix" class:drawer-open={resultsDrawerOpen} aria-label={tx('Variants', 'Variantes')}>
-		<div class="variant-head">
-			<h2>{tx('Variants', 'Variantes')}</h2>
-			<strong>{fmt(variantMixTotal)}</strong>
-		</div>
-
-		<div class="variant-bar" aria-hidden="true">
-			{#each variantClassRows as row (row.key)}
-				<span style={`width:${pct(row.count, dashboard.totals.variants)}; background:${row.color}`}></span>
-			{/each}
-		</div>
-		<div class="variant-key">
-			{#each variantClassRows as row (row.key)}
-				<div class="variant-key-slot">
-					<div class="variant-key-item">
-						<span class="variant-key-label">
-							<span class="variant-swatch" style:background-color={row.color}></span>
-							{row.label}
-						</span>
-						<strong>{fmt(row.count)}</strong>
-					</div>
-				</div>
-			{/each}
-		</div>
-	</section>
-	-->
-
-			<!-- Temporarily hidden per design pass.
-	<section class="bottom-panel" class:drawer-open={resultsDrawerOpen} aria-label={tx('Databases', 'Bancos de dados')}>
-		<div class="panel-heading dataset-heading">
-			<h2>{tx('Databases', 'Bancos de dados')}</h2>
-			<span class="dataset-count">
-				<strong>{displayDatasets.length}</strong>
-				<small>{tx('databases', 'bancos')}</small>
-			</span>
-		</div>
-
-		<div class="database-scroll">
-			{#each displayDatasets as dataset}
-				{@const tenant = tenantFor(dataset.biobankSlug)}
-				<button
-					type="button"
-					class="database-row"
-					class:active={selectedDatasetSlug === dataset.slug}
-					onclick={() => selectDataset(dataset)}
+			{#if showMapSummaryPanels || showMapVariantPanel}
+				<div class="map-dashboard-dock" class:drawer-open={resultsDrawerOpen}>
+			{#if showMapSummaryPanels}
+				<section
+					class="map-dashboard-panel map-dashboard-panel--left map-stat-panel"
+					class:drawer-open={resultsDrawerOpen}
+					aria-label={tx('Network summary', 'Resumo da rede')}
 				>
-					<span class="dataset-logo" aria-hidden="true">
-						{#if tenant?.logoImg}
-							<img src={tenant.logoImg} alt="" />
-						{:else}
-							<span>{tenant?.logoEmoji ?? '🧬'}</span>
-						{/if}
-					</span>
-					<span class="database-row-main">
-						<span class="database-row-title">{dataset.title}</span>
-						<small>{dataset.release} · {fmt(dataset.participants)} {tx('participants', 'participantes')} · {dataset.assay}</small>
-					</span>
-				</button>
-			{/each}
-			<a href="/contact" class="dataset-cta">{tx('Want to contribute data?', 'Quer contribuir com dados?')} <strong>{tx('Get in touch', 'Entre em contato')}</strong></a>
-		</div>
-	</section>
-	-->
+					<div class="map-stat-grid">
+						<div class="map-stat-item">
+							<strong>{mapPanelCountryCount}</strong>
+							<span>{tx('Countries', 'Países')}</span>
+						</div>
+						<div class="map-stat-item">
+							<strong>{fmt(mapPanelParticipantCount)}</strong>
+							<span>{tx('Participants', 'Participantes')}</span>
+						</div>
+					</div>
+				</section>
 
-			<p class="site-footer">© BioVault GA4GH VRS · <a href="/api">Beacon v2</a></p>
-		{/if}
+				<section
+					class="map-dashboard-panel map-dashboard-panel--right"
+					class:drawer-open={resultsDrawerOpen}
+					aria-label={tx('Databases', 'Bancos de dados')}
+				>
+					<div class="map-panel-head">
+						<h2>{tx('Databases', 'Bancos de dados')}</h2>
+						<strong>{displayDatasets.length}</strong>
+					</div>
 
-		{#if siteModalRoute}
-			<SiteModal
-				label={siteModalLabel}
-				wide={siteModalRoute === '/api'}
-				onclose={closeSiteModal}
-			>
-				{@render children?.()}
-			</SiteModal>
-		{:else if !isHome && !isVariantRoute}
-			<main class="route-overlay" class:with-left-panels={showExploreLeftPanels || showVariantLeftPanels}>
-				{@render children?.()}
-			</main>
-		{/if}
+					<div class="map-panel-body database-scroll">
+						{#each displayDatasets as dataset}
+							{@const sourceTenant = tenantFor(dataset.biobankSlug)}
+							{@const portalUrl = portalUrlFor(dataset.biobankSlug)}
+							{@const showPortalLink = Boolean(portalUrl && !isCurrentBiobankPortal(dataset.biobankSlug))}
+							<a
+								href={databaseRowHref(dataset)}
+								class="database-row"
+								class:active={selectedDatasetSlug === dataset.slug || tenantScope === dataset.biobankSlug}
+							>
+								<span class="dataset-logo" aria-hidden="true">
+									{#if sourceTenant?.logoImg}
+										<img src={sourceTenant.logoImg} alt="" />
+									{:else}
+										<span>{sourceTenant?.logoEmoji ?? 'DB'}</span>
+									{/if}
+								</span>
+								<span class="database-row-main">
+									<span class="database-row-title-row">
+										<span class="database-row-title">{dataset.title}</span>
+										{#if showPortalLink}
+											<ExternalLinkIcon class="database-row-external" aria-hidden="true" />
+										{/if}
+									</span>
+									<small
+										>{dataset.release} · {fmt(dataset.participants)}
+										{tx('participants', 'participantes')} · {dataset.assay}</small
+									>
+									{#if dataset.description}
+										<span class="database-row-desc">{dataset.description}</span>
+									{/if}
+								</span>
+							</a>
+						{/each}
+						<a href="/contact" class="dataset-cta"
+							>{tx('Want to contribute data?', 'Quer contribuir com dados?')}
+							<strong>{tx('Get in touch', 'Entre em contato')}</strong></a
+						>
+					</div>
+				</section>
+			{/if}
+
+			{#if showMapVariantPanel}
+				<section
+					class="map-dashboard-panel map-dashboard-panel--center"
+					class:drawer-open={resultsDrawerOpen}
+					aria-label={tx('Variants', 'Variantes')}
+				>
+					<div class="map-panel-head">
+						<h2>{tx('Variants', 'Variantes')}</h2>
+						<strong>{fmt(variantMixTotal)}</strong>
+					</div>
+
+					<div class="variant-bar" aria-hidden="true">
+						{#each variantClassRows as row (row.key)}
+							<span style={`width:${pct(row.count, variantMixTotal)}; background:${row.color}`}></span>
+						{/each}
+					</div>
+
+					<div class="map-panel-key map-panel-key--triple">
+						{#each variantClassRows as row (row.key)}
+							<div class="map-panel-key-slot">
+								<div class="map-panel-key-item">
+									<span class="map-panel-key-label">
+										<span class="variant-swatch" style:background-color={row.color}></span>
+										{row.label}
+									</span>
+									<strong>{fmt(row.count)}</strong>
+								</div>
+							</div>
+						{/each}
+					</div>
+				</section>
+			{/if}
+				</div>
+			{/if}
+
+				<p class="site-footer">© {tenant.name} GA4GH VRS · <a href="/api">Beacon v2</a></p>
+			{/if}
+
 	</div>
-{:else}
-	<AtlasHome {data} />
-{/if}
 
-{#snippet drawerFilterPanel()}
-	<div class="map-filter-menu drawer-filter-menu">
-		<div class="map-filter-grid">
-			<label>
-				<span>{tx('Gene', 'Gene')}</span>
-				<input bind:value={filterGene} placeholder="ISG15" />
-			</label>
-			<label>
-				<span>{tx('Allele freq', 'Freq. alélica')}</span>
-				<div class="range-inputs">
-					<input bind:value={filterAfMin} placeholder="min" />
-					<input bind:value={filterAfMax} placeholder="max" />
-				</div>
-			</label>
-			<label>
-				<span>{tx('Allele count', 'Contagem alélica')}</span>
-				<div class="range-inputs">
-					<input bind:value={filterAcMin} type="number" placeholder="min" />
-					<input bind:value={filterAcMax} type="number" placeholder="max" />
-				</div>
-			</label>
-			<label>
-				<span>{tx('Per page', 'Por página')}</span>
-				<select bind:value={filterPageSize}>
-					{#each [25, 50, 100, 200, 500] as n}<option value={n}>{n}</option>{/each}
-				</select>
-			</label>
-		</div>
-		<div class="map-filter-columns">
-			<div>
-				<div class="map-filter-heading">VEP impact</div>
-				<div class="map-filter-options compact">
-					{#each VEP_IMPACT_OPTIONS as impact}
-						<label>
-							<input
-								type="checkbox"
-								checked={filterVepImpacts[impact]}
-								onchange={() => toggleFilterVepImpact(impact)}
-							/>
-							<span>{impact}</span>
-						</label>
-					{/each}
-				</div>
-			</div>
-			<div>
-				<div class="map-filter-heading">VEP consequence</div>
-				<div class="map-filter-options">
-					{#each VEP_CONSEQUENCE_OPTIONS as consequence}
-						<label>
-							<input
-								type="checkbox"
-								checked={filterVepConsequences[consequence]}
-								onchange={() => toggleFilterVepConsequence(consequence)}
-							/>
-							<span>{consequence}</span>
-						</label>
-					{/each}
-				</div>
-			</div>
-		</div>
-		<div class="map-filter-curl">
-			<div class="map-filter-heading">{tx('API query', 'Consulta API')}</div>
-			<div class="map-filter-curl-row">
-				<code>{drawerCurlCmd}</code>
-				<button type="button" onclick={copyDrawerCurl}>
-					{curlCopied ? tx('Copied', 'Copiado') : tx('Copy curl', 'Copiar curl')}
-				</button>
-			</div>
-		</div>
-	</div>
-{/snippet}
-
-<style>
-	:global(body:has(.dashboard-shell)) {
+	<style>
+	:global(body:has(.dashboard-shell.map-mode)) {
 		overflow: hidden;
 	}
 
-	.dashboard-shell {
+	:global(html:has(.dashboard-shell.map-mode)),
+	:global(body:has(.dashboard-shell.map-mode)) {
+		overflow-x: hidden;
+		overscroll-behavior-x: none;
+	}
+
+		.dashboard-shell {
 		--om-white: #ffffff;
 		--om-gray-50: #fcfcfd;
 		--om-gray-100: #f7f6f9;
@@ -3099,14 +3447,15 @@
 		--om-space-l: 16px;
 		--om-space-xl: 20px;
 		--screen-inset: 24px;
-		--bottom-inset: 28px;
+		--bottom-inset: 42px;
 		--layout-left-width: 25vw;
 		--side-panel-width: calc(var(--layout-left-width) - var(--screen-inset) - 8px);
 		--top-search-left: 49.5vw;
 		--top-search-width: clamp(560px, 52vw, 920px);
 		--results-drawer-top: 84px;
 		--results-drawer-bottom: 28px;
-		--drawer-track-height: calc(100vh - var(--results-drawer-top) - var(--results-drawer-bottom));
+		--map-viewport-height: 100vh;
+		--drawer-track-height: calc(var(--map-viewport-height) - var(--results-drawer-top) - var(--results-drawer-bottom));
 		--explore-side-panel-gap: var(--screen-inset);
 		--explore-side-panel-padding-x: 16px;
 		--explore-side-panel-max-height: min(680px, calc(var(--drawer-track-height) * 0.8));
@@ -3130,10 +3479,11 @@
 		--column-header-height: 32px;
 		--drawer-toolbar-height: 42px;
 		--panel-shadow: 0 10px 28px rgb(46 43 59 / 0.08);
-		position: relative;
-		height: 100vh;
-		width: 100%;
-		overflow: hidden;
+			position: relative;
+			height: 100%;
+			min-height: var(--map-viewport-height);
+			width: 100%;
+			overflow: hidden;
 		background: var(--om-gray-50);
 		color: var(--om-gray-850);
 		font-family: 'Inter', system-ui, sans-serif;
@@ -3159,6 +3509,18 @@
 		background-color: transparent !important;
 	}
 
+	.dashboard-shell :global(.mapboxgl-ctrl-attrib.mapboxgl-compact .mapboxgl-ctrl-attrib-button) {
+		background-color: color-mix(in srgb, var(--om-white) 86%, transparent);
+		box-shadow: 0 1px 4px rgb(46 43 59 / 0.1);
+		opacity: 0.72;
+		filter: saturate(0.55) opacity(0.72);
+	}
+
+	.dashboard-shell :global(.mapboxgl-ctrl-attrib.mapboxgl-compact .mapboxgl-ctrl-attrib-button:hover) {
+		opacity: 0.95;
+		filter: saturate(0.75) opacity(0.9);
+	}
+
 	.dashboard-shell :global(.mapboxgl-ctrl-attrib-inner) {
 		background: transparent !important;
 		background-color: transparent !important;
@@ -3169,214 +3531,465 @@
 		text-shadow: 0 1px 2px rgb(255 255 255 / 0.72);
 	}
 
-	.dashboard-shell :global(.mapboxgl-popup-content) {
-		border-radius: var(--om-radius-s);
-	}
-
-	.country-panel,
-	.bottom-panel,
-	.variant-mix,
-	.explore-intro-panel,
-	.explore-datasets-side-panel,
-	.explore-side-panel {
-		position: absolute;
-		z-index: 2;
-		border: 0;
-		border-radius: var(--om-radius-m);
-		box-shadow: var(--panel-shadow);
-	}
-
-	:global(.variant-detail-side-panel.explore-side-panel) {
-		position: fixed;
-		z-index: 2;
-		top: 50%;
-		left: var(--screen-inset);
-		right: auto;
-		bottom: auto;
-		width: var(--explore-side-panel-width);
-		max-width: var(--explore-side-panel-width);
-		height: auto;
-		min-height: var(--explore-side-panel-min-height);
-		max-height: var(--explore-side-panel-max-height);
-		transform: translateY(-50%);
-		display: flex;
-		flex-direction: column;
-		overflow: hidden;
-		border: 0;
-		border-radius: var(--om-radius-m);
-		box-shadow: var(--panel-shadow);
+	.dashboard-shell :global(.country-selection-popup.mapboxgl-popup) {
 		pointer-events: auto;
-		background: var(--left-panel-surface);
 	}
 
-	.country-panel,
-	.explore-side-panel,
-	.explore-datasets-side-panel,
-	:global(.variant-detail-side-panel),
-	.variant-mix,
-	.explore-intro-panel,
-	.explore-stat-box {
-		background: var(--left-panel-surface);
-	}
-
-	.floating-title {
-		position: absolute;
-		z-index: 2;
-		left: var(--screen-inset);
-		top: var(--screen-inset);
-		max-width: min(420px, calc(100vw - 32px));
+	.dashboard-shell :global(.country-selection-popup .mapboxgl-popup-content) {
+		box-sizing: border-box;
+		width: min(272px, calc(100vw - 48px));
+		max-width: min(272px, calc(100vw - 48px));
+		overflow: hidden;
+		border: 1px solid color-mix(in srgb, var(--om-gray-400) 38%, transparent);
+		border-radius: var(--om-radius-m);
+		background: color-mix(in srgb, var(--om-white) 96%, transparent);
+		box-shadow: 0 12px 32px rgb(46 43 59 / 0.14);
+		padding: 8px 10px;
 		color: var(--om-gray-850);
-		text-shadow:
-			0 1px 0 rgb(255 255 255 / 0.78),
-			0 8px 24px rgb(255 255 255 / 0.72);
+		pointer-events: auto;
+		backdrop-filter: blur(12px);
 	}
 
-	.floating-title-row {
-		display: flex;
-		align-items: flex-start;
-		gap: 10px;
+	.dashboard-shell :global(.country-selection-popup.mapboxgl-popup-anchor-bottom .mapboxgl-popup-tip) {
+		margin-top: -1px;
+		border-top-color: color-mix(in srgb, var(--om-white) 94%, transparent);
 	}
 
-	.floating-title-logo {
-		width: 40px;
-		height: 40px;
-		flex-shrink: 0;
-		object-fit: contain;
+	.dashboard-shell :global(.country-selection-popup.mapboxgl-popup-anchor-top .mapboxgl-popup-tip) {
+		margin-bottom: -1px;
+		border-bottom-color: color-mix(in srgb, var(--om-white) 94%, transparent);
 	}
 
-	.floating-title-copy {
+	.dashboard-shell :global(.country-selection-popup.mapboxgl-popup-anchor-left .mapboxgl-popup-tip) {
+		margin-right: -1px;
+		border-right-color: color-mix(in srgb, var(--om-white) 94%, transparent);
+	}
+
+	.dashboard-shell :global(.country-selection-popup.mapboxgl-popup-anchor-right .mapboxgl-popup-tip) {
+		margin-left: -1px;
+		border-left-color: color-mix(in srgb, var(--om-white) 94%, transparent);
+	}
+
+	.dashboard-shell :global(.country-selection-popup .mapboxgl-popup-close-button) {
+		top: 4px;
+		right: 5px;
+		width: 20px;
+		height: 20px;
+		border-radius: 999px;
+		color: var(--om-gray-650);
+		font-size: 16px;
+		line-height: 20px;
+		pointer-events: auto;
+	}
+
+	.dashboard-shell :global(.country-selection-popup .mapboxgl-popup-close-button:hover) {
+		background: color-mix(in srgb, var(--om-gray-200) 70%, transparent);
+		color: var(--om-gray-850);
+	}
+
+	.dashboard-shell :global(.map-selection-popup) {
+		display: grid;
+		width: 100%;
+		min-width: 0;
+		max-width: 100%;
+		box-sizing: border-box;
+		gap: 6px;
+		overflow-wrap: anywhere;
+		font-family: 'Inter', system-ui, sans-serif;
+	}
+
+	.dashboard-shell :global(.map-selection-popup header) {
+		display: grid;
+		gap: 2px;
 		min-width: 0;
 	}
 
-	.floating-title h1 {
-		margin: 0;
+	.dashboard-shell :global(.map-selection-popup header strong) {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
 		font-family: 'Rubik', 'Inter', system-ui, sans-serif;
-		font-size: 17px;
-		font-weight: 650;
+		font-size: 14px;
+		font-weight: 700;
 		line-height: 1.2;
-		color: color-mix(in srgb, var(--om-gray-850) 88%, transparent);
 	}
 
-	.floating-title p {
-		margin-top: 4px;
-		font-size: 12px;
+	.dashboard-shell :global(.map-selection-popup header strong span) {
+		flex-shrink: 0;
+		font-size: 15px;
+		line-height: 1;
+	}
+
+	.dashboard-shell :global(.popup-summary) {
+		margin: 0;
+		color: var(--om-gray-600);
+		font-size: 11px;
+		font-weight: 500;
+		line-height: 1.35;
+		overflow-wrap: anywhere;
+		white-space: normal;
+	}
+
+	.dashboard-shell :global(.popup-source-line) {
+		margin: 0;
+		color: var(--om-teal-700);
+		font-size: 10px;
 		font-weight: 600;
 		line-height: 1.35;
-		color: var(--om-gray-600);
+		overflow-wrap: anywhere;
+		white-space: normal;
 	}
 
-	.top-nav {
-		position: absolute;
-		z-index: 2;
-		top: var(--screen-inset);
-		right: var(--screen-inset);
-		display: flex;
-		flex-wrap: nowrap;
-		align-items: center;
-		justify-content: flex-end;
-		gap: 12px;
-		max-width: calc(100vw - 32px);
-		padding: 0;
-		border-radius: var(--om-radius-m);
-		background: transparent;
-	}
-
-	.top-nav a {
-		display: inline-flex;
-		height: 38px;
-		align-items: center;
-		border-radius: var(--om-radius-s);
-		padding: 0 10px;
-		font-size: 13px;
-		font-weight: 700;
-		line-height: 1.3;
-		color: var(--om-gray-600);
-		text-decoration: none;
-	}
-
-	.top-nav a:hover {
-		background: color-mix(in srgb, var(--om-white) 58%, transparent);
-		color: var(--om-teal-700);
-		text-decoration: none;
-	}
-
-	.top-nav a.active {
-		background: color-mix(in srgb, var(--om-teal-100) 72%, var(--om-white));
-		color: var(--om-teal-700);
-	}
-
-	/* Language picker hidden for now.
-	.language-switcher {
-		display: flex;
-		align-items: center;
-		margin-left: 2px;
-		line-height: 1;
-	}
-
-	.language-switcher select {
-		height: 24px;
-		width: 68px;
-		border: 1px solid color-mix(in srgb, var(--om-gray-400) 55%, transparent);
-		border-radius: var(--om-radius-s);
-		background: color-mix(in srgb, var(--om-white) 62%, transparent);
-		padding: 0 22px 0 7px;
-		font-size: 12px;
-		font-weight: 700;
-		line-height: 1;
-		cursor: pointer;
-		color: var(--om-gray-700);
-	}
-
-	.language-switcher select:hover,
-	.language-switcher select:focus {
-		border-color: color-mix(in srgb, var(--om-teal-600) 52%, transparent);
-		background: color-mix(in srgb, var(--om-teal-100) 68%, var(--om-white));
-		outline: none;
-	}
-	*/
-
-	.global-search {
-		position: absolute;
-		z-index: 100;
-		top: var(--screen-inset);
-		pointer-events: auto;
-		user-select: text;
-		left: calc(var(--top-search-left) - (var(--top-search-width) / 2));
-		display: flex;
-		align-items: center;
-		width: var(--top-search-width);
-		gap: var(--om-space-s);
-		transform: none;
-		--search-control-height: 48px;
-		--search-shadow: none;
-		--topbar-shadow: 0 3px 14px rgb(46 43 59 / 0.045);
-	}
-
-	.search-cluster {
-		display: flex;
-		min-width: 0;
-		flex: 1;
-		align-items: center;
-		overflow: visible;
-		border-radius: var(--om-radius-m);
-		background: var(--panel-surface);
-		box-shadow: var(--topbar-shadow);
-	}
-
-	.global-search.dropdown-open {
-		z-index: 110;
-	}
-
-	p,
-	h1,
-	h2 {
+	.dashboard-shell :global(.popup-dataset-line) {
+		display: grid;
+		gap: 3px;
 		margin: 0;
+		padding: 7px 9px;
+		border-radius: var(--om-radius-s);
+		background: color-mix(in srgb, var(--om-gray-100) 55%, transparent);
 	}
 
-	h1,
-	h2 {
-		font-family: 'Rubik', 'Inter', system-ui, sans-serif;
+	.dashboard-shell :global(.popup-dataset-line strong) {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 8px;
+		overflow: hidden;
+		font-size: 11px;
 		font-weight: 700;
+		line-height: 1.25;
+		color: var(--om-gray-850);
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.dashboard-shell :global(.popup-dataset-line strong span) {
+		overflow: hidden;
+		font-size: 11px;
+		line-height: 1.25;
+		color: var(--om-gray-850);
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.dashboard-shell :global(.popup-dataset-line strong b) {
+		font-size: 11px;
+		font-weight: 800;
+		line-height: 1;
+	}
+
+	.dashboard-shell :global(.popup-dataset-line span) {
+		color: var(--om-gray-550);
+		font-size: 10px;
+		font-weight: 500;
+		line-height: 1.35;
+		overflow-wrap: anywhere;
+		white-space: normal;
+	}
+
+	.dashboard-shell :global(.popup-dataset-list) {
+		display: grid;
+		gap: 5px;
+		max-height: 128px;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+		overflow: auto;
+	}
+
+	.dashboard-shell :global(.popup-dataset-list li) {
+		display: grid;
+		gap: 1px;
+	}
+
+	.dashboard-shell :global(.popup-dataset-list li small) {
+		padding: 0 9px 3px;
+		color: var(--om-gray-550);
+		font-size: 10px;
+		font-weight: 500;
+		line-height: 1.35;
+		overflow-wrap: anywhere;
+		white-space: normal;
+	}
+
+	.dashboard-shell :global(.popup-dataset-row) {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 8px;
+		border-radius: var(--om-radius-s);
+		padding: 6px 9px;
+		color: var(--om-gray-750);
+		background: color-mix(in srgb, var(--om-gray-100) 55%, transparent);
+	}
+
+	.dashboard-shell :global(.popup-dataset-row span) {
+		overflow: hidden;
+		min-width: 0;
+		font-size: 11px;
+		font-weight: 700;
+		line-height: 1.2;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.dashboard-shell :global(.popup-dataset-row b) {
+		font-size: 11px;
+		font-weight: 800;
+		line-height: 1;
+	}
+
+	.dashboard-shell :global(.popup-actions) {
+		display: grid;
+		grid-template-columns: 1fr;
+		gap: 5px;
+	}
+
+	.dashboard-shell :global(.popup-actions--dual) {
+		grid-template-columns: 1fr 1fr;
+	}
+
+	.dashboard-shell :global(.popup-action) {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 4px;
+		min-height: 28px;
+		min-width: 0;
+		border: 1px solid color-mix(in srgb, var(--om-gray-400) 52%, transparent);
+		border-radius: var(--om-radius-s);
+		background: color-mix(in srgb, var(--om-white) 88%, transparent);
+		padding: 6px 8px;
+		color: var(--om-gray-700);
+		font-size: 10px;
+		font-weight: 700;
+		line-height: 1.2;
+		text-align: center;
+		text-decoration: none;
+		pointer-events: auto;
+	}
+
+	.dashboard-shell :global(.popup-action > span) {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.dashboard-shell :global(.popup-action-icon) {
+		flex-shrink: 0;
+		width: 11px;
+		height: 11px;
+		opacity: 0.72;
+	}
+
+	.dashboard-shell :global(.popup-action--primary) {
+		border-color: transparent;
+		background: var(--om-gray-900);
+		color: var(--om-white);
+	}
+
+		.country-panel {
+			position: absolute;
+			z-index: 2;
+			border: 0;
+		border-radius: var(--om-radius-m);
+		box-shadow: var(--panel-shadow);
+	}
+
+		.map-dashboard-panel {
+			position: absolute;
+			z-index: 2;
+			bottom: var(--bottom-inset);
+			border: 0;
+			border-radius: var(--om-radius-m);
+			box-shadow: var(--panel-shadow);
+			background: var(--left-panel-surface);
+		}
+
+		.map-dashboard-dock {
+			display: contents;
+		}
+
+		.map-dashboard-panel--left {
+			left: var(--screen-inset);
+			width: var(--side-panel-width);
+			padding: 0;
+			background: transparent;
+			box-shadow: none;
+		}
+
+		.map-stat-grid {
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			gap: 8px;
+		}
+
+		.map-stat-item {
+			display: grid;
+			gap: 2px;
+			min-width: 0;
+			border-radius: var(--om-radius-m);
+			background: var(--left-panel-surface);
+			padding: 10px 12px;
+			box-shadow: var(--panel-shadow);
+			text-align: center;
+		}
+
+		.map-stat-item strong {
+			font-size: 20px;
+			font-weight: 800;
+			line-height: 1.1;
+			color: var(--om-gray-850);
+			font-variant-numeric: tabular-nums;
+		}
+
+		.map-stat-item span {
+			font-size: 11px;
+			font-weight: 600;
+			line-height: 1.2;
+			color: var(--om-gray-700);
+		}
+
+		.map-dashboard-panel--center {
+			left: max(16px, calc((100vw - 480px) / 2));
+			width: min(480px, calc(100vw - 32px));
+			padding: var(--om-space-m);
+		}
+
+		.map-dashboard-panel--right {
+			right: var(--screen-inset);
+			width: var(--side-panel-width);
+			max-height: min(430px, calc(var(--map-viewport-height) - 140px));
+			padding: 0;
+			display: flex;
+			flex-direction: column;
+			overflow: hidden;
+		}
+
+		.map-dashboard-panel.drawer-open {
+			opacity: 0;
+			pointer-events: none;
+			transition: opacity 160ms ease;
+		}
+
+		.map-panel-head {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: var(--om-space-l);
+			margin-bottom: var(--om-space-s);
+		}
+
+		.map-dashboard-panel--right .map-panel-head {
+			flex-shrink: 0;
+			margin-bottom: 0;
+			padding: var(--om-space-m) var(--om-space-m) var(--om-space-s);
+		}
+
+		.map-panel-head h2 {
+			margin: 0;
+			font-family: 'Rubik', 'Inter', system-ui, sans-serif;
+			font-size: 17px;
+			font-weight: 700;
+			line-height: 1.15;
+			color: var(--om-gray-850);
+		}
+
+		.map-panel-head > strong {
+			font-size: 20px;
+			font-weight: 800;
+			line-height: 1.15;
+			color: var(--om-gray-850);
+			font-variant-numeric: tabular-nums;
+		}
+
+		.map-panel-body {
+			min-height: 0;
+		}
+
+		.map-panel-key {
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			column-gap: var(--om-space-s);
+		}
+
+		.map-panel-key--triple {
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+			margin-top: var(--om-space-s);
+		}
+
+		.map-panel-key-slot {
+			min-width: 0;
+		}
+
+		.map-panel-key-item {
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			gap: 1px;
+			text-align: center;
+		}
+
+		.map-panel-key-label {
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			gap: 6px;
+			font-size: 11px;
+			font-weight: 600;
+			color: var(--om-gray-700);
+			min-width: 0;
+			max-width: 100%;
+			white-space: nowrap;
+		}
+
+		.map-panel-key-item strong {
+			font-size: 12px;
+			font-weight: 800;
+			line-height: 1.2;
+			font-variant-numeric: tabular-nums;
+			color: var(--om-gray-850);
+		}
+
+		.variant-bar {
+			display: flex;
+			height: 14px;
+			overflow: hidden;
+			border-radius: 999px;
+			background: color-mix(in srgb, var(--om-gray-200) 55%, transparent);
+			box-shadow: inset 0 1px 2px rgb(46 43 59 / 0.06);
+		}
+
+		.variant-bar span {
+			min-width: 2px;
+		}
+
+		.variant-swatch {
+			width: 9px;
+			height: 9px;
+			border-radius: 999px;
+			flex-shrink: 0;
+			box-shadow: 0 0 0 1px rgb(46 43 59 / 0.08);
+		}
+
+		.country-panel {
+			background: var(--left-panel-surface);
+		}
+
+		.dashboard-shell.map-mode {
+			height: var(--map-viewport-height);
+			min-height: var(--map-viewport-height);
+		}
+
+		p,
+		h2 {
+			margin: 0;
+		}
+
+		h2 {
+			font-family: 'Rubik', 'Inter', system-ui, sans-serif;
+			font-weight: 700;
 		letter-spacing: 0;
 		color: var(--om-gray-850);
 	}
@@ -3389,149 +4002,6 @@
 		color: var(--om-teal-700);
 	}
 
-	.global-search input,
-	.search-submit,
-	.country-picker-trigger,
-	.dataset-picker-trigger,
-	.map-reset {
-		box-sizing: border-box;
-		height: var(--search-control-height);
-		margin: 0;
-		border: 0;
-	}
-
-	.country-picker {
-		position: relative;
-		flex-shrink: 0;
-	}
-
-	.country-picker-trigger {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		border-radius: var(--om-radius-m) 0 0 var(--om-radius-m);
-		background: transparent;
-		box-shadow: var(--search-shadow);
-		padding: 0 13px;
-		font-family: 'Inter', system-ui, sans-serif;
-		color: var(--om-gray-700);
-		cursor: pointer;
-	}
-
-	.country-picker-trigger .picker-flag,
-	.dataset-picker-trigger .picker-logo {
-		flex-shrink: 0;
-	}
-
-	.dataset-picker {
-		position: relative;
-		flex-shrink: 0;
-	}
-
-	.dataset-picker-trigger {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		border-left: 1px solid color-mix(in srgb, var(--om-gray-700) 12%, transparent);
-		border-radius: 0;
-		background: transparent;
-		box-shadow: var(--search-shadow);
-		padding: 0 13px;
-		font-family: 'Inter', system-ui, sans-serif;
-		color: var(--om-gray-700);
-		cursor: pointer;
-	}
-
-	.dataset-picker-trigger:hover,
-	.dataset-picker-trigger[aria-expanded='true'] {
-		background: color-mix(in srgb, var(--om-teal-100) 52%, transparent);
-		color: var(--om-teal-700);
-	}
-
-	.dataset-picker-trigger.scoped {
-		border: 0;
-		border-left: 1px solid color-mix(in srgb, var(--om-teal-700) 18%, transparent);
-		background: color-mix(in srgb, var(--om-teal-100) 62%, transparent);
-		color: var(--om-teal-700);
-	}
-
-	.dataset-picker-label {
-		font-size: 13px;
-		font-weight: 800;
-		line-height: 1;
-		white-space: nowrap;
-	}
-
-	.dataset-picker-trigger span:not(.picker-logo):not(.picker-logo *),
-	.country-picker-trigger span:not(.picker-flag) {
-		max-width: min(160px, 18vw);
-		overflow: hidden;
-		font-size: 13px;
-		font-weight: 800;
-		line-height: 1;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.dataset-picker-trigger strong {
-		display: grid;
-		min-width: 25px;
-		height: 24px;
-		place-items: center;
-		border-radius: 999px;
-		background: var(--om-gray-850);
-		padding: 0 8px;
-		font-size: 11px;
-		font-weight: 800;
-		line-height: 1;
-		color: var(--om-white);
-	}
-
-	.dataset-picker-menu {
-		position: absolute;
-		z-index: 5;
-		top: calc(100% + 8px);
-		left: 0;
-		display: grid;
-		width: min(440px, calc(100vw - 32px));
-		max-height: min(430px, calc(100vh - 110px));
-		overflow: auto;
-		border-radius: var(--om-radius-m);
-		background: color-mix(in srgb, var(--om-white) 96%, transparent);
-		box-shadow: 0 8px 24px rgb(46 43 59 / 0.08);
-		padding: var(--om-space-xs);
-	}
-
-	.dataset-picker-menu button {
-		display: grid;
-		width: 100%;
-		grid-template-columns: auto minmax(0, 1fr) auto;
-		align-items: center;
-		gap: var(--om-space-m);
-		border: 0;
-		border-radius: var(--om-radius-s);
-		background: transparent;
-		padding: var(--om-space-s) 9px;
-		color: var(--om-gray-850);
-		font-family: 'Inter', system-ui, sans-serif;
-		text-align: left;
-		cursor: pointer;
-	}
-
-	.dataset-picker-menu .picker-logo.dataset-logo {
-		width: 72px;
-		height: 36px;
-	}
-
-	.dataset-picker-menu .picker-logo.dataset-logo img {
-		max-width: 66px;
-		max-height: 30px;
-	}
-
-	.dataset-picker-menu .picker-logo.dataset-logo > span {
-		font-size: 22px;
-	}
-
 	.picker-flag {
 		display: grid;
 		width: 24px;
@@ -3539,973 +4009,6 @@
 		font-size: 18px;
 		line-height: 1;
 		flex-shrink: 0;
-	}
-
-	.picker-logo.dataset-logo {
-		width: 112px;
-		height: 64px;
-		border: 0;
-		background: transparent;
-	}
-
-	.picker-logo.dataset-logo img {
-		max-width: 104px;
-		max-height: 56px;
-	}
-
-	.picker-logo.dataset-logo > span {
-		font-size: 36px;
-	}
-
-	.dataset-picker-trigger .picker-logo.dataset-logo {
-		width: 84px;
-		height: 52px;
-	}
-
-	.dataset-picker-trigger .picker-logo.dataset-logo img {
-		max-width: 76px;
-		max-height: 46px;
-	}
-
-	.dataset-picker-trigger .picker-logo.dataset-logo > span {
-		font-size: 28px;
-	}
-
-	.dataset-picker-menu button:hover,
-	.dataset-picker-menu button.active {
-		background: color-mix(in srgb, var(--om-teal-100) 72%, var(--om-white));
-	}
-
-	.dataset-picker-menu .dataset-clear {
-		margin-bottom: 2px;
-		border-bottom: 1px solid color-mix(in srgb, var(--om-gray-700) 10%, transparent);
-		border-radius: 0;
-		padding-bottom: 10px;
-	}
-
-	.dataset-picker-menu .dataset-clear .dataset-main span:first-child {
-		font-weight: 700;
-		color: var(--om-teal-700);
-	}
-
-	.dataset-main,
-	.country-main {
-		display: grid;
-		gap: 2px;
-		min-width: 0;
-	}
-
-	.dataset-main span:first-child,
-	.country-main span:first-child {
-		overflow: hidden;
-		font-size: 13px;
-		font-weight: 700;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.dataset-main small,
-	.country-main small {
-		overflow: hidden;
-		font-size: 11px;
-		color: var(--om-gray-700);
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.dataset-count,
-	.country-count {
-		display: grid;
-		justify-items: end;
-		gap: 1px;
-	}
-
-	.dataset-count strong,
-	.country-count strong {
-		font-size: 13px;
-		font-weight: 800;
-		line-height: 1;
-	}
-
-	.dataset-count small,
-	.country-count small {
-		font-size: 10px;
-		font-weight: 700;
-		letter-spacing: 0.02em;
-		text-transform: uppercase;
-		color: var(--om-gray-700);
-	}
-
-	.country-picker-trigger:hover,
-	.country-picker-trigger[aria-expanded='true'] {
-		background: color-mix(in srgb, var(--om-teal-100) 52%, transparent);
-		color: var(--om-teal-700);
-	}
-
-	.country-picker-trigger.scoped {
-		border: 0;
-		background: color-mix(in srgb, var(--om-teal-100) 62%, transparent);
-		color: var(--om-teal-700);
-	}
-
-	.country-picker-trigger span {
-		max-width: min(180px, 20vw);
-		overflow: hidden;
-		font-size: 13px;
-		font-weight: 800;
-		line-height: 1;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.country-picker-trigger strong {
-		display: grid;
-		min-width: 25px;
-		height: 24px;
-		place-items: center;
-		border-radius: 999px;
-		background: var(--om-gray-850);
-		padding: 0 8px;
-		font-size: 11px;
-		font-weight: 800;
-		line-height: 1;
-		color: var(--om-white);
-	}
-
-	.country-picker-menu {
-		position: absolute;
-		z-index: 5;
-		top: calc(100% + 8px);
-		left: 0;
-		display: grid;
-		width: min(360px, calc(100vw - 32px));
-		max-height: min(430px, calc(100vh - 110px));
-		overflow: auto;
-		border-radius: var(--om-radius-m);
-		background: color-mix(in srgb, var(--om-white) 96%, transparent);
-		box-shadow: 0 8px 24px rgb(46 43 59 / 0.08);
-		padding: var(--om-space-xs);
-	}
-
-	.country-picker-menu button {
-		display: grid;
-		width: 100%;
-		grid-template-columns: auto minmax(0, 1fr) auto;
-		align-items: center;
-		gap: var(--om-space-m);
-		border: 0;
-		border-radius: var(--om-radius-s);
-		background: transparent;
-		padding: var(--om-space-s) 9px;
-		color: var(--om-gray-850);
-		font-family: 'Inter', system-ui, sans-serif;
-		text-align: left;
-		cursor: pointer;
-	}
-
-	.country-picker-menu button:hover,
-	.country-picker-menu button.active {
-		background: color-mix(in srgb, var(--om-teal-100) 72%, var(--om-white));
-	}
-
-	.country-picker-menu .country-clear {
-		margin-bottom: 2px;
-		border-bottom: 1px solid color-mix(in srgb, var(--om-gray-700) 10%, transparent);
-		border-radius: 0;
-		padding-bottom: 10px;
-	}
-
-	.country-picker-menu .country-clear .country-main span:first-child {
-		font-weight: 700;
-		color: var(--om-teal-700);
-	}
-
-	.map-filter-menu {
-		display: grid;
-		max-height: min(44vh, 520px);
-		overflow: auto;
-		gap: var(--om-space-m);
-		padding: var(--om-space-m);
-	}
-
-	.drawer-filter-menu {
-		border-radius: var(--om-radius-s);
-		background: color-mix(in srgb, var(--om-gray-100) 55%, var(--om-white));
-	}
-
-	.drawer-filter-menu .map-filter-options {
-		border: 0;
-		background: transparent;
-		padding: 0;
-	}
-
-	.drawer-filter-menu .map-filter-columns > div {
-		display: flex;
-		flex-direction: column;
-		min-height: 0;
-	}
-
-	.drawer-filter-menu .map-filter-options,
-	.drawer-filter-menu .map-filter-options.compact {
-		max-height: 112px;
-		overflow-y: auto;
-		overscroll-behavior: contain;
-	}
-
-	.drawer-filter-menu .map-filter-curl {
-		border-top: 0;
-		padding-top: 0;
-	}
-
-	.map-filter-section {
-		display: grid;
-		gap: var(--om-space-s);
-	}
-
-	.map-filter-section-head,
-	.map-filter-population-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--om-space-m);
-	}
-
-	.map-filter-section-head p {
-		margin-top: 2px;
-		font-family: 'Inter', system-ui, sans-serif;
-		font-size: 11px;
-		font-weight: 800;
-		line-height: 1.1;
-		color: var(--om-gray-850);
-	}
-
-	.map-filter-mini-actions {
-		display: flex;
-		flex-shrink: 0;
-		gap: 4px;
-	}
-
-	.map-filter-mini-actions button {
-		height: 26px;
-		border: 1px solid color-mix(in srgb, var(--om-gray-400) 55%, transparent);
-		border-radius: var(--om-radius-xs);
-		background: color-mix(in srgb, var(--om-white) 76%, transparent);
-		padding: 0 8px;
-		font-size: 11px;
-		font-weight: 800;
-		color: var(--om-gray-600);
-		cursor: pointer;
-	}
-
-	.map-filter-mini-actions button:hover {
-		background: color-mix(in srgb, var(--om-teal-100) 70%, var(--om-white));
-		color: var(--om-teal-700);
-	}
-
-	.map-filter-match {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 8px 12px;
-		padding: 2px 0;
-		font-size: 12px;
-		font-weight: 700;
-		color: var(--om-gray-700);
-	}
-
-	.map-filter-match.disabled {
-		opacity: 0.45;
-	}
-
-	.map-filter-match > span,
-	.map-filter-population-head > span {
-		font-size: 10px;
-		font-weight: 800;
-		line-height: 1.2;
-		text-transform: uppercase;
-		color: var(--om-gray-600);
-	}
-
-	.map-filter-match label {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		cursor: pointer;
-	}
-
-	.map-filter-match input {
-		accent-color: var(--om-teal-600);
-		cursor: pointer;
-	}
-
-	.map-filter-population-groups {
-		display: grid;
-		max-height: 250px;
-		overflow: auto;
-		gap: var(--om-space-s);
-		padding-right: 2px;
-	}
-
-	.map-filter-population-group {
-		display: grid;
-		gap: 6px;
-		border: 1px solid color-mix(in srgb, var(--om-gray-300) 70%, transparent);
-		border-radius: var(--om-radius-s);
-		background: color-mix(in srgb, var(--om-white) 58%, transparent);
-		padding: var(--om-space-s);
-	}
-
-	.map-filter-population-group.disabled {
-		opacity: 0.45;
-	}
-
-	.map-filter-grid {
-		display: grid;
-		grid-template-columns: repeat(4, minmax(0, 1fr));
-		gap: var(--om-space-s);
-	}
-
-	.map-filter-grid label,
-	.map-filter-columns label {
-		display: grid;
-		gap: 5px;
-		min-width: 0;
-	}
-
-	.map-filter-grid label > span,
-	.map-filter-heading {
-		font-size: 10px;
-		font-weight: 800;
-		line-height: 1.2;
-		text-transform: uppercase;
-		color: var(--om-gray-600);
-	}
-
-	.map-filter-grid input,
-	.map-filter-grid select {
-		min-width: 0;
-		height: 34px;
-		border: 1px solid color-mix(in srgb, var(--om-gray-400) 55%, transparent);
-		border-radius: var(--om-radius-s);
-		background: color-mix(in srgb, var(--om-white) 88%, transparent);
-		padding: 0 9px;
-		font-size: 13px;
-		color: var(--om-gray-850);
-		outline: none;
-	}
-
-	.map-filter-grid select {
-		cursor: pointer;
-	}
-
-	.range-inputs {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-		gap: 6px;
-	}
-
-	.map-filter-columns {
-		display: grid;
-		grid-template-columns: 0.75fr 1.25fr;
-		gap: var(--om-space-m);
-	}
-
-	.map-filter-options {
-		display: grid;
-		max-height: 210px;
-		overflow: auto;
-		gap: 2px;
-		margin-top: 6px;
-		border: 1px solid color-mix(in srgb, var(--om-gray-300) 70%, transparent);
-		border-radius: var(--om-radius-s);
-		background: color-mix(in srgb, var(--om-gray-100) 62%, transparent);
-		padding: 6px;
-	}
-
-	.map-filter-options.compact {
-		max-height: none;
-	}
-
-	.map-filter-options label {
-		display: flex;
-		cursor: pointer;
-		align-items: center;
-		gap: 7px;
-		border-radius: var(--om-radius-xs);
-		padding: 5px 6px;
-		font-size: 12px;
-		font-weight: 650;
-		line-height: 1.25;
-		color: var(--om-gray-750);
-	}
-
-	.map-filter-options label:hover {
-		background: color-mix(in srgb, var(--om-teal-100) 62%, var(--om-white));
-	}
-
-	.map-filter-options input {
-		accent-color: var(--om-teal-600);
-		cursor: pointer;
-	}
-
-	.map-filter-actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: var(--om-space-s);
-		border-top: 1px solid color-mix(in srgb, var(--om-gray-300) 80%, transparent);
-		padding-top: var(--om-space-s);
-	}
-
-	.map-filter-curl {
-		display: grid;
-		gap: var(--om-space-s);
-		border-top: 1px solid color-mix(in srgb, var(--om-gray-300) 80%, transparent);
-		padding-top: var(--om-space-s);
-	}
-
-	.map-filter-curl-row {
-		display: flex;
-		align-items: center;
-		gap: var(--om-space-s);
-	}
-
-	.map-filter-curl-row code {
-		min-width: 0;
-		flex: 1;
-		overflow: hidden;
-		border: 1px solid color-mix(in srgb, var(--om-gray-400) 55%, transparent);
-		border-radius: var(--om-radius-s);
-		background: color-mix(in srgb, var(--om-white) 76%, transparent);
-		padding: 8px 10px;
-		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-		font-size: 11px;
-		line-height: 1.35;
-		color: var(--om-gray-700);
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.map-filter-curl-row button {
-		display: inline-flex;
-		height: 34px;
-		flex-shrink: 0;
-		align-items: center;
-		border: 1px solid color-mix(in srgb, var(--om-gray-400) 65%, transparent);
-		border-radius: var(--om-radius-s);
-		background: color-mix(in srgb, var(--om-white) 84%, transparent);
-		padding: 0 12px;
-		font-size: 12px;
-		font-weight: 800;
-		color: var(--om-gray-700);
-		cursor: pointer;
-	}
-
-	.map-filter-curl-row button:hover {
-		background: color-mix(in srgb, var(--om-teal-100) 70%, var(--om-white));
-		color: var(--om-teal-700);
-	}
-
-	.map-filter-actions button {
-		display: inline-flex;
-		height: 34px;
-		align-items: center;
-		border: 1px solid transparent;
-		border-radius: var(--om-radius-s);
-		padding: 0 12px;
-		font-size: 12px;
-		font-weight: 800;
-		text-decoration: none;
-	}
-
-	.map-filter-actions button {
-		border: 1px solid color-mix(in srgb, var(--om-gray-400) 65%, transparent);
-		background: color-mix(in srgb, var(--om-white) 84%, transparent);
-		color: var(--om-gray-700);
-		cursor: pointer;
-	}
-
-	.global-search input {
-		user-select: text;
-		min-width: 0;
-		flex: 1;
-		border-radius: 0;
-		background: transparent;
-		box-shadow: var(--search-shadow);
-		padding: 0 14px;
-		font-size: 15px;
-		font-weight: 400;
-		line-height: 1;
-		color: var(--om-gray-850);
-		outline: none;
-		appearance: none;
-		user-select: text;
-		-webkit-user-select: text;
-	}
-
-	.global-search input::placeholder {
-		color: var(--om-gray-550);
-	}
-
-	.global-search input:focus {
-		box-shadow: none;
-	}
-
-	.search-submit {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		flex-shrink: 0;
-		align-self: stretch;
-		height: var(--search-control-height);
-		border-radius: 0 var(--om-radius-m) var(--om-radius-m) 0;
-		background: var(--om-gray-850);
-		box-shadow: var(--search-shadow);
-		padding: 0 18px;
-		font-size: 15px;
-		font-weight: 700;
-		line-height: 1;
-		color: var(--om-white);
-		cursor: pointer;
-		appearance: none;
-	}
-
-	.search-submit:hover {
-		background: var(--om-green-600);
-	}
-
-	.search-submit:active {
-		background: var(--om-teal-700);
-	}
-
-	.map-reset {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		flex-shrink: 0;
-		align-self: stretch;
-		height: var(--search-control-height);
-		border-radius: var(--om-radius-m);
-		background: var(--panel-surface);
-		box-shadow: var(--topbar-shadow);
-		padding: 0 18px;
-		font-family: 'Inter', system-ui, sans-serif;
-		font-size: 15px;
-		font-weight: 700;
-		line-height: 1;
-		color: var(--om-gray-700);
-		cursor: pointer;
-	}
-
-	.map-reset:hover {
-		background: color-mix(in srgb, var(--om-teal-100) 70%, var(--om-white));
-		color: var(--om-teal-700);
-	}
-
-	.country-main small,
-	.country-count small {
-		display: block;
-		font-size: 10px;
-		font-weight: 500;
-		line-height: 1.4;
-		color: var(--om-gray-600);
-	}
-
-	.variant-mix {
-		bottom: var(--bottom-inset);
-		left: max(16px, calc((100vw - 480px) / 2));
-		width: min(480px, calc(100vw - 32px));
-		padding: var(--om-space-m);
-	}
-
-	.explore-intro-panel {
-		position: absolute;
-		z-index: 2;
-		top: var(--results-drawer-top);
-		left: var(--screen-inset);
-		display: grid;
-		width: var(--side-panel-width);
-		gap: 3px;
-		padding: 14px var(--om-space-l);
-		border-radius: var(--om-radius-m);
-		box-shadow: var(--panel-shadow);
-	}
-
-	.explore-intro-panel h2 {
-		margin: 0;
-		overflow: hidden;
-		font-size: 26px;
-		font-weight: 800;
-		line-height: 1.05;
-		color: var(--om-gray-850);
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.explore-intro-panel h2 span {
-		color: var(--om-green-600);
-	}
-
-	.explore-intro-panel p {
-		margin: 0;
-		font-size: 14px;
-		font-weight: 600;
-		line-height: 1.3;
-		color: var(--om-gray-600);
-	}
-
-	:global(.variant-detail-side-panel .panel-heading) {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 16px;
-		margin: 0;
-	}
-
-	:global(.variant-detail-side-panel .country-panel-header) {
-		flex-shrink: 0;
-		padding: 16px var(--explore-side-panel-padding-x, 16px) 12px;
-		border-bottom: 1px solid color-mix(in srgb, var(--om-teal-600) 10%, var(--om-gray-400) 28%);
-		background: color-mix(in srgb, var(--om-teal-100) 18%, transparent);
-	}
-
-	:global(.variant-detail-side-panel .detail-heading-main) {
-		display: flex;
-		align-items: center;
-		gap: var(--om-space-m);
-		min-width: 0;
-	}
-
-	:global(.variant-detail-side-panel .country-panel-titleblock) {
-		flex-direction: column;
-		align-items: flex-start;
-		gap: 3px;
-		min-width: 0;
-	}
-
-	:global(.variant-detail-side-panel .detail-context) {
-		margin: 0;
-		font-size: 11px;
-		font-weight: 500;
-		line-height: 1.35;
-		color: var(--om-gray-600);
-	}
-
-	:global(.variant-detail-side-panel .country-panel-header h2) {
-		font-family: 'Rubik', 'Inter', system-ui, sans-serif;
-		font-size: 17px;
-		font-weight: 700;
-		line-height: 1.15;
-		color: var(--om-gray-850);
-	}
-
-	:global(.variant-detail-side-scroll),
-	:global(.variant-detail-side-panel .explore-side-panel-scroll) {
-		flex: 1 1 auto;
-		min-height: 0;
-		overflow-x: hidden;
-		overflow-y: auto;
-		overscroll-behavior: contain;
-		padding: 12px var(--explore-side-panel-padding-x, 16px) 16px;
-		display: grid;
-		gap: var(--om-space-m);
-	}
-
-	:global(.variant-detail-summary) {
-		display: grid;
-		gap: 8px;
-		margin: 0;
-	}
-
-	:global(.variant-detail-summary .detail-card-label) {
-		display: block;
-		margin: 0 0 7px;
-		font-size: 9px;
-		font-weight: 700;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--om-teal-700);
-	}
-
-	:global(.variant-detail-summary dl) {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr);
-		gap: 4px;
-		margin: 0;
-	}
-
-	:global(.variant-detail-summary dl > div) {
-		display: grid;
-		gap: 3px;
-		border-radius: var(--om-radius-s);
-		background: color-mix(in srgb, var(--om-teal-100) 24%, transparent);
-		padding: 8px 10px;
-	}
-
-	:global(.variant-detail-summary dt) {
-		font-size: 9px;
-		font-weight: 700;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--om-teal-700);
-	}
-
-	:global(.variant-detail-summary dd) {
-		margin: 0;
-		font-size: 12px;
-		font-weight: 700;
-		line-height: 1.35;
-		color: var(--om-gray-850);
-		word-break: break-word;
-	}
-
-	:global(.variant-detail-back) {
-		font-size: 11px;
-		font-weight: 650;
-		line-height: 1.2;
-		color: var(--om-gray-600);
-		text-decoration: none;
-	}
-
-	:global(.variant-detail-back:hover) {
-		color: var(--om-teal-700);
-		text-decoration: underline;
-	}
-
-	:global(.variant-detail-id) {
-		margin: 0;
-		overflow: hidden;
-		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-		font-size: 13px;
-		font-weight: 700;
-		line-height: 1.35;
-		color: var(--om-gray-850);
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	:global(.variant-detail-links) {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
-		gap: 4px;
-	}
-
-	:global(.variant-detail-links a) {
-		display: inline-flex;
-		min-width: 0;
-		align-items: center;
-		justify-content: center;
-		gap: 4px;
-		border: 1px solid color-mix(in srgb, var(--om-teal-600) 11%, var(--om-gray-400) 38%);
-		border-radius: var(--om-radius-s);
-		background: color-mix(in srgb, var(--om-white) 84%, transparent);
-		padding: 6px 4px;
-		font-size: 10px;
-		font-weight: 700;
-		color: var(--om-gray-700);
-		text-decoration: none;
-		white-space: nowrap;
-	}
-
-	:global(.variant-detail-links a:hover) {
-		border-color: color-mix(in srgb, var(--om-teal-600) 42%, transparent);
-		color: var(--om-teal-700);
-		background: color-mix(in srgb, var(--om-teal-100) 60%, var(--om-white));
-	}
-
-	:global(.variant-detail-links img),
-	:global(.variant-detail-links svg) {
-		width: 14px;
-		height: 14px;
-	}
-
-	:global(.variant-detail-summary dd.mono) {
-		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-		font-size: 11px;
-		font-weight: 600;
-	}
-
-	:global(.variant-gene-list) {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 4px;
-	}
-
-	:global(.variant-gene-list a) {
-		border: 1px solid color-mix(in srgb, var(--om-gray-400) 70%, transparent);
-		border-radius: 999px;
-		padding: 2px 8px;
-		font-size: 11px;
-		font-weight: 700;
-		color: var(--om-teal-700);
-		text-decoration: none;
-	}
-
-	:global(.variant-gene-list a:hover) {
-		background: color-mix(in srgb, var(--om-teal-100) 60%, transparent);
-	}
-
-	:global(.vep-chip) {
-		display: inline-flex;
-		border-radius: 999px;
-		border: 1px solid color-mix(in srgb, var(--om-gray-400) 70%, transparent);
-		padding: 2px 8px;
-		font-size: 11px;
-		font-weight: 700;
-		text-decoration: none;
-	}
-
-	.explore-stat-row {
-		position: absolute;
-		z-index: 2;
-		top: 174px;
-		left: var(--screen-inset);
-		display: grid;
-		width: var(--side-panel-width);
-		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: var(--om-space-s);
-	}
-
-	.explore-stat-box {
-		display: grid;
-		min-width: 0;
-		gap: 2px;
-		border: 0;
-		border-radius: var(--om-radius-m);
-		box-shadow: var(--panel-shadow);
-		padding: var(--om-space-m);
-	}
-
-	.explore-stat-box strong {
-		overflow: hidden;
-		font-size: 20px;
-		font-weight: 800;
-		line-height: 1.1;
-		color: var(--om-gray-850);
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.explore-stat-box span {
-		overflow: hidden;
-		font-size: 10px;
-		font-weight: 800;
-		line-height: 1.2;
-		text-transform: uppercase;
-		color: var(--om-teal-700);
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.explore-variant-panel {
-		top: 250px;
-		bottom: auto;
-		left: var(--screen-inset);
-		width: var(--side-panel-width);
-		transform: none;
-	}
-
-	.explore-variant-panel.explore-variant-panel-centered {
-		top: auto;
-		bottom: var(--bottom-inset);
-		left: max(16px, calc((100vw - 480px) / 2));
-		width: min(480px, calc(100vw - 32px));
-	}
-
-	.variant-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--om-space-l);
-		margin-bottom: var(--om-space-s);
-	}
-
-	.variant-head h2 {
-		margin: 0;
-		font-family: 'Rubik', 'Inter', system-ui, sans-serif;
-		font-size: 17px;
-		font-weight: 700;
-		line-height: 1.15;
-		color: var(--om-gray-850);
-	}
-
-	.variant-head > strong {
-		font-size: 20px;
-		font-weight: 800;
-		line-height: 1.15;
-		color: var(--om-gray-850);
-	}
-
-	.variant-bar {
-		display: flex;
-		height: 14px;
-		overflow: hidden;
-		border-radius: 999px;
-		background: color-mix(in srgb, var(--om-gray-200) 55%, transparent);
-		box-shadow: inset 0 1px 2px rgb(46 43 59 / 0.06);
-	}
-
-	.variant-bar span {
-		min-width: 2px;
-	}
-
-	.variant-key {
-		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		column-gap: var(--om-space-s);
-		margin-top: var(--om-space-s);
-	}
-
-	.variant-key-slot {
-		min-width: 0;
-	}
-
-	.variant-key-item {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 1px;
-		text-align: center;
-	}
-
-	.variant-key-label {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: 6px;
-		font-size: 11px;
-		font-weight: 600;
-		color: var(--om-gray-700);
-		min-width: 0;
-		max-width: 100%;
-		white-space: nowrap;
-	}
-
-	.variant-swatch {
-		width: 9px;
-		height: 9px;
-		border-radius: 999px;
-		flex-shrink: 0;
-		box-shadow: 0 0 0 1px rgb(46 43 59 / 0.08);
-	}
-
-	.variant-key-item strong {
-		font-size: 12px;
-		font-weight: 800;
-		line-height: 1.2;
-		font-variant-numeric: tabular-nums;
-		color: var(--om-gray-850);
-	}
-
-	.bottom-panel.drawer-open {
-		opacity: 0;
-		pointer-events: none;
-		transition: opacity 160ms ease;
-	}
-
-	.variant-mix.drawer-open {
-		opacity: 0;
-		pointer-events: none;
-		transition: opacity 160ms ease;
 	}
 
 	.site-footer {
@@ -4536,380 +4039,14 @@
 		text-decoration: underline;
 	}
 
-	.route-overlay {
-		position: absolute;
-		z-index: 2;
-		left: var(--screen-inset);
-		right: var(--screen-inset);
-		top: 92px;
-		bottom: var(--bottom-inset);
-		overflow: auto;
-		border-radius: var(--om-radius-m);
-		background: color-mix(in srgb, var(--om-white) 88%, transparent);
-		box-shadow: 0 12px 34px rgb(46 43 59 / 0.1);
-		padding: clamp(20px, 3vw, 36px);
-	}
-
-	.route-overlay.with-left-panels {
-		left: calc(var(--layout-left-width) + var(--screen-inset));
-	}
-
-	:global(.map-results-drawer) {
-		--om-white: #ffffff;
-		--om-gray-100: #f7f6f9;
-		--om-gray-300: #ecebef;
-		--om-gray-400: #cfcdd6;
-		--om-gray-600: #5e5a72;
-		--om-gray-700: #464257;
-		--om-gray-850: #272532;
-		--om-teal-100: #ddeef3;
-		--om-teal-600: #388ca8;
-		--om-teal-700: #2a697e;
-		--om-radius-s: 6px;
-		--om-radius-m: 8px;
-		--om-space-s: 8px;
-		--om-space-m: 12px;
-		--om-space-l: 16px;
-		--panel-surface: color-mix(in srgb, var(--om-white) 92%, transparent);
-		--panel-shadow: 0 10px 28px rgb(46 43 59 / 0.08);
-		--screen-inset: 24px;
-		--top-search-left: 49.5vw;
-		--top-search-width: clamp(560px, 52vw, 920px);
-		--results-drawer-top: 84px;
-		--results-drawer-bottom: 28px;
-		--results-drawer-left-edge: calc(var(--top-search-left) - (var(--top-search-width) / 2));
-		--column-header-bg: var(--om-gray-100);
-		--column-header-color: var(--om-gray-600);
-		--column-header-size: 11px;
-		--column-header-weight: 600;
-		--column-header-tracking: 0.06em;
-		--column-header-padding-y: 10px;
-		--column-header-padding-x: 12px;
-		--column-header-height: 32px;
-		--drawer-toolbar-height: 42px;
-		pointer-events: none;
-		top: var(--results-drawer-top) !important;
-		right: var(--screen-inset) !important;
-		bottom: var(--results-drawer-bottom) !important;
-		left: auto !important;
-		width: calc(100vw - var(--results-drawer-left-edge) - var(--screen-inset)) !important;
-		max-width: none !important;
-		height: calc(100vh - var(--results-drawer-top) - var(--results-drawer-bottom)) !important;
-		max-height: none !important;
-		min-height: 0;
-		display: flex !important;
-		flex-direction: column;
-		overflow: hidden;
-		border: 0 !important;
-		border-radius: var(--om-radius-m) 0 0 var(--om-radius-m);
-		background: var(--panel-surface);
-		box-shadow: var(--panel-shadow);
-		font-family: 'Inter', system-ui, sans-serif;
-		animation: none !important;
-		transition: none !important;
-		transform: none !important;
-	}
-
-	.drawer-filter-menu,
-	.map-results-body,
-	.variant-route-error {
-		pointer-events: auto;
-	}
-
-	.map-results-body {
-		display: flex;
-		min-height: 0;
-		flex: 1;
-		overflow: hidden;
-		border-radius: inherit;
-		padding: 0;
-	}
-
-	/* vaul applies user-select: none on the drawer; allow copying table values */
-	:global(.map-results-drawer .map-results-body),
-	:global(.map-results-drawer .map-results-body *) {
-		user-select: text !important;
-		-webkit-user-select: text !important;
-	}
-
-	:global(.map-results-drawer .map-results-body button),
-	:global(.map-results-drawer .map-results-body summary) {
-		user-select: none !important;
-		-webkit-user-select: none !important;
-	}
-
-	.map-results-body > :global(.card-surface) {
-		display: flex;
-		min-height: 0;
-		flex: 1;
-		flex-direction: column;
-		border: 0;
-		background: transparent;
-		box-shadow: none;
-		padding: 0;
-	}
-
-	.map-results-body :global(.variant-detail-tables) {
-		display: flex;
-		min-height: 0;
-		min-width: 0;
-		flex: 1;
-		flex-direction: column;
-		overflow: hidden;
-		width: 100%;
-	}
-
-	.map-results-body :global(.variant-detail-tabs) {
-		display: flex;
-		flex-shrink: 0;
-		gap: 0;
-		box-sizing: border-box;
-		width: 100%;
-		height: var(--column-header-height);
-		min-height: var(--column-header-height);
-		max-height: var(--column-header-height);
-		border-bottom: 1px solid color-mix(in srgb, var(--om-gray-400) 28%, transparent);
-		background: color-mix(in srgb, var(--om-teal-100) 14%, var(--column-header-bg));
-	}
-
-	.map-results-body :global(.variant-detail-tabs button) {
-		flex: 1 1 0;
-		min-width: 0;
-		box-sizing: border-box;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		height: var(--column-header-height);
-		border: 0;
-		border-right: 1px solid color-mix(in srgb, var(--om-gray-400) 22%, transparent);
-		border-bottom: 2px solid transparent;
-		border-radius: 0;
-		background: transparent;
-		padding: 0 4px;
-		font-family: 'Inter', system-ui, sans-serif;
-		font-size: 10px;
-		font-weight: var(--column-header-weight);
-		letter-spacing: 0.05em;
-		text-transform: uppercase;
-		line-height: 1.1;
-		color: var(--column-header-color);
-		cursor: pointer;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.map-results-body :global(.variant-detail-tabs button:last-child) {
-		border-right: 0;
-	}
-
-	.map-results-body :global(.variant-detail-tabs button:hover) {
-		color: var(--om-gray-850);
-		background: color-mix(in srgb, var(--om-white) 55%, var(--column-header-bg));
-	}
-
-	.map-results-body :global(.variant-detail-tabs button.active),
-	.map-results-body :global(.variant-detail-tabs button[aria-selected='true']) {
-		color: var(--om-gray-850);
-		border-bottom-color: var(--om-teal-600);
-		background: color-mix(in srgb, var(--om-white) 88%, var(--left-panel-surface));
-	}
-
-	.map-results-body :global(.variant-detail-tab-panels) {
-		display: flex;
-		min-height: 0;
-		flex: 1;
-		flex-direction: column;
-		overflow: hidden;
-	}
-
-	.map-results-body :global(.variant-detail-tab-panels > .card-surface) {
-		display: flex;
-		min-height: 0;
-		flex: 1;
-		flex-direction: column;
-		overflow: auto;
-		border: 0;
-		background: transparent;
-		box-shadow: none;
-		margin-bottom: 0 !important;
-	}
-
-	.map-results-body :global(.variant-detail-tables.is-tabbed .variant-detail-section-bar) {
-		display: flex;
-		flex-shrink: 0;
-		align-items: center;
-		justify-content: space-between;
-		gap: 8px;
-		min-height: var(--drawer-toolbar-height);
-		padding: 0 var(--column-header-padding-x);
-		border-bottom: 1px solid color-mix(in srgb, var(--om-gray-400) 24%, transparent);
-		background: color-mix(in srgb, var(--om-white) 88%, var(--column-header-bg));
-	}
-
-	.map-results-body :global(.variant-detail-toolbar-meta) {
-		min-width: 0;
-		font-size: 12px;
-		font-weight: 600;
-		line-height: 1.2;
-		color: var(--om-gray-600);
-		white-space: nowrap;
-	}
-
-	.map-results-body :global(.variant-detail-tables.is-tabbed thead) {
-		position: sticky;
-		top: 0;
-		z-index: 1;
-		background: var(--column-header-bg);
-	}
-
-	.map-results-body :global(.variant-detail-tables.is-tabbed thead tr) {
-		height: var(--column-header-height);
-		background: var(--column-header-bg);
-	}
-
-	.map-results-body :global(.variant-detail-tables.is-tabbed thead th) {
-		box-sizing: border-box;
-		height: var(--column-header-height);
-		min-height: var(--column-header-height);
-		max-height: var(--column-header-height);
-		padding: 0 var(--column-header-padding-x);
-		border: 0;
-		vertical-align: middle;
-		background: var(--column-header-bg);
-		font-family: 'Inter', system-ui, sans-serif;
-		font-size: var(--column-header-size);
-		font-weight: var(--column-header-weight);
-		letter-spacing: var(--column-header-tracking);
-		text-transform: uppercase;
-		color: var(--column-header-color);
-		line-height: 1;
-		white-space: nowrap;
-	}
-
-	.map-results-body :global(.variant-detail-tables.is-tabbed thead th button) {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		padding: 0;
-		margin: 0;
-		border: 0;
-		background: transparent;
-		font: inherit;
-		color: inherit;
-		letter-spacing: inherit;
-		text-transform: inherit;
-		line-height: 1;
-		cursor: pointer;
-	}
-
-	.map-results-body :global(.variant-detail-tables.is-tabbed thead th button:hover) {
-		color: var(--om-gray-850);
-	}
-
-	.variant-route-error {
-		display: flex;
-		flex: 1;
-		flex-direction: column;
-		align-items: flex-start;
-		justify-content: center;
-		gap: 0.75rem;
-		padding: 1.5rem;
-		color: var(--muted-foreground);
-	}
-
-	.variant-route-error button {
-		border: 1px solid var(--border);
-		border-radius: 0.375rem;
-		padding: 0.375rem 0.75rem;
-		font-size: 0.875rem;
-	}
-
-	.variant-route-error button:hover {
-		background: var(--muted);
-	}
-
-	.map-results-body > :global(.card-surface > .vb-drawer-controls) {
-		flex-shrink: 0;
-		border-bottom: 1px solid color-mix(in srgb, var(--om-gray-300) 72%, transparent);
-		background: color-mix(in srgb, var(--om-white) 88%, transparent);
-	}
-
-	.map-results-body > :global(.card-surface > .vb-drawer-controls > .mb-3) {
-		flex-shrink: 0;
-		margin: 0 !important;
-		padding: 10px var(--om-space-m);
-		min-height: var(--drawer-toolbar-height);
-		align-items: center;
-	}
-
-	.map-results-body > :global(.card-surface > .vb-drawer-controls > .mb-3 button:not(:disabled)) {
-		cursor: pointer;
-	}
-
-	.map-results-body :global(.vb-embedded .vb-filter-panel) {
-		flex-shrink: 0;
-		min-height: 0;
-		margin: 0;
-		padding: 0 var(--om-space-m) var(--om-space-s);
-	}
-
-	.map-results-body :global(.vb-embedded .drawer-filter-menu) {
-		width: 100%;
-		box-sizing: border-box;
-		max-height: min(34vh, 340px);
-		overflow: auto;
-		overscroll-behavior: contain;
-		background: var(--om-white);
-	}
-
-	.map-results-body :global(.variant-results-shell) {
-		min-height: 0;
-		flex: 1;
-		overflow: auto;
-		border-radius: 0;
-		background: transparent;
-	}
-
-	.map-results-body :global(.variant-results-shell > .overflow-x-auto) {
-		min-height: 100%;
-	}
-
-	.map-results-body :global(.vb-embedded .vb-table-head) {
-		position: sticky;
-		z-index: 1;
-		top: 0;
-		background: var(--column-header-bg) !important;
-	}
-
-	.map-results-body :global(.vb-embedded .vb-table-head tr) {
-		height: var(--column-header-height) !important;
-		background: var(--column-header-bg) !important;
-	}
-
-	.map-results-body :global(.vb-embedded .vb-table-head th) {
-		box-sizing: border-box !important;
-		height: var(--column-header-height) !important;
-		min-height: var(--column-header-height) !important;
-		max-height: var(--column-header-height) !important;
-		padding-top: 0 !important;
-		padding-bottom: 0 !important;
-		background: var(--column-header-bg) !important;
-		vertical-align: middle !important;
-	}
-
-	.map-results-body :global(.vb-embedded .variant-results-shell tbody tr:first-child) {
-		border-top-width: 0;
-	}
-
 	.country-panel {
 		left: var(--screen-inset);
 		right: auto;
 		bottom: var(--bottom-inset);
 		display: flex;
-		max-height: min(430px, calc(100vh - 140px));
-		height: min(430px, calc(100vh - 140px));
-		width: var(--side-panel-width);
+		width: min(360px, calc(100vw - 48px));
+		max-height: min(340px, calc(var(--map-viewport-height) - 140px));
+		height: auto;
 		flex-direction: column;
 		overflow: hidden;
 	}
@@ -4920,7 +4057,7 @@
 		left: var(--screen-inset);
 		width: calc(var(--results-drawer-left-edge) - (2 * var(--screen-inset)));
 		max-width: calc(var(--results-drawer-left-edge) - (2 * var(--screen-inset)));
-		height: calc((100vh - var(--results-drawer-top) - var(--results-drawer-bottom)) / 2);
+		height: calc((var(--map-viewport-height) - var(--results-drawer-top) - var(--results-drawer-bottom)) / 2);
 		max-height: none;
 	}
 
@@ -4957,7 +4094,11 @@
 		min-width: 0;
 	}
 
-	.detail-heading .panel-action {
+	.detail-heading .panel-action,
+	.panel-actions-row .panel-action {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
 		min-height: 34px;
 		border: 1px solid color-mix(in srgb, var(--om-gray-400) 70%, transparent);
 		border-radius: var(--om-radius-s);
@@ -4972,7 +4113,19 @@
 		white-space: nowrap;
 	}
 
-	.detail-heading .panel-action:hover {
+	.panel-actions-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	.panel-actions-row .panel-action.primary {
+		background: var(--om-gray-900);
+		color: var(--om-white);
+	}
+
+	.detail-heading .panel-action:hover,
+	.panel-actions-row .panel-action:hover {
 		border-color: color-mix(in srgb, var(--om-teal-600) 42%, transparent);
 		background: color-mix(in srgb, var(--om-teal-100) 60%, var(--om-white));
 		color: var(--om-teal-700);
@@ -5028,11 +4181,10 @@
 		padding: 0 0 4px;
 	}
 
-	.detail-card-label,
-	.meta-dataset-head p,
-	.detail-section p {
-		display: block;
-		margin: 0 0 7px;
+		.detail-card-label,
+		.detail-section p {
+			display: block;
+			margin: 0 0 7px;
 		font-size: 9px;
 		font-weight: 700;
 		letter-spacing: 0.08em;
@@ -5040,302 +4192,13 @@
 		color: var(--om-teal-700);
 	}
 
-	.detail-section {
-		margin: 0;
-	}
+		.detail-section {
+			margin: 0;
+		}
 
-	.meta-dataset-head p {
-		margin: 0;
-	}
-
-	.country-list {
-		overflow: auto;
-		padding: 0 var(--om-space-xs) var(--om-space-xs);
-	}
-
-	.country-list button {
-		display: grid;
-		width: 100%;
-		grid-template-columns: minmax(0, 1fr) auto;
-		align-items: center;
-		gap: var(--om-space-m);
-		border: 0;
-		border-radius: var(--om-radius-s);
-		background: transparent;
-		padding: var(--om-space-s) 9px;
-		color: var(--om-gray-850);
-		font-family: 'Inter', system-ui, sans-serif;
-		text-align: left;
-		cursor: pointer;
-	}
-
-	.country-list button:hover {
-		background: color-mix(in srgb, var(--om-teal-100) 42%, transparent);
-	}
-
-	.country-main span {
-		display: block;
-		overflow: hidden;
-		font-size: 12px;
-		font-weight: 700;
-		line-height: 1.375;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.country-count {
-		text-align: right;
-	}
-
-	.country-count strong {
-		display: block;
-		font-size: 13px;
-		font-weight: 700;
-	}
-
-	.bottom-panel {
-		right: var(--screen-inset);
-		bottom: var(--bottom-inset);
-		display: flex;
-		flex-direction: column;
-		width: var(--side-panel-width);
-		max-height: min(430px, calc(100vh - 140px));
-		overflow: hidden;
-		padding: 0;
-	}
-
-	.explore-datasets-panel {
-		top: 370px;
-		right: auto;
-		bottom: var(--bottom-inset);
-		left: var(--screen-inset);
-		height: auto;
-		max-height: none;
-	}
-
-	.explore-side-panel {
-		position: fixed;
-		z-index: 2;
-		top: calc(
-			var(--results-drawer-top) +
-				(var(--drawer-track-height) - var(--explore-side-panel-max-height)) / 2
-		);
-		bottom: auto;
-		left: var(--screen-inset);
-		right: auto;
-		width: var(--explore-side-panel-width);
-		max-width: var(--explore-side-panel-width);
-		height: var(--explore-side-panel-max-height);
-		max-height: var(--explore-side-panel-max-height);
-		min-height: 0;
-		display: flex;
-		flex-direction: column;
-		overflow: hidden;
-		border: 0;
-		border-radius: var(--om-radius-m);
-		box-shadow: var(--panel-shadow);
-		pointer-events: auto;
-	}
-
-	.explore-side-panel .panel-heading.country-panel-header {
-		padding: 16px var(--explore-side-panel-padding-x) 12px;
-	}
-
-	.explore-datasets-side-panel .country-panel-header h2 {
-		font-family: 'Rubik', 'Inter', system-ui, sans-serif;
-		font-size: 17px;
-		font-weight: 700;
-		line-height: 1.15;
-		color: var(--om-gray-850);
-	}
-
-	.explore-side-panel .explore-side-panel-scroll,
-	.explore-side-panel-scroll,
-	.explore-datasets-scroll {
-		flex: 1 1 auto;
-		min-height: 0;
-		overflow-x: hidden;
-		overflow-y: auto;
-		overscroll-behavior: contain;
-		padding: 12px var(--explore-side-panel-padding-x) 16px;
-	}
-
-	.explore-datasets-scroll {
-		display: grid;
-		gap: 6px;
-	}
-
-	.explore-datasets-side-panel .dataset-logo {
-		display: flex;
-		width: 100%;
-		height: 48px;
-		flex-shrink: 0;
-		align-items: center;
-		justify-content: center;
-		border: 0;
-		border-radius: var(--om-radius-s);
-		background: color-mix(in srgb, var(--om-white) 82%, transparent);
-	}
-
-	.explore-datasets-side-panel .dataset-logo img {
-		max-width: min(100%, 180px);
-		max-height: 36px;
-		object-fit: contain;
-	}
-
-	.explore-datasets-side-panel .dataset-logo > span {
-		font-size: 26px;
-		line-height: 1;
-	}
-
-	.explore-datasets-side-panel .database-row {
-		display: flex;
-		flex-direction: column;
-		align-items: stretch;
-		gap: 8px;
-		width: 100%;
-		box-sizing: border-box;
-		padding: 10px;
-		border: 1px solid color-mix(in srgb, var(--om-gray-400) 24%, transparent);
-		border-radius: var(--om-radius-m);
-		background: color-mix(in srgb, var(--om-white) 76%, var(--left-panel-surface));
-		text-align: left;
-		cursor: pointer;
-		font-family: 'Inter', system-ui, sans-serif;
-		transition:
-			border-color 0.15s ease,
-			background 0.15s ease,
-			box-shadow 0.15s ease;
-	}
-
-	.explore-datasets-side-panel .database-row:hover {
-		border-color: color-mix(in srgb, var(--om-teal-600) 30%, transparent);
-		background: color-mix(in srgb, var(--om-teal-100) 38%, var(--om-white));
-		box-shadow: 0 2px 10px rgb(46 43 59 / 0.05);
-	}
-
-	.explore-datasets-side-panel .database-row.active {
-		border-color: color-mix(in srgb, var(--om-teal-600) 48%, transparent);
-		background: color-mix(in srgb, var(--om-teal-100) 52%, var(--om-white));
-		box-shadow: 0 0 0 1px color-mix(in srgb, var(--om-teal-600) 16%, transparent);
-	}
-
-	.explore-datasets-side-panel .database-row-title {
-		overflow: visible;
-		font-size: 14px;
-		font-weight: 700;
-		line-height: 1.25;
-		color: var(--om-gray-850);
-		white-space: normal;
-		text-overflow: unset;
-	}
-
-	.explore-datasets-side-panel .database-row-main small {
-		overflow: visible;
-		font-size: 11px;
-		font-weight: 600;
-		line-height: 1.35;
-		color: var(--om-gray-550);
-		letter-spacing: 0.02em;
-		text-transform: uppercase;
-		white-space: normal;
-		text-overflow: unset;
-	}
-
-	.explore-datasets-side-panel .database-row-main {
-		display: grid;
-		width: 100%;
-		gap: 3px;
-		min-width: 0;
-	}
-
-	.explore-datasets-side-panel .database-row-desc {
-		display: block;
-		margin: 2px 0 0;
-		font-size: 12px;
-		font-weight: 500;
-		line-height: 1.5;
-		color: var(--om-gray-600);
-		overflow: visible;
-		white-space: normal;
-		word-break: break-word;
-		text-overflow: unset;
-	}
-
-	.database-row-desc {
-		display: block;
-		margin-top: 4px;
-		font-size: 11px;
-		font-weight: 500;
-		line-height: 1.45;
-		color: var(--om-gray-600);
-		white-space: normal;
-	}
-
-	.explore-datasets-side-panel .dataset-cta {
-		margin-top: var(--om-space-m);
-		padding: var(--om-space-s) 0 4px;
-		font-size: 13px;
-		font-weight: 600;
-		line-height: 1.35;
-		color: var(--om-gray-600);
-	}
-
-	.database-scroll {
-		display: grid;
-		gap: var(--om-space-s);
-		padding: 0 var(--om-space-m) var(--om-space-m);
-	}
-
-	.database-row {
-		display: grid;
-		grid-template-columns: auto minmax(0, 1fr);
-		gap: var(--om-space-m);
-		align-items: center;
-		width: 100%;
-		border: 0;
-		border-radius: var(--om-radius-m);
-		background: transparent;
-		padding: var(--om-space-s);
-		text-align: left;
-		cursor: pointer;
-		font-family: 'Inter', system-ui, sans-serif;
-	}
-
-	.database-row:hover,
-	.database-row.active {
-		background: color-mix(in srgb, var(--om-teal-100) 42%, transparent);
-	}
-
-	.database-row-main {
-		display: grid;
-		gap: 2px;
-		min-width: 0;
-	}
-
-	.database-row-title {
-		overflow: hidden;
-		font-size: 12px;
-		font-weight: 700;
-		line-height: 1.35;
-		color: var(--om-gray-850);
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.database-row-main small {
-		overflow: hidden;
-		font-size: 10px;
-		font-weight: 500;
-		line-height: 1.4;
-		color: var(--om-gray-600);
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.dataset-logo {
-		display: flex;
-		width: 64px;
+		.dataset-logo {
+			display: flex;
+			width: 64px;
 		height: 32px;
 		align-items: center;
 		justify-content: center;
@@ -5356,14 +4219,9 @@
 		line-height: 1;
 	}
 
-	.country-list.inset {
-		overflow: visible;
-		padding: 0;
-	}
-
-	.meta-dataset {
-		border-radius: var(--om-radius-m);
-		background: transparent;
+		.meta-dataset {
+			border-radius: var(--om-radius-m);
+			background: transparent;
 		padding: 0;
 	}
 
@@ -5371,60 +4229,22 @@
 		padding: 10px 11px;
 	}
 
-	.meta-dataset-top,
-	.meta-dataset-intro {
-		display: flex;
-		align-items: flex-start;
-		gap: 10px;
-		margin-bottom: 0;
-	}
-
-	.meta-dataset-copy {
-		min-width: 0;
-		flex: 1;
-	}
-
-	.meta-dataset-title-row {
-		display: flex;
-		align-items: center;
+		.meta-dataset-title-row {
+			display: flex;
+			align-items: center;
 		flex-wrap: wrap;
 		gap: 6px 8px;
 	}
 
-	.meta-dataset-head {
-		display: flex;
-		flex: 1;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--om-space-s);
-	}
-
-	.meta-release {
-		border-radius: 999px;
-		background: color-mix(in srgb, var(--om-teal-100) 72%, var(--om-white));
+		.meta-release {
+			border-radius: 999px;
+			background: color-mix(in srgb, var(--om-teal-100) 72%, var(--om-white));
 		padding: 2px 7px;
 		font-size: 9px;
 		font-weight: 700;
 		line-height: 1.35;
 		color: var(--om-teal-700);
 		white-space: nowrap;
-	}
-
-	.meta-dataset h3 {
-		margin: 0;
-		font-family: 'Rubik', 'Inter', system-ui, sans-serif;
-		font-size: 13px;
-		font-weight: 700;
-		line-height: 1.2;
-		color: var(--om-gray-850);
-	}
-
-	.meta-desc {
-		margin-top: 4px;
-		font-size: 11px;
-		font-weight: 500;
-		line-height: 1.4;
-		color: var(--om-gray-600);
 	}
 
 	.meta-grid {
@@ -5465,6 +4285,41 @@
 		color: var(--om-gray-850);
 	}
 
+	.country-source-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		margin-bottom: 8px;
+	}
+
+	.source-chip {
+		display: inline-flex;
+		max-width: 100%;
+		align-items: center;
+		gap: 6px;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--om-white) 90%, transparent);
+		border: 1px solid color-mix(in srgb, var(--om-gray-400) 36%, transparent);
+		padding: 4px 8px 4px 5px;
+		font-size: 11px;
+		font-weight: 700;
+		color: var(--om-gray-850);
+	}
+
+	.source-chip img,
+	.source-chip > span {
+		display: grid;
+		width: 22px;
+		height: 22px;
+		flex: 0 0 auto;
+		place-items: center;
+		border-radius: 6px;
+		background: color-mix(in srgb, var(--om-teal-100) 54%, var(--om-white));
+		font-size: 9px;
+		font-weight: 800;
+		object-fit: contain;
+	}
+
 	.detail-context {
 		margin: 0;
 		font-size: 11px;
@@ -5497,14 +4352,9 @@
 		cursor: pointer;
 	}
 
-	.detail-list-row.static {
-		cursor: default;
-	}
-
-	.detail-list-row:hover,
-	.detail-list-row.active {
-		background: color-mix(in srgb, var(--om-teal-100) 62%, var(--om-white));
-	}
+		.detail-list-row:hover {
+			background: color-mix(in srgb, var(--om-teal-100) 62%, var(--om-white));
+		}
 
 	.detail-list-row span {
 		overflow: hidden;
@@ -5512,9 +4362,9 @@
 		white-space: nowrap;
 	}
 
-	.detail-list-row strong {
-		font-size: 12px;
-		font-weight: 800;
+		.detail-list-row strong {
+			font-size: 12px;
+			font-weight: 800;
 		font-variant-numeric: tabular-nums;
 		color: var(--om-gray-700);
 	}
@@ -5535,28 +4385,119 @@
 		font-size: 16px;
 	}
 
-	.dataset-heading {
+	.country-panel .dataset-logo > span {
+		font-size: 16px;
+	}
+
+	.database-scroll {
+		display: grid;
+		gap: var(--om-space-s);
+		padding: 0 var(--om-space-m) var(--om-space-m);
+		overflow-y: auto;
+		flex: 1 1 auto;
+		min-height: 0;
+	}
+
+	.database-row {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		gap: var(--om-space-s);
+		align-items: start;
+		width: 100%;
+		border: 0;
+		border-radius: var(--om-radius-m);
+		background: transparent;
+		padding: var(--om-space-s);
+		text-align: left;
+		cursor: pointer;
+		font-family: 'Inter', system-ui, sans-serif;
+		text-decoration: none;
+		color: inherit;
+	}
+
+	.database-row-title-row {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+	}
+
+	:global(.database-row-external) {
+		flex-shrink: 0;
+		width: 12px;
+		height: 12px;
+		color: var(--om-gray-600);
+		opacity: 0.72;
+	}
+
+	.database-row:hover :global(.database-row-external),
+	.database-row.active :global(.database-row-external) {
+		color: var(--om-gray-850);
+		opacity: 1;
+	}
+
+	.database-row:hover,
+	.database-row.active {
+		background: color-mix(in srgb, var(--om-teal-100) 42%, transparent);
+	}
+
+	.database-row-main {
+		display: grid;
+		gap: 2px;
+		min-width: 0;
+	}
+
+	.database-row-title {
+		overflow: hidden;
+		flex: 1 1 auto;
+		min-width: 0;
+		font-size: 12px;
+		font-weight: 700;
+		line-height: 1.35;
+		color: var(--om-gray-850);
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.database-row-main small {
+		overflow: hidden;
+		font-size: 10px;
+		font-weight: 500;
+		line-height: 1.4;
+		color: var(--om-gray-600);
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.database-row-desc {
+		display: block;
+		margin-top: 4px;
+		font-size: 11px;
+		font-weight: 500;
+		line-height: 1.45;
+		color: var(--om-gray-600);
+		white-space: normal;
+		word-break: break-word;
+	}
+
+	.map-dashboard-panel--right .dataset-logo {
+		display: flex;
+		width: 44px;
+		height: 44px;
+		align-items: center;
+		justify-content: center;
 		flex-shrink: 0;
 	}
 
-	.dataset-count {
-		display: flex;
-		align-items: baseline;
-		gap: 5px;
+	.map-dashboard-panel--right .dataset-logo img {
+		max-width: 44px;
+		max-height: 44px;
+		object-fit: contain;
 	}
 
-	.dataset-count strong {
-		font-size: 18px;
-		font-weight: 800;
-		line-height: 1.15;
-		color: var(--om-gray-850);
-	}
-
-	.dataset-count small {
-		font-size: 11px;
-		font-weight: 600;
-		line-height: 1.2;
-		color: var(--om-gray-600);
+	.map-dashboard-panel--right .dataset-logo > span {
+		font-size: 24px;
+		line-height: 1;
 	}
 
 	.dataset-cta {
@@ -5579,18 +4520,15 @@
 		text-decoration: underline;
 	}
 
-	@media (max-width: 980px) {
-		.global-search {
-			right: var(--screen-inset);
-			left: var(--screen-inset);
-			width: auto;
-			min-width: 0;
-			transform: none;
-		}
+		@media (max-width: 980px) {
+			.dashboard-shell {
+				--top-search-width: min(100%, calc(100vw - 2 * var(--screen-inset)));
+				--results-drawer-top: 132px;
+			}
 
-		.country-panel {
-			top: auto;
-			left: var(--screen-inset);
+			.country-panel {
+				top: auto;
+				left: var(--screen-inset);
 			right: var(--screen-inset);
 			bottom: var(--bottom-inset);
 			max-height: 38vh;
@@ -5598,73 +4536,168 @@
 			transform: none;
 		}
 
-		.bottom-panel {
-			display: none;
 		}
 
-		.variant-mix,
-		.explore-stat-row {
-			display: none;
+		@media (max-width: 1280px) {
+			.dashboard-shell {
+				--bottom-inset: max(42px, calc(env(safe-area-inset-bottom) + 34px));
+				--results-drawer-bottom: var(--bottom-inset);
+			}
 		}
 
-		.route-overlay.with-left-panels {
-			left: var(--screen-inset);
+		@media (max-width: 1120px) {
+			.dashboard-shell {
+				--screen-inset: 12px;
+				--bottom-inset: max(42px, calc(env(safe-area-inset-bottom) + 34px));
+				--layout-left-width: 100%;
+				--side-panel-width: calc(100vw - 2 * var(--screen-inset));
+				--top-search-width: calc(100vw - 2 * var(--screen-inset));
+				--results-drawer-top: 148px;
+				--results-drawer-bottom: var(--bottom-inset);
+			}
+
+			.map-dashboard-dock {
+				display: flex;
+				flex-direction: column;
+				gap: 8px;
+				position: absolute;
+				z-index: 2;
+				left: var(--screen-inset);
+				right: var(--screen-inset);
+				bottom: var(--bottom-inset);
+				max-height: min(56vh, calc(var(--map-viewport-height) - var(--results-drawer-top) - 16px));
+				overflow-x: hidden;
+				overflow-y: auto;
+				overscroll-behavior: contain;
+				pointer-events: none;
+				padding-bottom: 2px;
+				-webkit-overflow-scrolling: touch;
+			}
+
+			.map-dashboard-dock.drawer-open {
+				opacity: 0;
+				pointer-events: none;
+			}
+
+			.map-dashboard-dock > .map-dashboard-panel {
+				position: relative;
+				left: auto !important;
+				right: auto !important;
+				bottom: auto !important;
+				width: auto !important;
+				max-height: none;
+				pointer-events: auto;
+				flex-shrink: 0;
+			}
+
+			.map-dashboard-panel--left {
+				padding: 0;
+			}
+
+			.map-stat-grid {
+				gap: 8px;
+			}
+
+			.map-stat-item strong {
+				font-size: 17px;
+			}
+
+			.map-dashboard-panel--center {
+				padding: 10px var(--om-space-m);
+			}
+
+			.map-panel-key--triple {
+				grid-template-columns: repeat(3, minmax(0, 1fr));
+			}
+
+			.map-panel-key-label {
+				white-space: normal;
+				font-size: 10px;
+			}
+
+			.map-dashboard-dock > .map-dashboard-panel--right {
+				display: flex;
+				max-height: min(28vh, 190px);
+				flex-direction: column;
+				overflow: hidden;
+			}
+
+			.map-dashboard-panel--right .database-scroll {
+				gap: 2px;
+				padding: 0 10px 10px;
+				min-height: 0;
+				flex: 1 1 auto;
+				overflow-y: auto;
+			}
+
+			.map-dashboard-panel--right .map-panel-head {
+				padding: 10px 12px 4px;
+			}
+
+			.map-dashboard-panel--right .map-panel-head h2 {
+				font-size: 15px;
+			}
+
+			.map-dashboard-panel--right .map-panel-head strong {
+				font-size: 18px;
+			}
+
+			.map-dashboard-panel--right .database-row {
+				grid-template-columns: 34px minmax(0, 1fr);
+				gap: 8px;
+				padding: 6px 4px;
+			}
+
+			.map-dashboard-panel--right .dataset-logo {
+				width: 34px;
+				height: 34px;
+			}
+
+			.map-dashboard-panel--right .dataset-logo img {
+				max-width: 30px;
+				max-height: 22px;
+			}
+
+			.map-dashboard-panel--right .database-row-title {
+				font-size: 12px;
+				line-height: 1.25;
+			}
+
+			.map-dashboard-panel--right .database-row-main small {
+				font-size: 10px;
+				line-height: 1.25;
+			}
+
+			.map-dashboard-panel--right .database-row-desc {
+				display: none;
+			}
+
+			.database-row-title,
+			.database-row-main small {
+				white-space: normal;
+			}
+
+			.site-footer {
+				display: none;
+			}
+
+			.dashboard-shell :global(.mapboxgl-ctrl-bottom-left),
+			.dashboard-shell :global(.mapboxgl-ctrl-bottom-right) {
+				transform: none;
+			}
 		}
 
-		:global(.map-results-drawer) {
-			right: var(--screen-inset) !important;
-			left: auto !important;
-			top: var(--results-drawer-top) !important;
-			bottom: 28px !important;
-			width: min(760px, calc(100vw - var(--screen-inset) - var(--screen-inset))) !important;
-			height: calc(100vh - var(--results-drawer-top) - 28px) !important;
-			min-height: 0;
-		}
+		@media (max-width: 700px) {
+			.dashboard-shell {
+				--screen-inset: 12px;
+				--bottom-inset: max(48px, calc(env(safe-area-inset-bottom) + 40px));
+			}
 
-		.explore-datasets-side-panel {
-			display: none;
+			.country-panel {
+				left: var(--screen-inset);
+				right: var(--screen-inset);
+				bottom: var(--bottom-inset);
+				width: auto;
+			}
 		}
-	}
-
-	@media (max-width: 700px) {
-		.dashboard-shell {
-			--screen-inset: 12px;
-			--bottom-inset: 20px;
-		}
-
-		.floating-title,
-		.top-nav {
-			display: none;
-		}
-
-		.route-overlay {
-			top: var(--screen-inset);
-			left: var(--screen-inset);
-			right: var(--screen-inset);
-			bottom: var(--screen-inset);
-			padding: 18px;
-		}
-
-		.country-panel {
-			left: var(--screen-inset);
-			right: var(--screen-inset);
-			bottom: var(--bottom-inset);
-			width: auto;
-		}
-
-		:global(.map-results-drawer) {
-			--screen-inset: 12px;
-			right: var(--screen-inset) !important;
-			left: var(--screen-inset) !important;
-			top: var(--screen-inset) !important;
-			bottom: 20px !important;
-			width: auto !important;
-			height: calc(100vh - var(--screen-inset) - 20px) !important;
-			border-radius: var(--om-radius-m);
-		}
-
-		.explore-datasets-side-panel {
-			display: none;
-		}
-	}
-</style>
+	</style>

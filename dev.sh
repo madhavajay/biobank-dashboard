@@ -22,6 +22,7 @@ if [ -z "${DATABASE_URL:-}" ]; then
 	export DATABASE_URL
 fi
 
+export CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="${CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE:-$DATABASE_URL}"
 export CLOUDFLARE_INCLUDE_PROCESS_ENV="${CLOUDFLARE_INCLUDE_PROCESS_ENV:-true}"
 
 if [ ! -d node_modules ]; then
@@ -63,7 +64,7 @@ case "$MODE" in
 			echo "==> Starting Vite dev server without HMR on http://localhost:${PORT}"
 		fi
 		echo "==> Cloudflare bindings are provided by adapter-cloudflare's local platform proxy"
-		exec bun run dev -- --host 0.0.0.0 --port "$PORT" --strictPort
+		exec npm run dev -- --host 0.0.0.0 --port "$PORT" --strictPort
 		;;
 	wrangler|worker)
 		echo "==> Building Worker bundle"

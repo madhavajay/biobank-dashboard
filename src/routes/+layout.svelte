@@ -1,42 +1,28 @@
 <script lang="ts">
 	import './layout.css';
 	import { page } from '$app/state';
-	import { lang, LANGS, tr } from '$lib/i18n';
+	import { lang, LANGS, tr, type Lang } from '$lib/i18n';
 	import { tenantContent } from '$lib/content';
-	import MapDashboardShell from '$lib/components/app/MapDashboardShell.svelte';
-	import SiteModal from '$lib/components/app/SiteModal.svelte';
-	import { goto } from '$app/navigation';
+	import { Button } from '$lib/components/ui/button';
+	import MapHeaderSearch from '$lib/components/app/MapHeaderSearch.svelte';
 
 	let { children, data } = $props();
 	const tenant = $derived(data.tenant);
 	const forceTenant = $derived(data.forceTenant);
+	const isScopedPortal = $derived(!!tenant.scope);
 	const hasTeam = $derived(!!tenantContent(tenant.slug)?.team);
-	const useMapShell = $derived(tenant.slug === 'biovault');
-	const useLegacyTenantShell = $derived(tenant.slug === 'bipmed');
-	const siteModalRoute = $derived(
-		!useLegacyTenantShell && ['/about', '/contact', '/api'].includes(page.url.pathname) ? page.url.pathname : null
-	);
-	const siteModalLabel = $derived(
-		siteModalRoute === '/about'
-			? tr($lang, 'navAbout')
-			: siteModalRoute === '/contact'
-				? tr($lang, 'navContact')
-				: siteModalRoute === '/api'
-					? tr($lang, 'navApi')
-					: ''
-	);
-
-	function closeSiteModal() {
-		void goto(link('/'));
-	}
+	const isBioVaultMap = $derived(page.url.pathname === '/');
+	const isExploreRoute = $derived(page.url.pathname.startsWith('/explore'));
 
 	const link = (path: string) => (forceTenant ? `${path}?tenant=${forceTenant}` : path);
-	let dark = $state(false);
-	$effect(() => {
-		document.documentElement.classList.toggle('dark', dark);
-	});
 
 	const flags = $derived((tenant.langs ?? []).map((c: string) => LANGS.find((l) => l.code === c)!).filter(Boolean));
+	const currentFlag = $derived(flags.find((f) => f.code === $lang)?.flag ?? flags[0]?.flag ?? '🌐');
+
+	function chooseLang(code: Lang, event: MouseEvent) {
+		$lang = code;
+		(event.currentTarget as HTMLElement).closest('details')?.removeAttribute('open');
+	}
 
 	$effect(() => {
 		if (!data.analytics) return;
@@ -78,172 +64,438 @@
 	{/if}
 </svelte:head>
 
-{#if useMapShell}
-	<div style={data.themeStyle}>
-		<MapDashboardShell {data}>
+<div
+	style={data.themeStyle}
+	class="biovault-layout flex min-h-screen flex-col bg-background text-foreground"
+	class:map-layout={isBioVaultMap}
+>
+	<header class="biovault-header" class:map-header={isBioVaultMap}>
+		<a href={link('/')} class="biovault-brand">
+			<img
+				src={tenant.logoImg ?? '/biovault-logo.png'}
+				alt=""
+				class="biovault-brand-logo"
+				aria-hidden="true"
+			/>
+			<span class="biovault-brand-copy">
+				<strong>{tenant.name}</strong>
+				<span>{isScopedPortal ? tenant.product : 'Global allele-frequency network'}</span>
+			</span>
+		</a>
+
+		<MapHeaderSearch dashboard={isBioVaultMap ? page.data.dashboard : undefined} />
+
+		<nav class="biovault-nav" aria-label="Site navigation">
+			<a href={link('/explore')} class="biovault-nav-explore" class:active={isExploreRoute}>Explore</a>
+			{#if !isScopedPortal}
+				<a href={link('/sources')} class:active={page.url.pathname.startsWith('/sources')}>Biobanks</a>
+			{/if}
+			<a href={link('/about')} class:active={page.url.pathname === '/about'}>{tr($lang, 'navAbout')}</a>
+			{#if hasTeam}
+				<a href={link('/team')} class:active={page.url.pathname === '/team'}>{tr($lang, 'navTeam')}</a>
+			{/if}
+			<a href={link('/contact')} class:active={page.url.pathname === '/contact'}>{tr($lang, 'navContact')}</a>
+			<a href={link('/api')} class="biovault-nav-api" class:active={page.url.pathname === '/api'}>{tr($lang, 'navApi')}</a>
+			{#if flags.length > 1}
+				<details class="biovault-lang-switch">
+					<summary aria-label="Language">
+						<span>{currentFlag}</span>
+					</summary>
+					<div class="biovault-lang-menu">
+						{#each flags as f}
+							<button type="button" class:active={$lang === f.code} onclick={(event) => chooseLang(f.code, event)}>
+								<span>{f.flag}</span>
+								<span>{f.label}</span>
+							</button>
+						{/each}
+					</div>
+				</details>
+			{/if}
+		</nav>
+	</header>
+
+	{#if isBioVaultMap}
+		<main class="min-h-0 w-full flex-1 overflow-hidden">
 			{@render children()}
-		</MapDashboardShell>
-	</div>
-{:else if useLegacyTenantShell}
-<div style={data.themeStyle} class="flex min-h-screen flex-col">
-	<header class="sticky top-0 z-30 border-b bg-background/85 backdrop-blur">
-		<div class="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-3">
-			<a href={link('/')} class="flex items-center gap-2.5">
-				{#if tenant.logoImg}
-					<img src={tenant.logoImg} alt={tenant.name} class={tenant.slug === 'biovault' ? 'size-9 rounded-lg object-contain' : 'h-12 w-auto max-w-56 object-contain'} />
-					{#if tenant.slug === 'biovault'}
-						<span class="flex flex-col leading-tight">
-							<span class="text-sm font-bold">{tenant.name}</span>
-							<span class="text-[11px] text-muted-foreground">{tenant.product}</span>
-						</span>
-					{/if}
-				{:else}
-					<span class="brand-gradient grid size-9 place-items-center rounded-xl text-lg shadow-sm">{tenant.logoEmoji}</span>
-					<span class="flex flex-col leading-tight">
-						<span class="text-sm font-bold">{tenant.name}</span>
-						<span class="text-[11px] text-muted-foreground">{tenant.product}</span>
-					</span>
-				{/if}
-			</a>
-			<nav class="flex items-center gap-1 text-sm">
-				<a href={link('/')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/'}>{tr($lang, 'navHome')}</a>
-				<a href={link('/explore')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/explore'}>{tr($lang, 'navExplore')}</a>
-				<a href={link('/about')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/about'}>{tr($lang, 'navAbout')}</a>
-				{#if hasTeam}
-					<a href={link('/team')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/team'}>{tr($lang, 'navTeam')}</a>
-				{/if}
-				<a href={link('/contact')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/contact'}>{tr($lang, 'navContact')}</a>
-				<a href={link('/api')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/api'}>{tr($lang, 'navApi')}</a>
-				{#if flags.length > 1}
-					<span class="ml-1 flex items-center gap-0.5">
-						{#each flags as f}
-							<button
-								onclick={() => ($lang = f.code)}
-								title={f.label}
-								class="grid size-8 place-items-center rounded-md border text-base hover:bg-muted"
-								class:ring-2={$lang === f.code}
-								class:ring-ring={$lang === f.code}
-								style={$lang === f.code ? '' : 'opacity:0.55'}
-							>
-								{f.flag}
-							</button>
-						{/each}
-					</span>
-				{/if}
-				<button onclick={() => (dark = !dark)} class="ml-1 grid size-8 place-items-center rounded-md border hover:bg-muted" aria-label="Toggle theme">
-					{dark ? '☀' : '☾'}
-				</button>
-			</nav>
-		</div>
-	</header>
+		</main>
+	{:else}
+		<main class="mx-auto w-full max-w-6xl flex-1 px-4 py-5 sm:px-5">
+			{@render children()}
+		</main>
+	{/if}
 
-	<main class="mx-auto w-full max-w-6xl flex-1 px-4 py-8">
-		{@render children()}
-	</main>
-
-	<footer class="border-t">
-		<div class="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-2 px-4 py-6 text-sm text-muted-foreground">
-			<span>© {tenant.name}</span>
-			<span class="font-mono text-xs">GA4GH VRS · <a href={link('/api')} class="hover:text-primary hover:underline">Beacon v2</a></span>
-		</div>
-	</footer>
+	{#if !isBioVaultMap}
+		<footer class="biovault-footer">
+			<div class="biovault-footer-inner">
+				<span>© {tenant.name}</span>
+				<span class="biovault-footer-meta"
+					>GA4GH VRS · <a href={link('/api')} class="hover:text-primary hover:underline">Beacon v2</a></span
+				>
+			</div>
+		</footer>
+	{/if}
 </div>
-{:else if siteModalRoute}
-<div style={data.themeStyle} class="flex min-h-screen flex-col">
-	<header class="sticky top-0 z-30 border-b bg-background/85">
-		<div class="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-3">
-			<a href={link('/')} class="flex items-center gap-2.5">
-				{#if tenant.logoImg}
-					<img src={tenant.logoImg} alt={tenant.name} class="h-12 w-auto max-w-56 object-contain" />
-				{:else}
-					<span class="brand-gradient grid size-9 place-items-center rounded-xl text-lg shadow-sm">{tenant.logoEmoji}</span>
-					<span class="flex flex-col leading-tight">
-						<span class="text-sm font-bold">{tenant.name}</span>
-						<span class="text-[11px] text-muted-foreground">{tenant.product}</span>
-					</span>
-				{/if}
-			</a>
-			<nav class="flex items-center gap-1 text-sm">
-				<a href={link('/about')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={siteModalRoute === '/about'}>{tr($lang, 'navAbout')}</a>
-				{#if hasTeam}
-					<a href={link('/team')} class="rounded-md px-3 py-1.5 hover:bg-muted">{tr($lang, 'navTeam')}</a>
-				{/if}
-				<a href={link('/contact')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={siteModalRoute === '/contact'}>{tr($lang, 'navContact')}</a>
-				<a href={link('/api')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={siteModalRoute === '/api'}>{tr($lang, 'navApi')}</a>
-			</nav>
-		</div>
-	</header>
-	<main class="mx-auto w-full max-w-6xl flex-1 px-4 py-8"></main>
-	<footer class="border-t">
-		<div class="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-2 px-4 py-6 text-sm text-muted-foreground">
-			<span>© {tenant.name}</span>
-			<span class="font-mono text-xs">GA4GH VRS · <a href={link('/api')} class="hover:text-primary hover:underline">Beacon v2</a></span>
-		</div>
-	</footer>
-</div>
-<SiteModal label={siteModalLabel} wide={siteModalRoute === '/api'} onclose={closeSiteModal}>
-	{@render children()}
-</SiteModal>
-{:else}
-<div style={data.themeStyle} class="flex min-h-screen flex-col">
-	<header class="sticky top-0 z-30 border-b bg-background/85">
-		<div class="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-3">
-			<a href={link('/')} class="flex items-center gap-2.5">
-				{#if tenant.logoImg}
-					<img src={tenant.logoImg} alt={tenant.name} class={tenant.slug === 'biovault' ? 'size-9 rounded-lg object-contain' : 'h-12 w-auto max-w-56 object-contain'} />
-					{#if tenant.slug === 'biovault'}
-						<span class="flex flex-col leading-tight">
-							<span class="text-sm font-bold">{tenant.name}</span>
-							<span class="text-[11px] text-muted-foreground">{tenant.product}</span>
-						</span>
-					{/if}
-				{:else}
-					<span class="brand-gradient grid size-9 place-items-center rounded-xl text-lg shadow-sm">{tenant.logoEmoji}</span>
-					<span class="flex flex-col leading-tight">
-						<span class="text-sm font-bold">{tenant.name}</span>
-						<span class="text-[11px] text-muted-foreground">{tenant.product}</span>
-					</span>
-				{/if}
-			</a>
-			<nav class="flex items-center gap-1 text-sm">
-				<a href={link('/about')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/about'}>{tr($lang, 'navAbout')}</a>
-				{#if hasTeam}
-					<a href={link('/team')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/team'}>{tr($lang, 'navTeam')}</a>
-				{/if}
-				<a href={link('/contact')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/contact'}>{tr($lang, 'navContact')}</a>
-				<a href={link('/api')} class="rounded-md px-3 py-1.5 hover:bg-muted" class:font-semibold={page.url.pathname === '/api'}>{tr($lang, 'navApi')}</a>
-				{#if flags.length > 1}
-					<span class="ml-1 flex items-center gap-0.5">
-						{#each flags as f}
-							<button
-								onclick={() => ($lang = f.code)}
-								title={f.label}
-								class="grid size-8 place-items-center rounded-md border text-base hover:bg-muted"
-								class:ring-2={$lang === f.code}
-								class:ring-ring={$lang === f.code}
-								style={$lang === f.code ? '' : 'opacity:0.55'}
-							>
-								{f.flag}
-							</button>
-						{/each}
-					</span>
-				{/if}
-				<button onclick={() => (dark = !dark)} class="ml-1 grid size-8 place-items-center rounded-md border hover:bg-muted" aria-label="Toggle theme">
-					{dark ? '☀' : '☾'}
-				</button>
-			</nav>
-		</div>
-	</header>
 
-	<main class="mx-auto w-full max-w-6xl flex-1 px-4 py-8">
-		{@render children()}
-	</main>
+<style>
+	.biovault-layout {
+		--om-white: #ffffff;
+		--om-gray-100: #f7f6f9;
+		--om-gray-200: #f1f0f4;
+		--om-gray-300: #ecebef;
+		--om-gray-400: #cfcdd6;
+		--om-gray-550: #868394;
+		--om-gray-600: #5e5a72;
+		--om-gray-700: #464257;
+		--om-gray-850: #272532;
+		--om-gray-900: #23202c;
+		--om-teal-100: #ddeef3;
+		--om-teal-600: #388ca8;
+		--om-teal-700: #2a697e;
+		--om-radius-s: 6px;
+		--om-radius-m: 8px;
+		overflow-x: hidden;
+	}
 
-	<footer class="border-t">
-		<div class="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-2 px-4 py-6 text-sm text-muted-foreground">
-			<span>© {tenant.name}</span>
-			<span class="font-mono text-xs">GA4GH VRS · <a href={link('/api')} class="hover:text-primary hover:underline">Beacon v2</a></span>
-		</div>
-	</footer>
-</div>
-{/if}
+	.biovault-header {
+		position: sticky;
+		top: 0;
+		z-index: 40;
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto;
+		align-items: center;
+		column-gap: 20px;
+		min-height: 64px;
+		background: var(--background);
+		padding: max(10px, env(safe-area-inset-top)) 20px 10px;
+	}
+
+	.biovault-header.map-header {
+		position: fixed;
+		right: 0;
+		left: 0;
+		background: transparent;
+		pointer-events: none;
+	}
+
+	.biovault-header.map-header > :global(*) {
+		pointer-events: auto;
+	}
+
+	.biovault-header :global(.map-header-search) {
+		position: static;
+		left: auto;
+		justify-self: center;
+		width: min(560px, 100%);
+		max-width: 100%;
+		transform: none;
+	}
+
+	.biovault-layout.map-layout > main {
+		min-height: 0;
+		flex: 1;
+	}
+
+	.biovault-brand {
+		display: flex;
+		min-width: 0;
+		max-width: min(240px, 34vw);
+		align-items: center;
+		gap: 10px;
+		color: var(--om-gray-850);
+		text-decoration: none;
+	}
+
+	.biovault-brand-logo {
+		width: 36px;
+		height: 36px;
+		flex-shrink: 0;
+		object-fit: contain;
+	}
+
+	.biovault-brand-copy {
+		display: grid;
+		min-width: 0;
+		gap: 1px;
+	}
+
+	.biovault-brand-copy strong {
+		overflow: hidden;
+		font-size: 15px;
+		font-weight: 700;
+		line-height: 1.25;
+		letter-spacing: -0.01em;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.biovault-brand-copy span {
+		overflow: hidden;
+		color: var(--om-gray-550);
+		font-size: 11px;
+		font-weight: 500;
+		line-height: 1.25;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.biovault-nav {
+		display: flex;
+		min-width: 0;
+		flex-wrap: nowrap;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 4px;
+	}
+
+	.biovault-nav a {
+		display: inline-flex;
+		height: 36px;
+		align-items: center;
+		border-radius: var(--om-radius-m);
+		padding: 0 11px;
+		color: var(--om-gray-600);
+		font-size: 13px;
+		font-weight: 500;
+		line-height: 1;
+		text-decoration: none;
+		white-space: nowrap;
+	}
+
+	.biovault-nav a:hover {
+		background: color-mix(in srgb, var(--om-white) 58%, transparent);
+		color: var(--om-teal-700);
+		text-decoration: none;
+	}
+
+	.biovault-nav a.active {
+		background: color-mix(in srgb, var(--om-teal-100) 72%, var(--om-white));
+		color: var(--om-teal-700);
+		font-weight: 600;
+	}
+
+	.biovault-lang-switch {
+		position: relative;
+		margin-left: 2px;
+	}
+
+	.biovault-lang-switch summary {
+		display: grid;
+		width: 40px;
+		height: 30px;
+		grid-template-columns: 1fr auto;
+		align-items: center;
+		gap: 3px;
+		border: 1px solid var(--border);
+		border-radius: var(--om-radius-s);
+		background: var(--background);
+		padding: 0 5px;
+		font-size: 13px;
+		line-height: 1;
+		cursor: pointer;
+		list-style: none;
+	}
+
+	.biovault-lang-switch summary::-webkit-details-marker {
+		display: none;
+	}
+
+	.biovault-lang-switch summary::after {
+		width: 0;
+		height: 0;
+		border-top: 4px solid var(--om-gray-600);
+		border-right: 3px solid transparent;
+		border-left: 3px solid transparent;
+		content: '';
+	}
+
+	.biovault-lang-menu {
+		position: absolute;
+		top: calc(100% + 5px);
+		right: 0;
+		z-index: 60;
+		display: grid;
+		min-width: 132px;
+		padding: 4px;
+		border: 1px solid var(--border);
+		border-radius: var(--om-radius-m);
+		background: var(--background);
+		box-shadow: 0 12px 32px rgb(35 32 44 / 0.14);
+	}
+
+	.biovault-lang-menu button {
+		display: flex;
+		height: 34px;
+		align-items: center;
+		gap: 8px;
+		border: 0;
+		border-radius: var(--om-radius-s);
+		background: transparent;
+		padding: 0 9px;
+		color: var(--om-gray-700);
+		font-size: 13px;
+		font-weight: 500;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.biovault-lang-menu button:hover,
+	.biovault-lang-menu button.active {
+		background: color-mix(in srgb, var(--om-teal-100) 68%, var(--om-white));
+		color: var(--om-teal-700);
+	}
+
+	.biovault-footer {
+		flex-shrink: 0;
+		background: var(--background);
+	}
+
+	.biovault-footer-inner {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px 16px;
+		margin: 0 auto;
+		width: min(100%, 72rem);
+		padding: 1.25rem 1.5rem;
+		color: var(--muted-foreground);
+		font-size: 0.875rem;
+		line-height: 1.4;
+	}
+
+	.biovault-footer-meta {
+		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+		font-size: 0.75rem;
+	}
+
+	.biovault-footer-meta a {
+		color: inherit;
+		text-decoration: none;
+	}
+
+	@media (max-width: 1100px) {
+		.biovault-header {
+			column-gap: 14px;
+			padding-inline: 16px;
+		}
+
+		.biovault-header :global(.map-header-search) {
+			width: min(480px, 100%);
+		}
+
+		.biovault-nav a {
+			padding: 0 8px;
+			font-size: 12.5px;
+		}
+	}
+
+	@media (max-width: 900px) {
+		.biovault-header {
+			grid-template-columns: minmax(0, 1fr) auto;
+			row-gap: 10px;
+		}
+
+		.biovault-header :global(.map-header-search) {
+			order: 3;
+			grid-column: 1 / -1;
+			justify-self: stretch;
+			width: 100%;
+		}
+
+		.biovault-nav {
+			order: 2;
+		}
+	}
+
+	@media (max-width: 720px) {
+		.biovault-header {
+			grid-template-columns: minmax(0, 1fr) auto;
+			row-gap: 8px;
+			padding: max(10px, env(safe-area-inset-top)) 14px 10px;
+		}
+
+		.biovault-header.map-header {
+			background: color-mix(in srgb, var(--background) 88%, transparent);
+			backdrop-filter: blur(10px);
+		}
+
+		.biovault-header :global(.map-header-search) {
+			order: 3;
+			grid-column: 1 / -1;
+			justify-self: stretch;
+			width: 100%;
+		}
+
+		.biovault-brand {
+			max-width: none;
+			min-width: 112px;
+		}
+
+		.biovault-brand-copy span {
+			display: none;
+		}
+
+		.biovault-nav {
+			order: 2;
+			width: auto;
+			max-width: none;
+			overflow-x: auto;
+			justify-content: flex-end;
+			gap: 4px;
+			padding-bottom: 2px;
+			-webkit-overflow-scrolling: touch;
+			scrollbar-width: none;
+		}
+
+		.biovault-nav::-webkit-scrollbar {
+			display: none;
+		}
+	}
+
+	@media (max-width: 500px) {
+		.biovault-nav a.biovault-nav-explore,
+		.biovault-nav a.biovault-nav-api {
+			display: none;
+		}
+	}
+
+	@media (max-width: 480px) {
+		.biovault-brand-copy strong {
+			font-size: 14px;
+		}
+
+		.biovault-header.map-header .biovault-brand {
+			min-width: 118px;
+		}
+
+		.biovault-nav a {
+			height: 34px;
+			padding: 0 7px;
+			font-size: 12px;
+		}
+
+		.biovault-lang-switch summary {
+			width: 40px;
+			height: 32px;
+		}
+
+		.biovault-footer-inner {
+			padding-inline: 1rem;
+		}
+	}
+
+	@media (max-width: 360px) {
+		.biovault-header.map-header .biovault-brand {
+			min-width: 108px;
+		}
+
+		.biovault-nav {
+			gap: 3px;
+		}
+
+		.biovault-nav a {
+			padding: 0 5px;
+			font-size: 11px;
+		}
+	}
+</style>

@@ -62,6 +62,16 @@ binding from `wrangler.jsonc`:
 ./deploy.sh
 ```
 
+Preview deploy publishes a separate Worker on `*.workers.dev` (no custom domains).
+It uses the same prod Hyperdrive binding, so treat it as live data:
+
+```sh
+./deploy-preview.sh
+# or: bun run deploy:preview
+```
+
+Use `?tenant=` on the workers.dev URL, e.g. `?tenant=bipmed`.
+
 The live database connection is stored in Cloudflare Hyperdrive. Local development
 uses `DATABASE_URL` from `.env` when present, otherwise it falls back to the Docker
 PostgreSQL URL:
